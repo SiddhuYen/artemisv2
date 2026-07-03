@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+# all local graph/cache DBs (artemis.db, artemis_cache*.db, *_ui.db, *_fg.db, ...)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+# uploaded personal-network exports contain PII — never commit
+*connections*.csv
+*Connections*.csv
+.DS_Store
+.env
+.env.*
+# Claude Code per-user local settings
+.claude/settings.local.json
+# generated graph snapshots / per-session graph DBs (build artifacts)
+cached_graphs/
+graphs/

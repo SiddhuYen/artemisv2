@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Artemis — Relationship Graph</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e242c;
+    --line: #2a323d;
+    --text: #e6ebf1;
+    --muted: #8b97a7;
+    --accent: #6ea8fe;
+    --accent-2: #7ee0b8;
+    --warn: #f0b34a;
+    --danger: #f07070;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 80px; }
+  header h1 { margin: 0 0 2px; font-size: 22px; letter-spacing: .3px; }
+  header p { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 18px; }
+  .tabs button {
+    flex: 1; padding: 10px 14px; border: 1px solid var(--line); background: var(--panel);
+    color: var(--muted); border-radius: var(--radius); cursor: pointer; font-size: 14px;
+    transition: .15s;
+  }
+  .tabs button.active { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .hidden { display: none; }
+
+  label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px; text-transform: uppercase; letter-spacing: .5px; }
+  input[type=text] {
+    width: 100%; padding: 11px 12px; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 8px; font-size: 15px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  .field { margin-bottom: 14px; }
+  .ctx { margin-top: 8px; }
+  .ctx input { font-size: 13px; padding: 8px 10px; }
+
+  select {
+    padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 8px; font-size: 14px;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .chip {
+    padding: 7px 12px; border: 1px solid var(--line); background: var(--panel-2);
+    color: var(--muted); border-radius: 999px; cursor: pointer; font-size: 13px; user-select: none;
+  }
+  .chip.on { color: #0f1216; background: var(--accent-2); border-color: var(--accent-2); font-weight: 600; }
+
+  .go {
+    margin-top: 16px; width: 100%; padding: 12px; border: none; border-radius: 8px;
+    background: var(--accent); color: #0b1020; font-weight: 700; font-size: 15px; cursor: pointer;
+  }
+  .go:disabled { opacity: .5; cursor: default; }
+
+  #status { margin: 18px 0 0; font-size: 14px; color: var(--muted); min-height: 20px; }
+  .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #results { margin-top: 18px; display: flex; flex-direction: column; gap: 14px; }
+
+  .route { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .route h3 { margin: 0 0 4px; font-size: 14px; }
+  .route .meta { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .hop { display: flex; align-items: flex-start; gap: 10px; }
+  .hop .node { font-weight: 600; }
+  .hop .rel { color: var(--muted); font-size: 12px; margin: 3px 0 3px 2px; padding-left: 14px; border-left: 2px solid var(--line); }
+  .hop .rel a { color: var(--accent); text-decoration: none; }
+  .hop .ev { color: var(--muted); font-size: 12px; font-style: italic; opacity: .85; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 13px 15px; }
+  .card .name { font-weight: 600; font-size: 15px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+  .tag.vc { color: var(--accent-2); border-color: #2f5546; }
+  .tag.pol { color: var(--warn); border-color: #5a4a24; }
+  .tag.edu { color: var(--accent); border-color: #2c4468; }
+  .tag.fame { color: #d9a7f7; border-color: #46345a; }
+
+  .warn { color: var(--warn); font-size: 12px; }
+  .banner { background: #2a2411; border: 1px solid #5a4a24; color: var(--warn);
+    border-radius: var(--radius); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
+  .banner strong { color: #ffd27a; }
+  .err { color: var(--danger); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .conf { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Artemis</h1>
+    <p>Public relationship graph — find a path between two people, or discover notable connections from one.</p>
+  </header>
+
+  <div class="tabs">
+    <button id="tab-path" class="active" data-mode="path">Find a Path</button>
+    <button id="tab-discover" data-mode="discover">Discover People</button>
+  </div>
+
+  <!-- MODE 1: PATH -->
+  <form id="form-path" class="panel">
+    <div class="row">
+      <div>
+        <div class="field">
+          <label>Start person</label>
+          <input type="text" id="p-a" placeholder="e.g. Fred Volinsky" autocomplete="off" />
+          <div class="ctx"><input type="text" id="p-a-ctx" placeholder="context / disambiguation (optional) — e.g. biotech" /></div>
+        </div>
+      </div>
+      <div>
+        <div class="field">
+          <label>Target person</label>
+          <input type="text" id="p-b" placeholder="e.g. Tim Cook" autocomplete="off" />
+          <div class="ctx"><input type="text" id="p-b-ctx" placeholder="context / disambiguation (optional)" /></div>
+        </div>
+      </div>
+    </div>
+    <label>Depth (per side)</label>
+    <select id="p-depth">
+      <option value="1">1 — fast</option>
+      <option value="2" selected>2 — balanced</option>
+      <option value="3">3 — deep (slow)</option>
+    </select>
+    <button type="submit" class="go">Find Path →</button>
+  </form>
+
+  <!-- MODE 2: DISCOVER -->
+  <form id="form-discover" class="panel hidden">
+    <div class="field">
+      <label>Start person</label>
+      <input type="text" id="d-node" placeholder="e.g. Tim Cook" autocomplete="off" />
+    </div>
+    <label>Show me</label>
+    <div class="chips" id="cat-chips">
+      <span class="chip on" data-cat="any">Anyone</span>
+      <span class="chip" data-cat="influential">Influential</span>
+      <span class="chip" data-cat="famous">Famous</span>
+      <span class="chip" data-cat="edu-company">Big education company</span>
+      <span class="chip" data-cat="edu-pol">Big education politician</span>
+      <span class="chip" data-cat="politician">Big politician</span>
+      <span class="chip" data-cat="vc">In venture capital</span>
+    </div>
+    <div style="margin-top:14px">
+      <label>Depth</label>
+      <select id="d-depth">
+        <option value="1" selected>1 — direct connections</option>
+        <option value="2">2 — expand one hop</option>
+        <option value="3">3 — deep (slow)</option>
+      </select>
+    </div>
+    <button type="submit" class="go">Discover →</button>
+    <div class="note">Category tagging is a heuristic placeholder for now — we'll refine it as we iterate.</div>
+  </form>
+
+  <div id="status"></div>
+  <div id="results"></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const statusEl = $("#status");
+const resultsEl = $("#results");
+let timer = null;
+
+// Stable per-browser graph id so this session's builds stay isolated from other
+// users on the same server (sent as X-Graph-Id; the server keys a private DB on it).
+const GRAPH_ID = (() => {
+  let id = localStorage.getItem("artemis_graph_id");
+  if (!id) {
+    id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+         : "g" + Date.now() + Math.floor(Math.random() * 1e6);
+    localStorage.setItem("artemis_graph_id", id);
+  }
+  return id;
+})();
+const API_HEADERS = { "Content-Type": "application/json", "X-Graph-Id": GRAPH_ID };
+
+// ---- mode switching -------------------------------------------------------
+function setMode(mode) {
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  $("#form-path").classList.toggle("hidden", mode !== "path");
+  $("#form-discover").classList.toggle("hidden", mode !== "discover");
+  statusEl.textContent = "";
+  resultsEl.innerHTML = "";
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+// ---- category chips (multi-select, "Anyone" is exclusive) -----------------
+const chips = $("#cat-chips");
+chips.onclick = (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  if (chip.dataset.cat === "any") {
+    chips.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c === chip));
+  } else {
+    chips.querySelector('[data-cat="any"]').classList.remove("on");
+    chip.classList.toggle("on");
+    if (!chips.querySelector(".chip.on")) chips.querySelector('[data-cat="any"]').classList.add("on");
+  }
+};
+function selectedCats() {
+  return [...chips.querySelectorAll(".chip.on")].map(c => c.dataset.cat);
+}
+
+// ---- loading state --------------------------------------------------------
+function startLoading(msg) {
+  resultsEl.innerHTML = "";
+  const t0 = Date.now();
+  const render = () => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    statusEl.innerHTML = `<span class="spinner"></span>${msg} <span class="conf">(${s}s)</span> — this can take a few minutes.`;
+  };
+  render();
+  timer = setInterval(render, 1000);
+  document.querySelectorAll(".go").forEach(b => b.disabled = true);
+}
+function stopLoading(msg) {
+  clearInterval(timer); timer = null;
+  statusEl.innerHTML = msg || "";
+  document.querySelectorAll(".go").forEach(b => b.disabled = false);
+}
+
+// ---- MODE 1: path ---------------------------------------------------------
+$("#form-path").onsubmit = async (e) => {
+  e.preventDefault();
+  const body = {
+    person_a: $("#p-a").value.trim(),
+    person_b: $("#p-b").value.trim(),
+    context_a: $("#p-a-ctx").value.trim(),
+    context_b: $("#p-b-ctx").value.trim(),
+    depth: parseInt($("#p-depth").value, 10),
+  };
+  if (!body.person_a || !body.person_b) { stopLoading('<span class="err">Enter both people.</span>'); return; }
+  startLoading(`Building graphs for ${body.person_a} ⇄ ${body.person_b}`);
+  try {
+    const res = await fetch("/connect", { method: "POST", headers: API_HEADERS, body: JSON.stringify(body) });
+    const data = await res.json();
+    stopLoading("");
+    renderPaths(data);
+  } catch (err) {
+    stopLoading(`<span class="err">Request failed: ${err}</span>`);
+  }
+};
+
+function renderPaths(data) {
+  if (!data.connected) {
+    resultsEl.innerHTML = `<div class="route"><h3>No path found</h3><div class="meta">${data.reason || "graphs did not overlap"}</div></div>`;
+    return;
+  }
+  const routes = data.paths || [data];
+  resultsEl.innerHTML = "";
+  const banner = document.createElement("div");
+  banner.className = "banner";
+  banner.innerHTML = `<strong>⚠ Unverified paths (beta).</strong> These are evidence-grounded `
+    + `hypotheses from public web data — not confirmed relationships. Any hop can be wrong `
+    + `(name collisions, weak links, scraped noise). Treat each as a lead to verify, not a fact.`;
+  resultsEl.appendChild(banner);
+  routes.forEach((r, i) => {
+    const div = document.createElement("div");
+    div.className = "route";
+    let html = `<h3>Route ${i + 1}</h3><div class="meta">${r.hops} hops · score ${r.score}</div>`;
+    r.path.forEach((n, idx) => {
+      html += `<div class="hop"><div>`;
+      if (idx > 0) {
+        const conf = (n.confidence != null) ? ` · <span class="conf">${(n.confidence).toFixed(2)}</span>` : "";
+        const safe = safeUrl(n.source_url);
+        const src = safe ? ` · <a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">source</a>` : "";
+        html += `<div class="rel">↳ ${n.relationship_from_previous || "?"}${conf}${src}</div>`;
+        if (n.evidence) html += `<div class="rel ev">“${escapeHtml(n.evidence).slice(0, 160)}”</div>`;
+      }
+      html += `<div class="node">${escapeHtml(n.label)}</div></div></div>`;
+    });
+    if (i === 0 && data.warnings && data.warnings.length)
+      html += `<div class="warn" style="margin-top:10px">⚠ ${data.warnings.join(" · ")}</div>`;
+    div.innerHTML = html;
+    resultsEl.appendChild(div);
+  });
+}
+
+// ---- MODE 2: discover -----------------------------------------------------
+$("#form-discover").onsubmit = async (e) => {
+  e.preventDefault();
+  const name = $("#d-node").value.trim();
+  const depth = parseInt($("#d-depth").value, 10);
+  if (!name) { stopLoading('<span class="err">Enter a start person.</span>'); return; }
+  startLoading(`Discovering connections for ${name}`);
+  try {
+    const res = await fetch("/targets/search", {
+      method: "POST", headers: API_HEADERS,
+      body: JSON.stringify({ target_name: name, max_depth: depth }),
+    });
+    const data = await res.json();
+    stopLoading("");
+    renderDiscover(data, name);
+  } catch (err) {
+    stopLoading(`<span class="err">Request failed: ${err}</span>`);
+  }
+};
+
+function renderDiscover(data, seedName) {
+  const nodes = data.nodes || [], edges = data.edges || [];
+  const byId = {}; nodes.forEach(n => byId[n.id] = n);
+
+  // degree + strength per node (mirrors backend build_summary ranking)
+  const deg = {}, str = {}, relsFor = {}, orgsFor = {};
+  edges.forEach(e => {
+    [e.from, e.to].forEach(id => { deg[id] = (deg[id]||0)+1; str[id] = (str[id]||0)+e.confidence; });
+    (relsFor[e.from] ||= []).push(e.type);
+    (relsFor[e.to] ||= []).push(e.type);
+    const other = byId[e.to];
+    if (other && other.kind === "organization") (orgsFor[e.from] ||= []).push(other);
+  });
+
+  const seedNorm = seedName.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  let people = nodes.filter(n => n.kind === "person"
+    && n.label.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() !== seedNorm);
+  people.sort((a, b) => (str[b.id]||0) - (str[a.id]||0) || (deg[b.id]||0) - (deg[a.id]||0));
+
+  // heuristic category tagging (placeholder)
+  const EDU_RE = /universit|college|academ|education|school|institut/i;
+  const VC_RE = /\b(capital|ventures?|partners|fund|equity)\b/i;
+  const tagsFor = (p) => {
+    const rels = relsFor[p.id] || [], orgs = orgsFor[p.id] || [];
+    const labels = orgs.map(o => o.label);
+    const tags = new Set();
+    if (rels.includes("investor") || labels.some(o => VC_RE.test(o))) tags.add("vc");
+    if (rels.includes("appointee") || orgs.some(o => o.type === "government")) tags.add("politician");
+    if (rels.includes("faculty") || rels.includes("student")
+        || orgs.some(o => o.type === "school") || labels.some(o => EDU_RE.test(o))) tags.add("edu");
+    if ((deg[p.id]||0) >= 4) tags.add("famous");
+    return tags;
+  };
+
+  const wanted = selectedCats();
+  const catMatch = (tags) => {
+    if (wanted.includes("any") || wanted.includes("influential") || wanted.includes("famous")) return true;
+    return wanted.some(c => {
+      if (c === "vc") return tags.has("vc");
+      if (c === "politician") return tags.has("politician");
+      if (c === "edu-company") return tags.has("edu");
+      if (c === "edu-pol") return tags.has("edu") && tags.has("politician");
+      return false;
+    });
+  };
+
+  const cards = [];
+  for (const p of people) {
+    const tags = tagsFor(p);
+    if (!catMatch(tags)) continue;
+    cards.push({ p, tags });
+    if (cards.length >= 40) break;
+  }
+
+  const st = data.stats || {};
+  let head = `<div class="note">Found ${people.length} people · ${nodes.length} nodes · ${edges.length} edges`
+    + (st.nodes_processed_per_depth ? ` · hops: ${st.nodes_processed_per_depth.join(", ")}` : "") + `</div>`;
+  resultsEl.innerHTML = head;
+
+  if (!cards.length) {
+    resultsEl.innerHTML += `<div class="card"><div class="name">No matches</div><div class="sub">No discovered people fit the selected categories. Try "Anyone" or a higher depth.</div></div>`;
+    return;
+  }
+  const TAGLABEL = { vc: ["vc","VC"], politician: ["pol","politics"], edu: ["edu","education"], famous: ["fame","notable"] };
+  for (const { p, tags } of cards) {
+    const rels = [...new Set(relsFor[p.id] || [])].filter(t => t !== "unknown").slice(0, 4).join(", ") || "—";
+    const orgs = [...new Set((orgsFor[p.id] || []).map(o => o.label))].slice(0, 3).join(", ");
+    const tagHtml = [...tags].map(t => `<span class="tag ${TAGLABEL[t][0]}">${TAGLABEL[t][1]}</span>`).join("");
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="name">${escapeHtml(p.label)}</div>`
+      + `<div class="sub">degree ${deg[p.id]||0} · strength ${(str[p.id]||0).toFixed(1)} · ${rels}`
+      + (orgs ? ` · ${escapeHtml(orgs)}` : "") + `</div>`
+      + (tags.size ? `<div class="tags">${tagHtml}</div>` : "");
+    resultsEl.appendChild(card);
+  }
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+// Only allow http(s) URLs into hrefs — source_url comes from scraped pages, so a
+// javascript:/data: URL would be DOM-XSS when clicked. Returns "" if unsafe.
+function safeUrl(u) {
+  if (!u) return "";
+  try {
+    const parsed = new URL(u, window.location.origin);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") ? parsed.href : "";
+  } catch { return ""; }
+}
+</script>
+</body>
+</html>
