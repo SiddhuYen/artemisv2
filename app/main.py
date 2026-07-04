@@ -70,6 +70,13 @@ def _root() -> RedirectResponse:
     return RedirectResponse(url="/ui/")
 
 
+@app.get("/healthz", include_in_schema=False)
+def healthz() -> dict:
+    # cheap liveness probe for load balancers / Render health checks —
+    # no dependency I/O (does NOT probe Ollama), so it can't hang or flap.
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health() -> dict:
     return {
