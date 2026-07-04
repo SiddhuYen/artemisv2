@@ -50,7 +50,7 @@ HTTP_RETRY_STATUS = (429, 500, 502, 503, 504)
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_QPS = float(os.environ.get("ARTEMIS_BRAVE_QPS", "1.0"))      # free tier ~1 q/s
-BRAVE_MONTHLY_QUOTA = int(os.environ.get("ARTEMIS_BRAVE_QUOTA", "2000"))
+BRAVE_MONTHLY_QUOTA = int(os.environ.get("ARTEMIS_BRAVE_QUOTA", "1000"))
 
 # Provider routing (configurable). Tried in order; stop at first useful result.
 ROUTE_PERSON = os.environ.get(
