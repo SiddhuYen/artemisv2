@@ -47,6 +47,11 @@ class Person(Base):
     # people with the same name have distinct QIDs, so they never merge into a
     # single false-bridge node (the core homonym-disambiguation signal).
     wikidata_qid = Column(String, index=True, nullable=True)
+    # 1 once this person's OWN searches have been run (they've been "expanded").
+    # Lets a later/deeper run REUSE their persisted neighbors instead of
+    # re-searching, and continue outward from the frontier (incremental deepening
+    # across runs and across teammates in the shared map).
+    processed = Column(Integer, default=0, nullable=False)
     aliases = Column(JSON, default=list)
     meta = Column("metadata", JSON, default=dict)
     created_at = Column(String, default=lambda: _now().isoformat())

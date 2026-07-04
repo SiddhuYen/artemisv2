@@ -131,6 +131,56 @@ def _record(disc: Dict[str, _Candidate], edge: ExtractedEdge) -> None:
         cand.trusted = True
 
 
+def _reuse_existing_neighbors(db: Session, subject: Person,
+                              disc: Dict[str, _Candidate], progress=None) -> None:
+    """Populate `disc` from a node's ALREADY-persisted person edges (from any
+    prior run, including other teammates') so the next frontier can be ranked and
+    expanded WITHOUT re-running the node's searches. Mirrors _record's tallies."""
+    rows = list(db.execute(
+        select(RelationshipEdge).where(
+            RelationshipEdge.person_a_id == subject.id,
+            RelationshipEdge.person_b_id.isnot(None),
+        )
+    ).scalars())
+    if not rows:
+        return
+    b_ids = {e.person_b_id for e in rows}
+    people = {p.id: p for p in db.execute(
+        select(Person).where(Person.id.in_(b_ids))).scalars()}
+    src_ids = {e.source_id for e in rows if e.source_id}
+    src_url = {s.id: s.url for s in db.execute(
+        select(Source).where(Source.id.in_(src_ids))).scalars()} if src_ids else {}
+
+    for e in rows:
+        b = people.get(e.person_b_id)
+        if b is None:
+            continue
+        cand = disc.get(b.norm_name)
+        if cand is None:
+            cand = _Candidate(name=b.canonical_name)
+            disc[b.norm_name] = cand
+        url = src_url.get(e.source_id)
+        if url:
+            cand.sources.add(url)
+        conf = e.confidence_raw or 0.0
+        cand.confidences.append(conf)
+        cand.max_conf = max(cand.max_conf, conf)
+        if tier(conf) == "strong":
+            cand.strong_edges += 1
+        sig = e.signals or {}
+        if sig.get("explicit_keyword_match"):
+            cand.explicit_edges += 1
+        if e.relationship_type == "family_social":
+            cand.family_edges += 1
+        elif e.relationship_type != "unknown":
+            cand.professional_edges += 1
+        if sig.get("trusted"):
+            cand.trusted = True
+    if progress:
+        progress(f"  ♻ reuse {subject.canonical_name}: {len(disc)} known neighbors "
+                 f"(skipped re-searching)")
+
+
 def _dedup_and_cap(edges: List[ExtractedEdge]) -> List[ExtractedEdge]:
     """Dedup by (counterpart, type, source_url); cap/sample per node."""
     seen = {}
@@ -292,6 +342,9 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 db, subject, edge, hop, source_by_url.get(edge.source_url), counterpart
             )
 
+    # mark expanded: a later/deeper run will REUSE these neighbors instead of
+    # re-searching this node (see _reuse_existing_neighbors).
+    subject.processed = 1
     db.commit()
 
 
@@ -371,11 +424,19 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             if norm in visited:
                 continue
             visited.add(norm)
-            # only the seed at hop 0 may be an org; discovered nodes are people.
-            # the disambiguation context applies only to the seed (hop 0).
-            _process_person(db, name, hop, disc, progress=progress,
-                            is_person=(seed_is_person or hop > 0),
-                            context=(seed_context if hop == 0 else ""))
+            # If this node was already expanded (this run, a prior run, or by
+            # another teammate in the shared map), REUSE its persisted neighbors
+            # to rank the next frontier instead of re-searching — so we keep the
+            # shallow work and just continue deeper (incremental deepening).
+            existing = builder.get_or_create_person(db, name, allow_create=False)
+            if existing is not None and existing.processed:
+                _reuse_existing_neighbors(db, existing, disc, progress)
+            else:
+                # only the seed at hop 0 may be an org; discovered nodes are people.
+                # the disambiguation context applies only to the seed (hop 0).
+                _process_person(db, name, hop, disc, progress=progress,
+                                is_person=(seed_is_person or hop > 0),
+                                context=(seed_context if hop == 0 else ""))
             processed += 1
         per_depth.append(processed)
 

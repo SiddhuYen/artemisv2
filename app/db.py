@@ -53,7 +53,10 @@ def init_db(bind=None) -> None:
 def _migrate(bind) -> None:
     """Tiny additive migrations for existing SQLite DBs (create_all won't ALTER
     an existing table). Each guarded so it's a no-op when already applied."""
-    add_columns = [("people", "wikidata_qid", "TEXT")]
+    add_columns = [
+        ("people", "wikidata_qid", "TEXT"),
+        ("people", "processed", "INTEGER DEFAULT 0"),
+    ]
     with bind.begin() as conn:
         for table, col, coltype in add_columns:
             try:
