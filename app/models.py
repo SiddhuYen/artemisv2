@@ -42,6 +42,11 @@ class Person(Base):
     id = Column(String, primary_key=True, default=_uuid)
     canonical_name = Column(String, nullable=False)
     norm_name = Column(String, index=True, unique=True, nullable=False)
+    # Wikidata QID (e.g. "Q265852") when the person resolves to a real Wikidata
+    # human entity — an AUTHORITATIVE identity anchor. Two different notable
+    # people with the same name have distinct QIDs, so they never merge into a
+    # single false-bridge node (the core homonym-disambiguation signal).
+    wikidata_qid = Column(String, index=True, nullable=True)
     aliases = Column(JSON, default=list)
     meta = Column("metadata", JSON, default=dict)
     created_at = Column(String, default=lambda: _now().isoformat())

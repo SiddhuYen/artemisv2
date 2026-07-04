@@ -125,33 +125,22 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
     context_a / context_b disambiguate a non-notable person (e.g. "Indiana
     Pacers owner") so the search targets the right entity, not a famous namesake.
     """
-    builder.reset_public_graph(db)
-
-    # Point-to-point bridging wants STRONGEST expansion (toward shared, often
-    # well-documented connections), not reachability (which walks both sides AWAY
-    # from common ground). Force it for this build.
-    #
-    # SEPARATE per-side node budgets: side A is capped at `per_side`; then the cap
-    # is raised to 2x so side B can add its own `per_side` on top — neither side
-    # can starve the other. (node_count is global, so we raise the ceiling rather
-    # than reset it between sides.)
-    per_side = config.CONNECT_NODE_CAP_PER_SIDE
+    # ADDITIVE: build both people INTO the shared global map (never reset), then
+    # find a path over the WHOLE accumulated graph — a route may run through
+    # people that OTHER runs discovered. Point-to-point bridging wants STRONGEST
+    # expansion (toward shared, well-documented connections), not reachability;
+    # force it for this build and restore afterward (serialized by the API lock).
     prev_reach = config.EXPAND_PREFER_REACHABLE
-    prev_cap = config.MAX_TOTAL_NODES
     config.EXPAND_PREFER_REACHABLE = False
     try:
-        config.MAX_TOTAL_NODES = per_side
         if progress:
-            progress(f"\n[1/2] building graph for {name_a} (depth {depth}, cap {per_side})…")
+            progress(f"\n[1/2] building graph for {name_a} (depth {depth})…")
         expand_graph(db, name_a, depth, progress=progress, seed_context=context_a)
-
-        config.MAX_TOTAL_NODES = 2 * per_side
         if progress:
-            progress(f"\n[2/2] building graph for {name_b} (depth {depth}, +{per_side})…")
+            progress(f"\n[2/2] building graph for {name_b} (depth {depth})…")
         expand_graph(db, name_b, depth, progress=progress, seed_context=context_b)
     finally:
         config.EXPAND_PREFER_REACHABLE = prev_reach
-        config.MAX_TOTAL_NODES = prev_cap
 
     a = db.execute(
         select(Person).where(Person.norm_name == person_norm_key(name_a))

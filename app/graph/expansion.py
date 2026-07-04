@@ -165,6 +165,12 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # person-links added directly as clean contacts.
     enrichment = ORCH.enrich_person(subject_name) if effective_is_person else None
     if enrichment:
+        # anchor the subject's identity to its Wikidata QID (homonym disambiguation):
+        # two different notable same-name people have distinct QIDs and stay separate.
+        if enrichment.get("qid"):
+            resolved = builder.get_or_create_person(db, subject_name, qid=enrichment["qid"])
+            if resolved is not None:
+                subject = resolved
         wiki_url = "https://en.wikipedia.org/wiki/" + enrichment["title"].replace(" ", "_")
         # (label, text, silo) — direct facts/prose use STRUCTURED; shared-affiliation
         # colleagues use the lower-confidence COLLEAGUE silo.

@@ -45,7 +45,25 @@ def init_db(bind=None) -> None:
     """Create all tables (idempotent) on the given bind (default engine if None)."""
     from . import models  # noqa: F401  (register mappers)
 
-    Base.metadata.create_all(bind=bind or engine)
+    target = bind or engine
+    Base.metadata.create_all(bind=target)
+    _migrate(target)
+
+
+def _migrate(bind) -> None:
+    """Tiny additive migrations for existing SQLite DBs (create_all won't ALTER
+    an existing table). Each guarded so it's a no-op when already applied."""
+    add_columns = [("people", "wikidata_qid", "TEXT")]
+    with bind.begin() as conn:
+        for table, col, coltype in add_columns:
+            try:
+                cols = {r[1] for r in conn.exec_driver_sql(
+                    f"PRAGMA table_info({table})").fetchall()}
+                if col not in cols:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+            except Exception:
+                pass  # non-SQLite or already present — safe to ignore
 
 
 def get_db():

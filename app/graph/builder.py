@@ -57,10 +57,44 @@ def at_node_cap(db: Session) -> bool:
 
 
 # --- entity upserts --------------------------------------------------------
-def get_or_create_person(db: Session, name: str, allow_create: bool = True) -> Optional[Person]:
+def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
+                         allow_create: bool = True) -> Optional[Person]:
+    """Resolve a person node, disambiguating homonyms by Wikidata QID.
+
+    Identity rules:
+      - qid given: same-QID node wins (authoritative merge across name variants);
+        a name-match with NO qid ADOPTS this qid; a name-match with a DIFFERENT
+        qid is a distinct person (a homonym) -> a separate, QID-suffixed node.
+      - no qid: fall back to the normalized-name key (today's behavior).
+    """
     norm = person_norm_key(name)
     if not norm:
         return None
+
+    if qid:
+        # 1) authoritative: an existing node already carrying this QID
+        by_qid = db.execute(
+            select(Person).where(Person.wikidata_qid == qid)
+        ).scalar_one_or_none()
+        if by_qid:
+            _merge_aliases(by_qid, name)
+            return by_qid
+        # 2) a name-match with no QID yet -> it's this same person; adopt the QID
+        by_name = db.execute(
+            select(Person).where(Person.norm_name == norm)
+        ).scalar_one_or_none()
+        if by_name is not None and not by_name.wikidata_qid:
+            by_name.wikidata_qid = qid
+            _merge_aliases(by_name, name)
+            return by_name
+        # 3) name-match exists but with a DIFFERENT QID -> genuine homonym.
+        #    Give the newcomer a QID-disambiguated key so they don't collide.
+        if not allow_create:
+            return None
+        node_norm = norm if by_name is None else f"{norm}#{qid}"
+        return _new_person(db, name, node_norm, qid)
+
+    # no QID: plain name-key dedup
     existing = db.execute(
         select(Person).where(Person.norm_name == norm)
     ).scalar_one_or_none()
@@ -69,9 +103,14 @@ def get_or_create_person(db: Session, name: str, allow_create: bool = True) -> O
         return existing
     if not allow_create:
         return None
+    return _new_person(db, name, norm, None)
+
+
+def _new_person(db: Session, name: str, norm: str, qid: Optional[str]) -> Person:
     person = Person(
         canonical_name=name.strip(),
         norm_name=norm,
+        wikidata_qid=qid,
         aliases=sorted(v for v in name_variants(name) if v != name.strip()),
         meta={},
     )

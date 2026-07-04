@@ -11,15 +11,14 @@ from __future__ import annotations
 
 import os
 import threading
-from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import get_db, graph_session, init_db
+from .db import get_db, init_db
 from .extraction import ollama_available
 from .graph.expansion import expand_graph
 from .models import (
@@ -35,7 +34,12 @@ from .network.ingest import ingest_csv
 from .network.matching import run_matching
 from .network.paths import generate_paths_for_target
 from .schemas import GraphResponse, GraphStats, TargetSearchRequest
-from .serializers import build_summary, serialize_edges, serialize_nodes
+from .serializers import (
+    build_summary,
+    serialize_edges,
+    serialize_neighborhood,
+    serialize_nodes,
+)
 
 app = FastAPI(
     title="Artemis V2 — Public Relationship Graph Builder",
@@ -54,22 +58,13 @@ def _startup() -> None:
 # Serialize graph builds so the config-global mutation inside connect_people()
 # and concurrent writers can't race. Builds are minutes-long and Brave-rate-
 # limited anyway, so serialization costs little and guarantees correctness.
+# (Reads/pathfinding still run concurrently — WAL lets them proceed during a build.)
 _BUILD_LOCK = threading.Lock()
 
 
-def graph_db(request: Request):
-    """Per-session graph session — isolates each browser (via the X-Graph-Id
-    header) into its own SQLite file so concurrent users never collide. Falls
-    back to a fresh random graph id when the header is absent."""
-    gid = request.headers.get("x-graph-id") or uuid4().hex
-    request.state.graph_id = gid
-    db = graph_session(gid)
-    try:
-        yield db
-    finally:
-        db.close()
-
-
+# ONE shared global graph for the whole team: every run accumulates into it, and
+# pathfinding runs over the union so a route can pass through people other runs
+# discovered. get_db yields a session on the single default engine.
 @app.get("/", include_in_schema=False)
 def _root() -> RedirectResponse:
     return RedirectResponse(url="/ui/")
@@ -84,23 +79,22 @@ def health() -> dict:
 
 
 @app.post("/targets/search", response_model=GraphResponse)
-def targets_search(req: TargetSearchRequest, request: Request,
-                   db: Session = Depends(graph_db)) -> GraphResponse:
-    from .graph.builder import reset_public_graph
+def targets_search(req: TargetSearchRequest, db: Session = Depends(get_db)) -> GraphResponse:
+    # ADDITIVE: accumulate the searched person into the shared global map (no
+    # reset), then return only that person's neighborhood (not the whole map).
     with _BUILD_LOCK:
-        # each search starts clean in the caller's OWN isolated graph
-        reset_public_graph(db)
         stats = expand_graph(db, req.target_name, req.max_depth)
+    nodes, edges = serialize_neighborhood(db, req.target_name, req.max_depth)
     return GraphResponse(
-        graph_id=getattr(request.state, "graph_id", None),
-        nodes=serialize_nodes(db),
-        edges=serialize_edges(db),
+        graph_id="global",
+        nodes=nodes,
+        edges=edges,
         stats=GraphStats(**stats),
     )
 
 
 @app.get("/graph", response_model=GraphResponse)
-def get_graph(request: Request, db: Session = Depends(graph_db)) -> GraphResponse:
+def get_graph(db: Session = Depends(get_db)) -> GraphResponse:
     stats = GraphStats(
         people_found=db.query(Person).count(),
         organizations_found=db.query(Organization).count(),
@@ -108,7 +102,7 @@ def get_graph(request: Request, db: Session = Depends(graph_db)) -> GraphRespons
         sources_fetched=db.query(Source).count(),
     )
     return GraphResponse(
-        graph_id=getattr(request.state, "graph_id", None),
+        graph_id="global",
         nodes=serialize_nodes(db),
         edges=serialize_edges(db),
         stats=stats,
@@ -116,7 +110,7 @@ def get_graph(request: Request, db: Session = Depends(graph_db)) -> GraphRespons
 
 
 @app.get("/people")
-def list_people(db: Session = Depends(graph_db)) -> list:
+def list_people(db: Session = Depends(get_db)) -> list:
     out = []
     for p in db.execute(select(Person)).scalars():
         out.append(
@@ -132,18 +126,18 @@ def list_people(db: Session = Depends(graph_db)) -> list:
 
 
 @app.get("/edges")
-def list_edges(db: Session = Depends(graph_db)) -> list:
+def list_edges(db: Session = Depends(get_db)) -> list:
     return [e.model_dump(by_alias=True) for e in serialize_edges(db)]
 
 
 @app.get("/summary")
-def graph_summary(db: Session = Depends(graph_db)) -> dict:
+def graph_summary(db: Session = Depends(get_db)) -> dict:
     """Top people/orgs, strongest edges, and confidence distribution."""
     return build_summary(serialize_nodes(db), serialize_edges(db))
 
 
 @app.post("/connect")
-def connect(req: dict, request: Request, db: Session = Depends(graph_db)) -> dict:
+def connect(req: dict, db: Session = Depends(get_db)) -> dict:
     """Find a path between two people (builds both graphs, meets in the middle).
     Body: {"person_a": "...", "person_b": "...", "depth": 2}"""
     from .graph.connect import connect_people
@@ -159,7 +153,7 @@ def connect(req: dict, request: Request, db: Session = Depends(graph_db)) -> dic
         result = connect_people(db, a, b, depth,
                                 context_a=(req.get("context_a") or "").strip(),
                                 context_b=(req.get("context_b") or "").strip())
-    result["graph_id"] = getattr(request.state, "graph_id", None)
+    result["graph_id"] = "global"
     return result
 
 

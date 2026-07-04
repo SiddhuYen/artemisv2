@@ -104,7 +104,9 @@ EXPAND_PREFER_REACHABLE = os.environ.get(
 DOWNWEIGHT_FAMILY = os.environ.get("ARTEMIS_DOWNWEIGHT_FAMILY", "1") not in ("0", "false", "")
 FAMILY_PENALTY = float(os.environ.get("ARTEMIS_FAMILY_PENALTY", "1.5"))
 PROFESSIONAL_BONUS = float(os.environ.get("ARTEMIS_PROFESSIONAL_BONUS", "1.0"))
-MAX_TOTAL_NODES = int(os.environ.get("ARTEMIS_MAX_TOTAL_NODES", "800"))
+# Shared global map accumulates people across ALL runs, so the cap is high.
+# (A single isolated build rarely approaches this; it bounds unbounded growth.)
+MAX_TOTAL_NODES = int(os.environ.get("ARTEMIS_MAX_TOTAL_NODES", "50000"))
 # connect() builds TWO graphs into one DB. Each side gets its OWN people budget
 # so the first (richer) person can't starve the second — the second person's cap
 # is raised to (2 x per-side) after the first is built. Total ~= 2 x per-side.

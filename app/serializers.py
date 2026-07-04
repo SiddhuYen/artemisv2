@@ -10,6 +10,46 @@ from sqlalchemy.orm import Session
 
 from .models import Organization, Person, RelationshipEdge, Source
 from .schemas import GraphEdge, GraphNode
+from .utils.names import person_norm_key
+
+
+def serialize_neighborhood(db: Session, seed_name: str, hops: int):
+    """Return (nodes, edges) within `hops` of the searched person only.
+
+    The shared global map can hold tens of thousands of nodes; a Discover result
+    should show just the searched person's subgraph, so we BFS out from the seed
+    over the (undirected) edge graph and keep only what's reachable in `hops`.
+    Returns ([], []) if the seed isn't in the graph.
+    """
+    seed = db.execute(
+        select(Person).where(Person.norm_name == person_norm_key(seed_name))
+    ).scalar_one_or_none()
+    all_nodes = serialize_nodes(db)
+    all_edges = serialize_edges(db)
+    if seed is None:
+        return [], []
+
+    adj: Dict[str, set] = defaultdict(set)
+    for e in all_edges:
+        adj[e.from_].add(e.to)
+        adj[e.to].add(e.from_)
+
+    seen = {seed.id}
+    frontier = [seed.id]
+    for _ in range(max(1, hops)):
+        nxt = []
+        for nid in frontier:
+            for m in adj[nid]:
+                if m not in seen:
+                    seen.add(m)
+                    nxt.append(m)
+        frontier = nxt
+        if not frontier:
+            break
+
+    nodes = [n for n in all_nodes if n.id in seen]
+    edges = [e for e in all_edges if e.from_ in seen and e.to in seen]
+    return nodes, edges
 
 
 def serialize_nodes(db: Session) -> List[GraphNode]:
