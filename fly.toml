@@ -1,0 +1,41 @@
+# Fly.io config for Artemis V2.
+# A persistent volume (mounted at /data) holds all SQLite state — the search
+# cache, per-session graphs, and the persistent Brave quota counter — so it
+# survives restarts and redeploys. Secrets are set via `fly secrets`, NOT here.
+#
+# First-time setup (see DEPLOY.md for the full walkthrough):
+#   fly launch --no-deploy --name artemisv2
+#   fly volumes create artemis_data --size 3 --region sjc
+#   fly secrets set BRAVE_API_KEY=xxxx OPENCORPORATES_API_TOKEN=xxxx
+#   fly deploy
+
+app = "artemisv2"
+primary_region = "sjc"   # change to a region near you (e.g. iad, lhr, ord)
+
+[build]
+
+[env]
+  PORT = "8080"
+  ARTEMIS_DB_URL = "sqlite:////data/artemis.db"
+  ARTEMIS_CACHE_DB = "/data/artemis_cache.db"
+  ARTEMIS_GRAPH_DIR = "/data/graphs"
+  ARTEMIS_CACHED_GRAPHS_DIR = "/data/cached_graphs"
+
+# persistent disk for all SQLite state
+[mounts]
+  source = "artemis_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # keep one machine warm: builds are long-running, so we don't want the box
+  # auto-stopping mid-request. auto_start brings it back if it ever stops.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+# spaCy + concurrent builds need real RAM; 1GB is a safe floor.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

@@ -1,0 +1,16 @@
+# keep the build context small and NEVER ship secrets/PII/local DBs into the image
+.git
+.venv
+**/__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.csv
+.env
+.env.*
+cached_graphs/
+graphs/
+.claude/
+.DS_Store
