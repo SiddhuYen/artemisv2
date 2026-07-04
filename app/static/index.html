@@ -98,6 +98,11 @@
   .banner { background: #2a2411; border: 1px solid #5a4a24; color: var(--warn);
     border-radius: var(--radius); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
   .banner strong { color: #ffd27a; }
+  .statusbar { margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius);
+    font-size: 13px; line-height: 1.4; }
+  .statusbar.warn { background: #2a2411; border: 1px solid #5a4a24; color: var(--warn); }
+  .statusbar.err  { background: #2c1616; border: 1px solid #5c2a2a; color: var(--danger); }
+  .statusbar strong { color: #fff; }
   .err { color: var(--danger); }
   .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
   .conf { font-variant-numeric: tabular-nums; }
@@ -109,6 +114,8 @@
     <h1>Artemis</h1>
     <p>Public relationship graph — find a path between two people, or discover notable connections from one.</p>
   </header>
+
+  <div id="status-banner" class="statusbar warn hidden"></div>
 
   <div class="tabs">
     <button id="tab-path" class="active" data-mode="path">Find a Path</button>
@@ -193,6 +200,34 @@ const GRAPH_ID = (() => {
 })();
 const API_HEADERS = { "Content-Type": "application/json", "X-Graph-Id": GRAPH_ID };
 
+// Surface Brave search-quota state so users know when results are degraded.
+async function refreshStatus() {
+  const el = $("#status-banner");
+  try {
+    const d = await (await fetch("/status")).json();
+    const b = d.brave || {};
+    if (b.ok) {
+      // healthy — only warn when the monthly quota is running low
+      const low = b.quota && b.remaining <= Math.max(50, b.quota * 0.05);
+      if (low) {
+        el.className = "statusbar warn";
+        el.innerHTML = `⚠ <strong>Brave search quota low</strong> — ${b.remaining} of ${b.quota} calls left this month. Results stay full quality until it runs out.`;
+      } else {
+        el.className = "statusbar warn hidden";
+      }
+      return;
+    }
+    el.className = "statusbar err";
+    el.innerHTML = ({
+      exhausted: `⚠ <strong>Brave search quota exhausted</strong> (${b.used}/${b.quota} this month). New searches fall back to a slower, lower-quality provider until the quota resets or is upgraded.`,
+      invalid_key: `⚠ <strong>Brave API key is invalid</strong> — search is running on a degraded fallback provider. Results will be sparse.`,
+      not_configured: `⚠ <strong>Brave search isn't configured</strong> — results use a lower-quality fallback provider.`,
+    })[b.state] || `⚠ <strong>Brave search unavailable</strong> — results may be degraded.`;
+  } catch (e) { el.className = "statusbar warn hidden"; }
+}
+refreshStatus();
+setInterval(refreshStatus, 60000);  // keep it current for long sessions
+
 // ---- mode switching -------------------------------------------------------
 function setMode(mode) {
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
@@ -236,6 +271,7 @@ function stopLoading(msg) {
   clearInterval(timer); timer = null;
   statusEl.innerHTML = msg || "";
   document.querySelectorAll(".go").forEach(b => b.disabled = false);
+  refreshStatus();  // a search may have just exhausted Brave — reflect it now
 }
 
 // ---- MODE 1: path ---------------------------------------------------------

@@ -85,6 +85,17 @@ def health() -> dict:
     }
 
 
+@app.get("/status")
+def status() -> dict:
+    """Live service status for the UI — surfaces Brave search quota so the site
+    can warn when results are degraded (Brave exhausted -> fallback provider)."""
+    from .providers.brave import brave_status
+    return {
+        "brave": brave_status(),
+        "extractor": "ollama" if ollama_available() else "heuristic",
+    }
+
+
 @app.post("/targets/search", response_model=GraphResponse)
 def targets_search(req: TargetSearchRequest, db: Session = Depends(get_db)) -> GraphResponse:
     # ADDITIVE: accumulate the searched person into the shared global map (no
