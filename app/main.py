@@ -87,11 +87,20 @@ def health() -> dict:
 
 @app.get("/status")
 def status() -> dict:
-    """Live service status for the UI — surfaces Brave search quota so the site
-    can warn when results are degraded (Brave exhausted -> fallback provider)."""
+    """Live service status for the UI. Search degrades only when BOTH paid
+    providers are out: Serper (primary) -> Brave (backup) -> DuckDuckGo (free)."""
     from .providers.brave import brave_status
+    from .providers.serper import serper_status
+    serper, brave = serper_status(), brave_status()
+    using = "serper" if serper["ok"] else ("brave" if brave["ok"] else "duckduckgo")
     return {
-        "brave": brave_status(),
+        "serper": serper,
+        "brave": brave,
+        "search": {
+            "ok": serper["ok"] or brave["ok"],
+            "degraded": not (serper["ok"] or brave["ok"]),
+            "using": using,
+        },
         "extractor": "ollama" if ollama_available() else "heuristic",
     }
 

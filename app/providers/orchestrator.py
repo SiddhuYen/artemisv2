@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 from .. import config
 from ..utils.names import normalize, person_norm_key
 from .brave import BraveProvider
+from .serper import SerperProvider
 from .duckduckgo import DuckDuckGoProvider
 from .edgar import EdgarProvider
 from .openalex import OpenAlexProvider
@@ -48,6 +49,7 @@ def _name_matches(name: str, title: str) -> bool:
 
 class SearchOrchestrator:
     def __init__(self) -> None:
+        self.serper = SerperProvider()
         self.brave = BraveProvider()
         self.wikipedia = WikipediaProvider()
         self.wikidata = WikidataProvider()
@@ -57,6 +59,7 @@ class SearchOrchestrator:
         self.propublica = ProPublicaProvider()
         self.duckduckgo = DuckDuckGoProvider()
         self._providers = {
+            "serper": self.serper,
             "brave": self.brave,
             "wikipedia": self.wikipedia,
             "duckduckgo": self.duckduckgo,

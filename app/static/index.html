@@ -205,24 +205,27 @@ async function refreshStatus() {
   const el = $("#status-banner");
   try {
     const d = await (await fetch("/status")).json();
-    const b = d.brave || {};
-    if (b.ok) {
-      // healthy — only warn when the monthly quota is running low
-      const low = b.quota && b.remaining <= Math.max(50, b.quota * 0.05);
-      if (low) {
-        el.className = "statusbar warn";
-        el.innerHTML = `⚠ <strong>Brave search quota low</strong> — ${b.remaining} of ${b.quota} calls left this month. Results stay full quality until it runs out.`;
-      } else {
-        el.className = "statusbar warn hidden";
-      }
+    const s = d.serper || {}, b = d.brave || {}, search = d.search || {};
+    // both paid providers out -> genuinely degraded (slow free fallback)
+    if (search.degraded) {
+      el.className = "statusbar err";
+      el.innerHTML = `⚠ <strong>Search degraded</strong> — primary (Serper) and backup (Brave) are both unavailable, so results use a slow free fallback and will be sparse.`;
       return;
     }
-    el.className = "statusbar err";
-    el.innerHTML = ({
-      exhausted: `⚠ <strong>Brave search quota exhausted</strong> (${b.used}/${b.quota} this month). New searches fall back to a slower, lower-quality provider until the quota resets or is upgraded.`,
-      invalid_key: `⚠ <strong>Brave API key is invalid</strong> — search is running on a degraded fallback provider. Results will be sparse.`,
-      not_configured: `⚠ <strong>Brave search isn't configured</strong> — results use a lower-quality fallback provider.`,
-    })[b.state] || `⚠ <strong>Brave search unavailable</strong> — results may be degraded.`;
+    // primary out but running on the Brave backup
+    if (search.using === "brave") {
+      const why = s.state === "not_configured" ? "not configured" : `quota ${s.state}`;
+      el.className = "statusbar warn";
+      el.innerHTML = `⚠ <strong>Primary search (Serper) ${why}</strong> — running on the Brave backup. Quality is fine, but you're now spending Brave quota (${b.remaining}/${b.quota} left).`;
+      return;
+    }
+    // Serper healthy — only warn when its monthly quota is low
+    if (s.ok && s.quota && s.remaining <= Math.max(50, s.quota * 0.05)) {
+      el.className = "statusbar warn";
+      el.innerHTML = `⚠ <strong>Serper quota low</strong> — ${s.remaining} of ${s.quota} searches left this month. The Brave backup takes over when it runs out.`;
+      return;
+    }
+    el.className = "statusbar warn hidden";
   } catch (e) { el.className = "statusbar warn hidden"; }
 }
 refreshStatus();

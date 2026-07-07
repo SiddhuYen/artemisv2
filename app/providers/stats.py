@@ -49,6 +49,7 @@ class ProviderStats:
     def snapshot(self) -> dict:
         with self._lock:
             return {
+                "serper_searches": self.calls.get("serper", 0),
                 "brave_searches": self.calls.get("brave", 0),
                 "wikipedia_calls": self.calls.get("wikipedia", 0),
                 "wikidata_calls": self.calls.get("wikidata", 0),

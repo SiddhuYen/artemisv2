@@ -90,6 +90,7 @@ def _print_summary(summary: dict, stats: dict) -> None:
 def _print_provider_stats() -> None:
     s = STATS.snapshot()
     print("\nPROVIDER STATS")
+    print(f"  Serper searches:     {s['serper_searches']}")
     print(f"  Brave searches:      {s['brave_searches']}")
     print(f"  Wikipedia calls:     {s['wikipedia_calls']}")
     print(f"  Wikidata calls:      {s['wikidata_calls']}")

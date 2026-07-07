@@ -47,16 +47,25 @@ HTTP_RETRY_STATUS = (429, 500, 502, 503, 504)
 
 # --- providers -------------------------------------------------------------
 # Brave Search REST API (PRIMARY web search). Key from env; absent => skipped.
+# Serper.dev (Google SERP) — PRIMARY web search (cheap: ~$0.10-1/1k, 2,500/mo
+# free). Key from SERPER_API_KEY; absent => skipped (falls back to Brave).
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "").strip()
+SERPER_ENDPOINT = "https://google.serper.dev/search"
+SERPER_QPS = float(os.environ.get("ARTEMIS_SERPER_QPS", "5.0"))    # Serper allows higher QPS
+SERPER_MONTHLY_QUOTA = int(os.environ.get("ARTEMIS_SERPER_QUOTA", "2500"))  # free-tier cap
+
+# Brave Search REST API (BACKUP web search). Key from env; absent => skipped.
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_QPS = float(os.environ.get("ARTEMIS_BRAVE_QPS", "1.0"))      # free tier ~1 q/s
 BRAVE_MONTHLY_QUOTA = int(os.environ.get("ARTEMIS_BRAVE_QUOTA", "1000"))
 
 # Provider routing (configurable). Tried in order; stop at first useful result.
+# Serper is primary, Brave is the backup, DuckDuckGo the free last resort.
 ROUTE_PERSON = os.environ.get(
-    "ARTEMIS_ROUTE_PERSON", "wikipedia,wikidata,brave,duckduckgo").split(",")
+    "ARTEMIS_ROUTE_PERSON", "wikipedia,wikidata,serper,brave,duckduckgo").split(",")
 ROUTE_DEFAULT = os.environ.get(
-    "ARTEMIS_ROUTE_DEFAULT", "brave,duckduckgo").split(",")
+    "ARTEMIS_ROUTE_DEFAULT", "serper,brave,duckduckgo").split(",")
 
 # Per-provider rate limits (seconds between calls / token bucket)
 WIKI_MIN_INTERVAL = float(os.environ.get("ARTEMIS_WIKI_MIN_INTERVAL", "0.1"))
