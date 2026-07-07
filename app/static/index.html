@@ -98,11 +98,8 @@
   .banner { background: #2a2411; border: 1px solid #5a4a24; color: var(--warn);
     border-radius: var(--radius); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
   .banner strong { color: #ffd27a; }
-  .statusbar { margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius);
-    font-size: 13px; line-height: 1.4; }
-  .statusbar.warn { background: #2a2411; border: 1px solid #5a4a24; color: var(--warn); }
-  .statusbar.err  { background: #2c1616; border: 1px solid #5c2a2a; color: var(--danger); }
-  .statusbar strong { color: #fff; }
+  .usage { margin: 0 0 16px; font-size: 12px; color: var(--muted); }
+  .usage strong { color: var(--text); font-weight: 600; }
   .err { color: var(--danger); }
   .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
   .conf { font-variant-numeric: tabular-nums; }
@@ -115,7 +112,7 @@
     <p>Public relationship graph — find a path between two people, or discover notable connections from one.</p>
   </header>
 
-  <div id="status-banner" class="statusbar warn hidden"></div>
+  <div id="usage-tracker" class="usage hidden"></div>
 
   <div class="tabs">
     <button id="tab-path" class="active" data-mode="path">Find a Path</button>
@@ -200,33 +197,18 @@ const GRAPH_ID = (() => {
 })();
 const API_HEADERS = { "Content-Type": "application/json", "X-Graph-Id": GRAPH_ID };
 
-// Surface Brave search-quota state so users know when results are degraded.
+// Plain usage tracker: searches made this month per provider (no warnings).
 async function refreshStatus() {
-  const el = $("#status-banner");
+  const el = $("#usage-tracker");
   try {
     const d = await (await fetch("/status")).json();
-    const s = d.serper || {}, b = d.brave || {}, search = d.search || {};
-    // both paid providers out -> genuinely degraded (slow free fallback)
-    if (search.degraded) {
-      el.className = "statusbar err";
-      el.innerHTML = `⚠ <strong>Search degraded</strong> — primary (Serper) and backup (Brave) are both unavailable, so results use a slow free fallback and will be sparse.`;
-      return;
-    }
-    // primary out but running on the Brave backup
-    if (search.using === "brave") {
-      const why = s.state === "not_configured" ? "not configured" : `quota ${s.state}`;
-      el.className = "statusbar warn";
-      el.innerHTML = `⚠ <strong>Primary search (Serper) ${why}</strong> — running on the Brave backup. Quality is fine, but you're now spending Brave quota (${b.remaining}/${b.quota} left).`;
-      return;
-    }
-    // Serper healthy — only warn when its monthly quota is low
-    if (s.ok && s.quota && s.remaining <= Math.max(50, s.quota * 0.05)) {
-      el.className = "statusbar warn";
-      el.innerHTML = `⚠ <strong>Serper quota low</strong> — ${s.remaining} of ${s.quota} searches left this month. The Brave backup takes over when it runs out.`;
-      return;
-    }
-    el.className = "statusbar warn hidden";
-  } catch (e) { el.className = "statusbar warn hidden"; }
+    const s = d.serper || {}, b = d.brave || {};
+    el.className = "usage";
+    el.innerHTML = `🔎 Searches this month · <strong>Serper</strong> ${s.used ?? 0}`
+      + (s.quota ? `/${s.quota}` : "")
+      + ` · <strong>Brave</strong> ${b.used ?? 0}`
+      + (b.quota ? `/${b.quota}` : "");
+  } catch (e) { el.className = "usage hidden"; }
 }
 refreshStatus();
 setInterval(refreshStatus, 60000);  // keep it current for long sessions
