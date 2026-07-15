@@ -34,7 +34,12 @@ from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
 from ..silos import COLLEAGUE_SILO, SILOS, STRUCTURED_SILO
 from ..utils.htmltext import html_to_text
-from ..utils.names import org_norm_key, person_norm_key
+from ..utils.names import (
+    is_noise_name,
+    looks_like_person_name,
+    org_norm_key,
+    person_norm_key,
+)
 from . import builder
 
 # search orchestrator (Brave primary -> Wikipedia/Wikidata -> DuckDuckGo fallback)
@@ -512,12 +517,20 @@ def _retype_unknown_edges(db: Session, progress=None) -> int:
 
 
 def _prune_invalid_nodes(db: Session, seed_norm: str, progress=None) -> int:
-    """Final pass: validate every node with Ollama and remove the ones that
-    aren't real named people/orgs (with their edges). No-op without Ollama."""
-    if not is_filtering_active():
-        return 0
-    # people/orgs reached via a TRUSTED (structured-source) edge are already
-    # clean — skip them, only Ollama-validate the prose-extracted rest.
+    """Final pass: remove nodes that aren't real named people/orgs (with edges).
+
+    PEOPLE are pruned by the DETERMINISTIC name-shape filter, NOT Ollama. The LLM
+    entity filter proved unreliable on names: it false-DELETED real connections
+    (named co-founders) while false-KEEPING page-title junk like "Drew Glover -
+    LinkedIn" — which carries strong explicit edges indistinguishable from a real
+    node's. In a relationship graph a false-delete loses the answer while a
+    false-keep is cheap noise, so a well-formed personal name is authoritative and
+    the LLM never gets to delete a plausible person. This also means people get
+    cleaned even where Ollama is absent (e.g. the hosted instance).
+
+    ORGS still use the Ollama filter when active — org names are far messier and a
+    wrong drop is much less costly than losing a person. Nodes reached via a
+    TRUSTED structured source are clean by construction and never pruned."""
     trusted_pids, trusted_oids = set(), set()
     for e in db.execute(select(RelationshipEdge)).scalars():
         if (e.signals or {}).get("trusted"):
@@ -526,32 +539,35 @@ def _prune_invalid_nodes(db: Session, seed_norm: str, progress=None) -> int:
             if e.organization_id:
                 trusted_oids.add(e.organization_id)
 
-    people = [p for p in db.execute(select(Person)).scalars()
-              if p.norm_name != seed_norm and p.id not in trusted_pids]
-    orgs = [o for o in db.execute(select(Organization)).scalars()
-            if o.id not in trusted_oids]
-    valid_people = filter_entities([p.canonical_name for p in people], "person")
-    valid_orgs = filter_entities([o.name for o in orgs], "organization")
-
     removed = 0
-    for p in people:
-        if p.canonical_name not in valid_people:
+    # --- people: deterministic shape filter (LLM-independent, safe) ---------
+    for p in db.execute(select(Person)).scalars():
+        if p.norm_name == seed_norm or p.id in trusted_pids:
+            continue
+        if is_noise_name(p.canonical_name) or not looks_like_person_name(p.canonical_name):
             db.query(RelationshipEdge).filter(
                 (RelationshipEdge.person_a_id == p.id)
                 | (RelationshipEdge.person_b_id == p.id)
             ).delete(synchronize_session=False)
             db.delete(p)
             removed += 1
-    for o in orgs:
-        if o.name not in valid_orgs:
-            db.query(RelationshipEdge).filter(
-                RelationshipEdge.organization_id == o.id
-            ).delete(synchronize_session=False)
-            db.delete(o)
-            removed += 1
+
+    # --- orgs: Ollama entity filter (only when reachable) ------------------
+    if is_filtering_active():
+        orgs = [o for o in db.execute(select(Organization)).scalars()
+                if o.id not in trusted_oids]
+        valid_orgs = filter_entities([o.name for o in orgs], "organization")
+        for o in orgs:
+            if o.name not in valid_orgs:
+                db.query(RelationshipEdge).filter(
+                    RelationshipEdge.organization_id == o.id
+                ).delete(synchronize_session=False)
+                db.delete(o)
+                removed += 1
+
     db.commit()
     if progress and removed:
-        progress(f"  ✓ Ollama filter pruned {removed} junk nodes from the final graph")
+        progress(f"  ✓ pruned {removed} junk nodes from the final graph")
     return removed
 
 

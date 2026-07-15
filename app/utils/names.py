@@ -28,6 +28,9 @@ _STOPWORDS = {
     "committee", "conference", "symposium", "award", "civilian", "college",
     "academy", "business", "global", "federal", "central", "royal", "public",
     "big", "tech", "higher", "vision", "audio", "music", "shopping", "store",
+    # role/title fragments that scraped rosters glue onto names ("Partner Jason
+    # Calacanis", "Abhay Mavalankar SVP") — never part of a real personal name.
+    "partner", "gp", "vp", "svp", "evp", "coo", "managing", "principal", "head",
 }
 
 ORG_SUFFIXES = {
@@ -127,9 +130,22 @@ _NOISE_PHRASES = {
 
 
 def is_noise_name(name: str) -> bool:
-    """True if `name` is scraped boilerplate/navigation chrome rather than a real
-    named entity (e.g. "Cookie Policy", "User Agreement", "Fred Volinsky Profile").
+    """True if `name` is scraped boilerplate/navigation chrome or a page-title
+    artifact rather than a real named entity (e.g. "Cookie Policy", "User
+    Agreement", "Drew Glover - LinkedIn", "Drew Glover - CEO.com").
     Deterministic — works with or without the Ollama entity filter."""
+    raw = (name or "").strip()
+    if not raw:
+        return True
+    low = raw.lower()
+    # embedded URL / domain / social handle => scraped chrome, not a name
+    if ("http" in low or "www." in low or "@" in raw
+            or re.search(r"\.(com|org|net|io|ai|co|gov|edu)\b", low)):
+        return True
+    # "Name - Site" / "Title | Source" / bulleted list artifacts: real personal
+    # names never contain a spaced separator (hyphenated surnames have no spaces).
+    if any(sep in raw for sep in (" - ", " | ", " – ", " — ", " · ", " • ", "•", "::")):
+        return True
     norm = normalize(name)
     if not norm:
         return True
