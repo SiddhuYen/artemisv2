@@ -7,3 +7,10 @@ pydantic>=2.6
 python-multipart
 spacy>=3.7,<3.8
 # model: python -m spacy download en_core_web_sm
+
+# OPTIONAL: headless-browser rendering for JavaScript-only firm team pages
+# (single-page-app rosters that return an empty shell to a plain GET). The
+# system runs fully without it — those rosters just scrape empty via the
+# plain fetch. Enable with:
+#   pip install playwright && python -m playwright install chromium
+# playwright>=1.40

@@ -19,6 +19,7 @@ from .brave import BraveProvider
 from .serper import SerperProvider
 from .duckduckgo import DuckDuckGoProvider
 from .edgar import EdgarProvider
+from .firms import FirmsProvider
 from .openalex import OpenAlexProvider
 from .opencorporates import OpenCorporatesProvider
 from .propublica import ProPublicaProvider
@@ -64,6 +65,9 @@ class SearchOrchestrator:
             "wikipedia": self.wikipedia,
             "duckduckgo": self.duckduckgo,
         }
+        # Locates roster pages via the same routed web search as everything
+        # else; scraping a roster URL directly (roster()) needs no search.
+        self.firms = FirmsProvider(search=lambda q: self.search(q, is_person=False))
 
     # --- query dedup ------------------------------------------------------
     def dedup(self, pairs: List[Tuple[object, str]]) -> Tuple[List[str], Dict[str, List[object]]]:
@@ -131,6 +135,16 @@ class SearchOrchestrator:
         return {
             "edgar": cols,
             "edgar_text": self.edgar.colleagues_text(name, cols) if cols else "",
+        }
+
+    def firm_enrichment(self, name: str) -> dict:
+        """VC/company team-roster colleagues — a roster page listing this
+        person alongside others is a structural assertion, stronger than a
+        search snippet. Each colleague carries the roster URL it came from."""
+        cols = self.firms.roster_colleagues(name)
+        return {
+            "firms": cols,
+            "firms_text": self.firms.colleagues_text(name, cols) if cols else "",
         }
 
     def notable_set(self, names: List[str]) -> set:

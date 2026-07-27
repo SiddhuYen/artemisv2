@@ -179,6 +179,24 @@ EDGAR_MIN_INTERVAL = float(os.environ.get("ARTEMIS_EDGAR_MIN_INTERVAL", "0.2"))
 PROPUBLICA_ENABLED = os.environ.get("ARTEMIS_PROPUBLICA_ENABLED", "1") not in ("0", "false", "")
 PROPUBLICA_MIN_INTERVAL = float(os.environ.get("ARTEMIS_PROPUBLICA_MIN_INTERVAL", "0.3"))
 PROPUBLICA_MAX_ORGS = int(os.environ.get("ARTEMIS_PROPUBLICA_MAX_ORGS", "3"))
+
+# --- Firms (VC/company team-roster scraping) --------------------------------
+# A roster page listing a person is a structural assertion ("this page lists
+# its own team"), a much stronger signal than a search-engine snippet.
+FIRMS_ENABLED = os.environ.get("ARTEMIS_FIRMS_ENABLED", "1") not in ("0", "false", "")
+MAX_ROSTER_MEMBERS = int(os.environ.get("ARTEMIS_MAX_ROSTER_MEMBERS", "40"))
+MAX_FIRMS_PER_PERSON = int(os.environ.get("ARTEMIS_MAX_FIRMS_PER_PERSON", "3"))
+# raw HTML cached/parsed per page fetch (before html_to_text's further cut to
+# MAX_PAGE_CHARS) — a roster grid can sit far down the markup of a long page.
+MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", str(MAX_PAGE_CHARS * 4)))
+
+# --- headless-browser rendering (Playwright, OPTIONAL) -----------------------
+# JS-only team pages (React/Vue SPAs) return an empty shell to a plain GET.
+# Playwright is a heavy optional dependency: when it (or its Chromium binary)
+# isn't installed, browser.available() returns False and every caller falls
+# back to the plain fetch — nothing else in the system is affected.
+BROWSER_TIMEOUT_S = float(os.environ.get("ARTEMIS_BROWSER_TIMEOUT_S", "12.0"))
+BROWSER_SETTLE_S = float(os.environ.get("ARTEMIS_BROWSER_SETTLE_S", "3.0"))
 # tier thresholds: < WEAK_MAX = weak, [WEAK_MAX, STRONG_MIN] = candidate,
 # > STRONG_MIN = strong (eligible for expansion priority)
 WEAK_MAX = 0.3
