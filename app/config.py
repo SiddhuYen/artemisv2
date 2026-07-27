@@ -33,6 +33,11 @@ DB_URL = os.environ.get("ARTEMIS_DB_URL", "sqlite:///./artemis.db")
 # Per-session graph isolation (HTTP API): each browser session gets its own
 # SQLite file here, so concurrent users never clobber each other's public graph.
 GRAPH_DIR = os.environ.get("ARTEMIS_GRAPH_DIR", "./graphs")
+# Boards/pages live in their own SQLite file — they never reference the
+# discovery-graph tables, and isolating them means a board's frequent
+# autosave writes never hit "database is locked" behind a long /connect or
+# /targets/search transaction on the (much busier) main DB_URL database.
+BOARDS_DB_URL = os.environ.get("ARTEMIS_BOARDS_DB_URL", "sqlite:///./artemis_boards.db")
 
 # --- HTTP ------------------------------------------------------------------
 USER_AGENT = (

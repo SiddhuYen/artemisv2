@@ -12,18 +12,21 @@ from __future__ import annotations
 import os
 import threading
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import get_db, init_db
+from .db import get_boards_db, get_db, init_boards_db, init_db, safe_graph_id
 from .extraction import ollama_available
 from .graph.expansion import expand_graph
 from .models import (
+    Board,
+    BoardPage,
     CandidatePath,
     GraphMatch,
+    LocalEdge,
     LocalProfile,
     Organization,
     Person,
@@ -53,6 +56,7 @@ app = FastAPI(
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    init_boards_db()
 
 
 # Serialize graph builds so the config-global mutation inside connect_people()
@@ -195,7 +199,7 @@ def _profile_dict(p: LocalProfile) -> dict:
         "email": p.email, "linkedin_url": p.linkedin_url,
         "companies": p.companies or [], "titles": p.titles or [],
         "schools": p.schools or [], "locations": p.locations or [],
-        "notes": p.notes,
+        "notes": p.notes, "connected_on": p.connected_on, "created_at": p.created_at,
     }
 
 
@@ -219,6 +223,46 @@ async def network_upload(file: UploadFile = File(...), db: Session = Depends(get
 @app.get("/network/profiles")
 def network_profiles(db: Session = Depends(get_db)) -> list:
     return [_profile_dict(p) for p in db.execute(select(LocalProfile)).scalars()]
+
+
+@app.post("/network/profiles")
+def add_profile(req: dict, db: Session = Depends(get_db)) -> dict:
+    """Manually add a single contact (the "+ Add Contact" UI action)."""
+    from .utils.names import name_variants, person_norm_key
+    name = (req.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    profile = LocalProfile(
+        canonical_name=name,
+        norm_name=person_norm_key(name),
+        aliases=sorted(v for v in name_variants(name) if v != name),
+        email=(req.get("email") or "").strip() or None,
+        linkedin_url=(req.get("linkedin_url") or "").strip() or None,
+        companies=[c.strip() for c in [req.get("company") or ""] if c.strip()],
+        titles=[t.strip() for t in [req.get("title") or ""] if t.strip()],
+        schools=[s.strip() for s in [req.get("school") or ""] if s.strip()],
+        locations=[],
+        notes=(req.get("notes") or "").strip() or None,
+        raw_row={},
+    )
+    db.add(profile)
+    db.flush()
+    db.add(LocalEdge(from_profile_id=None, to_profile_id=profile.id))
+    db.commit()
+    return _profile_dict(profile)
+
+
+@app.delete("/network/profiles")
+def clear_profiles(db: Session = Depends(get_db)) -> dict:
+    """Wipe all uploaded/added contacts and anything derived from them
+    (matches, candidate paths). Never touches the public discovery graph."""
+    n = db.query(LocalProfile).count()
+    db.query(CandidatePath).delete()
+    db.query(GraphMatch).delete()
+    db.query(LocalEdge).delete()
+    db.query(LocalProfile).delete()
+    db.commit()
+    return {"cleared": n}
 
 
 @app.post("/match/{target_person_id}")
@@ -263,6 +307,161 @@ def get_candidate_path(path_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="candidate path not found")
     return {"id": c.id, "target_person_id": c.target_person_id, "score": c.score,
             "status": c.status, "path": c.path_json}
+
+
+# ===========================================================================
+# Boards — a user's manually-built canvas workspace (UI-only; never mutates
+# the canonical discovery data above). Owner-scoped by X-Graph-Id, the
+# per-browser id the frontend already mints into localStorage. Each board
+# holds one or more Pages, each an independent node/edge canvas.
+# ===========================================================================
+def _owner_id(x_graph_id: str = Header(default="default", alias="X-Graph-Id")) -> str:
+    return safe_graph_id(x_graph_id)
+
+
+def _get_owned_board(db: Session, board_id: str, owner_id: str) -> Board:
+    b = db.get(Board, board_id)
+    if b is None or b.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="board not found")
+    return b
+
+
+def _page_dict(p: BoardPage) -> dict:
+    return {"id": p.id, "name": p.name, "position": p.position, "elements": p.elements or {}}
+
+
+def _board_pages(db: Session, board_id: str) -> list[BoardPage]:
+    return list(db.execute(
+        select(BoardPage).where(BoardPage.board_id == board_id).order_by(BoardPage.position.asc())
+    ).scalars())
+
+
+def _board_summary(b: Board, seq: int, pages: list[BoardPage]) -> dict:
+    nodes = sum(len((p.elements or {}).get("nodes") or []) for p in pages)
+    edges = sum(len((p.elements or {}).get("edges") or []) for p in pages)
+    return {
+        "id": b.id, "seq": seq, "name": b.name, "status": b.status or "active",
+        "created_at": b.created_at, "target_name": b.target_name, "target_org": b.target_org,
+        "pages": len(pages), "nodes": nodes, "edges": edges,
+        # first page's elements power the boards-list minimap preview
+        "preview_elements": (pages[0].elements or {}) if pages else {},
+    }
+
+
+@app.post("/boards")
+def create_board(req: dict, owner_id: str = Depends(_owner_id),
+                  db: Session = Depends(get_boards_db)) -> dict:
+    name = (req.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    board = Board(
+        owner_id=owner_id, name=name,
+        target_name=(req.get("target_name") or "").strip() or None,
+        target_org=(req.get("target_org") or "").strip() or None,
+    )
+    db.add(board)
+    db.flush()
+    page = BoardPage(board_id=board.id, name="Page 1", position=0, elements={})
+    db.add(page)
+    db.commit()
+    seq = db.query(Board).filter(
+        Board.owner_id == owner_id, Board.created_at <= board.created_at
+    ).count()
+    return _board_summary(board, seq, [page])
+
+
+@app.get("/boards")
+def list_boards(owner_id: str = Depends(_owner_id), db: Session = Depends(get_boards_db)) -> list:
+    rows = list(db.execute(
+        select(Board).where(Board.owner_id == owner_id).order_by(Board.created_at.asc())
+    ).scalars())
+    summaries = [_board_summary(b, i + 1, _board_pages(db, b.id)) for i, b in enumerate(rows)]
+    summaries.reverse()  # newest first
+    return summaries
+
+
+@app.get("/boards/{board_id}")
+def get_board(board_id: str, owner_id: str = Depends(_owner_id),
+              db: Session = Depends(get_boards_db)) -> dict:
+    b = _get_owned_board(db, board_id, owner_id)
+    pages = _board_pages(db, board_id)
+    return {"id": b.id, "name": b.name, "status": b.status or "active",
+            "target_name": b.target_name, "target_org": b.target_org,
+            "created_at": b.created_at, "pages": [_page_dict(p) for p in pages]}
+
+
+@app.patch("/boards/{board_id}")
+def update_board(board_id: str, req: dict, owner_id: str = Depends(_owner_id),
+                  db: Session = Depends(get_boards_db)) -> dict:
+    b = _get_owned_board(db, board_id, owner_id)
+    if "status" in req:
+        if req["status"] not in ("active", "archived"):
+            raise HTTPException(status_code=400, detail="status must be 'active' or 'archived'")
+        b.status = req["status"]
+    if "name" in req and (req.get("name") or "").strip():
+        b.name = req["name"].strip()
+    if "target_name" in req:
+        b.target_name = (req.get("target_name") or "").strip() or None
+    if "target_org" in req:
+        b.target_org = (req.get("target_org") or "").strip() or None
+    db.commit()
+    seq = db.query(Board).filter(
+        Board.owner_id == owner_id, Board.created_at <= b.created_at
+    ).count()
+    return _board_summary(b, seq, _board_pages(db, board_id))
+
+
+@app.delete("/boards/{board_id}")
+def delete_board(board_id: str, owner_id: str = Depends(_owner_id),
+                  db: Session = Depends(get_boards_db)) -> dict:
+    b = _get_owned_board(db, board_id, owner_id)
+    db.query(BoardPage).filter(BoardPage.board_id == b.id).delete()
+    db.delete(b)
+    db.commit()
+    return {"deleted": board_id}
+
+
+# ---- Pages ------------------------------------------------------------------
+@app.post("/boards/{board_id}/pages")
+def create_page(board_id: str, req: dict, owner_id: str = Depends(_owner_id),
+                 db: Session = Depends(get_boards_db)) -> dict:
+    _get_owned_board(db, board_id, owner_id)
+    existing = _board_pages(db, board_id)
+    name = (req.get("name") or "").strip() or f"Page {len(existing) + 1}"
+    page = BoardPage(board_id=board_id, name=name, position=len(existing), elements={})
+    db.add(page)
+    db.commit()
+    return _page_dict(page)
+
+
+@app.patch("/boards/{board_id}/pages/{page_id}")
+def update_page(board_id: str, page_id: str, req: dict, owner_id: str = Depends(_owner_id),
+                 db: Session = Depends(get_boards_db)) -> dict:
+    _get_owned_board(db, board_id, owner_id)
+    page = db.get(BoardPage, page_id)
+    if page is None or page.board_id != board_id:
+        raise HTTPException(status_code=404, detail="page not found")
+    if "name" in req and (req.get("name") or "").strip():
+        page.name = req["name"].strip()
+    if "elements" in req:
+        page.elements = req.get("elements") or {}
+    db.commit()
+    return _page_dict(page)
+
+
+@app.delete("/boards/{board_id}/pages/{page_id}")
+def delete_page(board_id: str, page_id: str, owner_id: str = Depends(_owner_id),
+                 db: Session = Depends(get_boards_db)) -> dict:
+    _get_owned_board(db, board_id, owner_id)
+    pages = _board_pages(db, board_id)
+    if len(pages) <= 1:
+        raise HTTPException(status_code=400, detail="a board must keep at least one page")
+    page = db.get(BoardPage, page_id)
+    if page is None or page.board_id != board_id:
+        raise HTTPException(status_code=404, detail="page not found")
+    db.delete(page)
+    db.commit()
+    return {"deleted": page_id}
 
 
 # --- static frontend (mounted last so it never shadows the API routes) ------
