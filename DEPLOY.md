@@ -33,8 +33,10 @@ fly launch --no-deploy --name artemisv2 --copy-config
 # persistent disk for /data (3 GB is plenty; the cache is the biggest user)
 fly volumes create artemis_data --size 3 --region sjc
 
-# secrets (NOT in fly.toml / git)
-fly secrets set BRAVE_API_KEY=your_brave_key \
+# secrets (NOT in fly.toml / git) — both search providers are optional;
+# whichever are set are picked up on next deploy, no code changes needed.
+fly secrets set SERPER_API_KEY=your_serper_key \
+                BRAVE_API_KEY=your_brave_key \
                 OPENCORPORATES_API_TOKEN=your_oc_token
 
 fly deploy
@@ -44,6 +46,12 @@ fly open        # opens the UI
 Notes:
 - Change `primary_region` in `fly.toml` (and `--region`) to one near you.
 - Logs: `fly logs`. SSH in: `fly ssh console`. Scale RAM: edit `[[vm]] memory`.
+- `fly secrets set` restarts the app with the new env vars injected directly —
+  there is no build-time step and no GitHub Actions workflow involved. The
+  running container reads `SERPER_API_KEY`/`BRAVE_API_KEY` straight from Fly's
+  secret store on startup ([app/config.py](app/config.py)); end users never see
+  or manage these keys; the UI just shows whether a provider is configured
+  (see below).
 
 ---
 
@@ -53,7 +61,7 @@ Notes:
    (it uses the `Dockerfile`).
 2. **Disks** → add a disk, mount path **`/data`**, size ~3 GB.
 3. **Environment** → add:
-   - `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN` (secrets)
+   - `SERPER_API_KEY`, `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN` (secrets — all optional)
    - `ARTEMIS_DB_URL=sqlite:////data/artemis.db`
    - `ARTEMIS_CACHE_DB=/data/artemis_cache.db`
    - `ARTEMIS_GRAPH_DIR=/data/graphs`
@@ -68,7 +76,7 @@ A paid instance is required for a persistent disk.
 
 1. New Project → Deploy from GitHub repo (detects the `Dockerfile`).
 2. Add a **Volume** mounted at **`/data`**.
-3. **Variables**: same `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN`, and the four
+3. **Variables**: same `SERPER_API_KEY`, `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN`, and the four
    `ARTEMIS_*` paths above. Railway injects `$PORT`.
 4. Keep **1 replica**.
 
@@ -79,11 +87,25 @@ A paid instance is required for a persistent disk.
 ```bash
 docker build -t artemis .
 docker run -p 8080:8080 \
+  -e SERPER_API_KEY=your_key \
   -e BRAVE_API_KEY=your_key \
   -v "$(pwd)/data:/data" \
   artemis
 # open http://localhost:8080
 ```
+
+## Search provider configuration status
+
+`SERPER_API_KEY` and `BRAVE_API_KEY` are read once at startup from the
+platform's own secrets (`fly secrets set`, Render/Railway env vars, `docker run
+-e`) — there is no in-app settings screen for entering them, and the running
+app never returns their values to a client. `GET /status` reports each
+provider's state (`ok` / `exhausted` / `invalid_key` / `not_configured`) so the
+UI can tell whether *a* provider is configured, without ever seeing the key
+itself. The home screen footer shows a "no search provider configured" notice
+only when neither key is set (e.g. a bare local dev checkout); it disappears
+the moment either secret is present, so end users never need to manage a key
+that's already handled for them.
 
 ## What runs where
 - **Extractor:** Ollama isn't in the container, so it falls back to **spaCy**
