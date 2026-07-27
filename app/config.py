@@ -132,6 +132,29 @@ CONNECT_MAX_PATHS = int(os.environ.get("ARTEMIS_CONNECT_MAX_PATHS", "3"))
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))
 EDGE_SAMPLE_LIMIT = int(os.environ.get("ARTEMIS_EDGE_SAMPLE_LIMIT", "150"))
 
+# --- pathfinding cost shaping -----------------------------------------------
+# Flat cost added per hop in a path, on top of that hop's edge cost. Without
+# this, a 2-hop relay of two strong ties can score identically to (or beat) one
+# slightly-weaker direct connection, even though a direct ask is always better
+# than asking two people to relay it. Mirrors DrewGloverDemo's HOP_SURCHARGE.
+HOP_SURCHARGE = float(os.environ.get("ARTEMIS_HOP_SURCHARGE", "1.5"))
+
+# Penalty added when a path TRANSITS (not starts/ends at) a person who has a
+# Wikidata QID — i.e. is independently notable. A real, evidenced edge through
+# a celebrity is still a true connection (Rule 0 isn't about this), but it's a
+# poor bridge: they're unlikely to relay an intro for a stranger. Endpoints are
+# exempt — the fame gate only matters for who a path routes THROUGH.
+FAME_PENALTY = float(os.environ.get("ARTEMIS_FAME_PENALTY", "4.0"))
+
+# Node degree (edge count) above which a person is treated as a mega-hub for
+# routing purposes — discourages funnelling every path through the same
+# well-connected node when a lower-degree alternative exists. Below this,
+# a normal well-connected person pays nothing.
+MEGA_HUB_DEGREE = int(os.environ.get("ARTEMIS_MEGA_HUB_DEGREE", "40"))
+# Per-hop-through-a-mega-hub penalty, scaled by log(degree) so the penalty
+# grows gently past the threshold rather than jumping at a hard cliff.
+DEGREE_PENALTY_COEF = float(os.environ.get("ARTEMIS_DEGREE_PENALTY_COEF", "0.5"))
+
 # --- confidence model ------------------------------------------------------
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
