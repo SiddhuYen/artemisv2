@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -31,6 +31,7 @@ from ..models import (
 )
 from ..providers.base import SearchResult
 from ..utils.names import name_variants, org_norm_key, person_norm_key
+from . import disambiguate
 
 
 def reset_public_graph(db: Session) -> None:
@@ -58,14 +59,24 @@ def at_node_cap(db: Session) -> bool:
 
 # --- entity upserts --------------------------------------------------------
 def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
-                         allow_create: bool = True) -> Optional[Person]:
+                         allow_create: bool = True,
+                         identity_text: Optional[str] = None) -> Optional[Person]:
     """Resolve a person node, disambiguating homonyms by Wikidata QID.
 
     Identity rules:
       - qid given: same-QID node wins (authoritative merge across name variants);
-        a name-match with NO qid ADOPTS this qid; a name-match with a DIFFERENT
-        qid is a distinct person (a homonym) -> a separate, QID-suffixed node.
+        a name-match with NO qid ADOPTS this qid -- UNLESS the node's own
+        already-accumulated evidence conflicts with `identity_text` (see
+        _homonym_conflict), in which case it's treated like case 3 below; a
+        name-match with a DIFFERENT qid is a distinct person (a homonym) ->
+        a separate, QID-suffixed node.
       - no qid: fall back to the normalized-name key (today's behavior).
+
+    `identity_text` is a short description of the identity `qid` refers to
+    (e.g. a Wikipedia summary) -- the candidate side of the homonym check.
+    Callers that don't have one (e.g. counterpart resolution during edge
+    extraction, which never passes a qid at all) get the guard's old,
+    unconditional-adopt behavior; there is nothing to check the name against.
     """
     norm = person_norm_key(name)
     if not norm:
@@ -79,15 +90,20 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
         if by_qid:
             _merge_aliases(by_qid, name)
             return by_qid
-        # 2) a name-match with no QID yet -> it's this same person; adopt the QID
+        # 2) a name-match with no QID yet -> normally it's this same person;
+        #    adopt the QID -- unless the homonym guard says otherwise.
         by_name = db.execute(
             select(Person).where(Person.norm_name == norm)
         ).scalar_one_or_none()
-        if by_name is not None and not by_name.wikidata_qid:
+        adopt = by_name is not None and not by_name.wikidata_qid
+        if adopt and _homonym_conflict(db, by_name, identity_text):
+            adopt = False
+        if adopt:
             by_name.wikidata_qid = qid
             _merge_aliases(by_name, name)
             return by_name
-        # 3) name-match exists but with a DIFFERENT QID -> genuine homonym.
+        # 3) name-match exists but with a DIFFERENT QID, or the homonym guard
+        #    just rejected adopting this QID onto it -> genuine homonym.
         #    Give the newcomer a QID-disambiguated key so they don't collide.
         if not allow_create:
             return None
@@ -104,6 +120,54 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
     if not allow_create:
         return None
     return _new_person(db, name, norm, None)
+
+
+def _existing_evidence_signal(db: Session, person: Person) -> str:
+    """A few of `person`'s own already-persisted edge-evidence snippets --
+    used as an independent professional-domain signal by _homonym_conflict.
+
+    Deliberately NOT a fresh search for `person`'s name: a search run to
+    justify adopting `identity_text` could be the SAME search that produced
+    `identity_text` in the first place, which would let a single fame-
+    dominated lookup confirm itself. These snippets instead come from
+    whatever OTHER subject's search first discovered this person as a
+    counterpart, before this identity was ever proposed for it.
+    """
+    rows = db.execute(
+        select(RelationshipEdge.evidence_snippet)
+        .where(or_(RelationshipEdge.person_a_id == person.id,
+                   RelationshipEdge.person_b_id == person.id))
+        .limit(config.IDENTITY_SIGNAL_MAX_SNIPPETS)
+    ).scalars()
+    return " ".join(s for s in rows if s)
+
+
+def _homonym_conflict(db: Session, existing: Person,
+                      identity_text: Optional[str]) -> bool:
+    """True when `existing`'s own accumulated evidence clearly anchors in a
+    different professional world than `identity_text` (a description of the
+    identity about to be adopted onto it) -- see graph.disambiguate.
+
+    Silent (False) whenever there's nothing to compare: no identity_text was
+    given, the feature is disabled, or `existing` has no prior evidence yet
+    (a brand-new node adopts freely, same as before this guard existed).
+    Records a `homonym_rejected` note in `existing.meta` on a real conflict --
+    advisory only, not a permanent block: it doesn't stop `existing` from
+    continuing to accumulate its own edges, and a later direct assignment of
+    `wikidata_qid` (bypassing this path entirely, same as case 1 above) can
+    still confirm the identity if a human decides the rejection was wrong.
+    """
+    if not identity_text or not config.IDENTITY_VERIFY_ENABLED:
+        return False
+    signal = _existing_evidence_signal(db, existing)
+    if not signal:
+        return False
+    if not disambiguate.domain_conflict(signal, identity_text):
+        return False
+    meta = dict(existing.meta or {})
+    meta["homonym_rejected"] = {"identity_text": identity_text[:300]}
+    existing.meta = meta
+    return True
 
 
 def _new_person(db: Session, name: str, norm: str, qid: Optional[str]) -> Person:

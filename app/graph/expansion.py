@@ -223,7 +223,14 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
         # anchor the subject's identity to its Wikidata QID (homonym disambiguation):
         # two different notable same-name people have distinct QIDs and stay separate.
         if enrichment.get("qid"):
-            resolved = builder.get_or_create_person(db, subject_name, qid=enrichment["qid"])
+            # candidate signal for builder's homonym guard: the Wikipedia lead +
+            # Wikidata facts text describing whoever this QID actually is. Already
+            # fetched above (enrich_person), so this adds no extra cost.
+            identity_text = " ".join(
+                t for t in (enrichment.get("summary"), enrichment.get("wikidata_text")) if t
+            )[:1500]
+            resolved = builder.get_or_create_person(
+                db, subject_name, qid=enrichment["qid"], identity_text=identity_text)
             if resolved is not None:
                 subject = resolved
         wiki_url = "https://en.wikipedia.org/wiki/" + enrichment["title"].replace(" ", "_")
