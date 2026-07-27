@@ -267,6 +267,28 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             _mark_trusted(out.edges, True)  # clean structured names (skip entity filter)
             candidate_edges.extend(out.edges)
 
+    # --- phase 0c: firm team-roster colleagues (own source URL per roster) ---
+    # Unlike the enrichments above, each colleague carries the actual roster
+    # page it was scraped from — a stronger, citable structural assertion —
+    # so each distinct roster gets its own Source rather than one shared URL.
+    if effective_is_person:
+        firm_cols = ORCH.firm_enrichment(subject_name)["firms"]
+        by_url: Dict[str, List[dict]] = {}
+        for c in firm_cols:
+            by_url.setdefault(c.get("url") or "", []).append(c)
+        for url, cols in by_url.items():
+            if not url:
+                continue
+            text = ORCH.firms.colleagues_text(subject_name, cols)
+            if not text:
+                continue
+            res = SearchResult(subject_name, url, "firms", "firms")
+            source = builder.save_source(db, res, "enrich:firms", text)
+            source_by_url[res.url] = source
+            out = extract(subject_name, text, COLLEAGUE_SILO, "firms", res.url)
+            _mark_trusted(out.edges, True)  # scraped roster names (skip entity filter)
+            candidate_edges.extend(out.edges)
+
     # --- phase 1: build (silo, query) pairs, then DEDUP across silos -------
     pairs = []
     for silo in SILOS:

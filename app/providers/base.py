@@ -121,6 +121,45 @@ def _sleep_backoff(attempt: int) -> None:
         time.sleep(config.HTTP_BACKOFF_BASE * (2 ** attempt))
 
 
+def fetch_page(url: str, render: bool = False) -> Page:
+    """Cache-first page fetch, shared across providers and keyed by URL.
+
+    `render=True` uses a headless browser (see browser.py) to execute the
+    page's JavaScript, recovering the DOM of a single-page-app team roster
+    that a plain GET returns empty. Rendered and plain results are cached
+    under SEPARATE keys, so a caller can cheaply try the plain fetch first
+    and only pay the render cost when it came back empty. A failed render is
+    never cached — a transient browser hiccup must not disable a page for
+    CACHE_TTL_PAGE days. Rendering is fully optional: when Playwright isn't
+    installed, `render=True` degrades to ("", 0) and the caller's own
+    fallback logic uses the plain fetch instead.
+    """
+    kind = "rendered" if render else "fetch"
+    key = cache.make_key("page", kind, url)
+    cached = cache.get(key)
+    if cached is not None:
+        return Page(url=url, content=cached.get("content", ""),
+                    status_code=cached.get("status_code", 0), from_cache=True)
+
+    if render:
+        from .browser import render_html
+        content, status = render_html(url)
+        if content:
+            cache.set(key, "page", {"content": content, "status_code": status},
+                      config.CACHE_TTL_PAGE)
+        return Page(url=url, content=content, status_code=status, from_cache=False)
+
+    resp = request_with_retry("GET", url, provider="fetch")
+    content, status = "", 0
+    if resp is not None:
+        status = resp.status_code
+        if status == 200:
+            content = resp.text[: config.MAX_HTML_CHARS]
+    cache.set(key, "page", {"content": content, "status_code": status},
+              config.CACHE_TTL_PAGE)
+    return Page(url=url, content=content, status_code=status, from_cache=False)
+
+
 class SearchProvider(abc.ABC):
     name: str = "base"
     cache_ttl: int = config.CACHE_TTL_SEARCH
@@ -144,18 +183,4 @@ class SearchProvider(abc.ABC):
 
     def fetch(self, url: str) -> Page:
         """Cache-first page fetch (shared across providers, keyed by URL)."""
-        key = cache.make_key("page", "fetch", url)
-        cached = cache.get(key)
-        if cached is not None:
-            return Page(url=url, content=cached.get("content", ""),
-                        status_code=cached.get("status_code", 0), from_cache=True)
-        resp = request_with_retry("GET", url, provider="fetch")
-        content = ""
-        status = 0
-        if resp is not None:
-            status = resp.status_code
-            if status == 200:
-                content = resp.text[: config.MAX_PAGE_CHARS * 4]
-        cache.set(key, "page", {"content": content, "status_code": status},
-                  config.CACHE_TTL_PAGE)
-        return Page(url=url, content=content, status_code=status, from_cache=False)
+        return fetch_page(url)
