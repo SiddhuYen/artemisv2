@@ -77,6 +77,7 @@ def _profile_from_row(raw_row: Dict[str, str]) -> Optional[dict]:
         "locations": _as_list(_row_get(row, "location")),
         "notes": (_row_get(row, "notes") or None),
         "raw_row": {k: v for k, v in raw_row.items() if v},
+        "connected_on": (_row_get(row, "connected_on") or None),
         "_connected_to": _row_get(row, "connected_to"),
     }
 
@@ -157,3 +158,5 @@ def _merge_profile(existing: LocalProfile, parsed: dict) -> None:
         existing.linkedin_url = parsed["linkedin_url"]
     if not existing.notes and parsed["notes"]:
         existing.notes = parsed["notes"]
+    if not existing.connected_on and parsed["connected_on"]:
+        existing.connected_on = parsed["connected_on"]

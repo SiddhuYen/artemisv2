@@ -128,6 +128,7 @@ class LocalProfile(Base):
     locations = Column(JSON, default=list)
     notes = Column(Text, nullable=True)
     raw_row = Column(JSON, default=dict)
+    connected_on = Column(String, nullable=True)  # from the CSV's "Connected On" column, if present
     created_at = Column(String, default=lambda: _now().isoformat())
 
 
@@ -167,4 +168,37 @@ class CandidatePath(Base):
     path_json = Column(JSON, default=dict)
     score = Column(Float, default=0.0)
     status = Column(String, default="unverified")  # NEVER 'accepted' at this stage
+    created_at = Column(String, default=lambda: _now().isoformat())
+
+
+# ===========================================================================
+# Boards — a user's manually-built canvas workspace (UI-only concept; never
+# mutates the canonical discovery data above). Scoped by owner_id, the same
+# per-browser id the frontend already sends as X-Graph-Id. Each board can hold
+# several independent canvas Pages (tabs), each with its own node/edge layout.
+# ===========================================================================
+
+BOARD_STATUSES = ("active", "archived")
+
+
+class Board(Base):
+    __tablename__ = "boards"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    owner_id = Column(String, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    target_name = Column(String, nullable=True)
+    target_org = Column(String, nullable=True)
+    status = Column(String, default="active")  # one of BOARD_STATUSES
+    created_at = Column(String, default=lambda: _now().isoformat())
+
+
+class BoardPage(Base):
+    __tablename__ = "board_pages"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    board_id = Column(String, ForeignKey("boards.id"), nullable=False, index=True)
+    name = Column(String, default="Page 1")
+    position = Column(Integer, default=0)   # tab ordering
+    elements = Column(JSON, default=dict)   # {"nodes": [...], "edges": [...], "centerId": ...}
     created_at = Column(String, default=lambda: _now().isoformat())
