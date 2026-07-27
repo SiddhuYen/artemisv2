@@ -666,6 +666,7 @@ function render(){
 
 function renderNodes(st) {
   const canvas=document.getElementById('canvas');
+  const pg=currentPage();
   canvas.querySelectorAll('.node').forEach(n=>n.remove());
   (st||pageState()).people.forEach(p=>{
     const sz=p.size||1,avPx=Math.round(80*sz),br=Math.round(6*sz);
@@ -673,6 +674,8 @@ function renderNodes(st) {
     const div=document.createElement('div');
     div.className='node'+(mode==='connect'?' m-connect':'')+(mode==='delete'?' m-delete':'')+(p.id===detailId?' selected':'')+(p.id===connSrc?' conn-src':'');
     div.id=`nd-${p.id}`;div.style.cssText=`left:${p.x}px;top:${p.y}px`;
+    const tagHtml = pg&&pg.startPersonId===p.id ? `<div class="node-tag node-tag-origin">POINT OF ORIGIN</div>`
+      : pg&&pg.targetPersonId===p.id ? `<div class="node-tag node-tag-target">TARGET</div>` : '';
     div.innerHTML=`
       <div class="avatar-box" style="width:${avPx}px;height:${avPx}px;border-radius:${br}px;position:relative">
         ${p.photo?`<img src="${esc(p.photo)}" onerror="this.style.display='none';this.nextSibling.style.display='flex'"><div class="avatar-initials" style="background:${col};display:none">${ini}</div>`:`<div class="avatar-initials" style="background:${col}">${ini}</div>`}
@@ -680,6 +683,7 @@ function renderNodes(st) {
       </div>
       <div class="node-name" style="font-size:${(0.77*sz).toFixed(2)}rem;max-width:${Math.round(110*sz)}px">${esc(p.name)}</div>
       ${p.role?`<div class="node-role" style="font-size:${(0.62*sz).toFixed(2)}rem;max-width:${Math.round(110*sz)}px">${esc(p.role)}</div>`:''}
+      ${tagHtml}
     `;
     div.addEventListener('mousedown',e=>nodeDown(e,p.id));
     div.addEventListener('click',e=>nodeClick(e,p.id));
@@ -810,6 +814,7 @@ document.addEventListener('click',e=>{if(!e.target.closest('#connPopup'))documen
 function openDetail(id){
   const p=pageState().people.find(x=>x.id===id);if(!p)return;
   detailId=id;renderNodes();
+  const pg=currentPage();
   const col=nodeColor(p.id),ini=initials(p.name);
   const photoHTML=p.photo?`<img id="dpBigImg" src="${esc(p.photo)}" onerror="this.style.display='none'">`:`<div class="dp-initials-big" style="background:${col}">${ini}</div>`;
   document.getElementById('dpTwoCol').innerHTML=`
@@ -825,6 +830,10 @@ function openDetail(id){
     </div>
     <div class="dp-right-col">
       <input class="dp-name-input" type="text" id="dp-name" value="${esc(p.name)}" spellcheck="false" placeholder="Name…">
+      <div class="dp-tag-row">
+        <button class="dp-tag-btn dp-tag-origin${pg&&pg.startPersonId===p.id?' active':''}" id="dpOriginBtn" onclick="toggleOriginTag('${p.id}')">📍 POINT OF ORIGIN</button>
+        <button class="dp-tag-btn dp-tag-target${pg&&pg.targetPersonId===p.id?' active':''}" id="dpTargetBtn" onclick="toggleTargetTag('${p.id}')">🎯 TARGET</button>
+      </div>
       <div class="dp-field"><label>// affiliation</label>
         <input type="text" id="dp-role" value="${esc(p.role||'')}" placeholder="Role, company, relationship…">
       </div>
@@ -853,6 +862,23 @@ function dpDrop(e){e.preventDefault();const f=e.dataTransfer.files[0];if(f&&f.ty
 function dpPhotoUrl(){const url=document.getElementById('dp-photo').value.trim();if(url)dpSetPhoto(url);}
 function dpSetPhoto(url){const w=document.getElementById('dpBigWrap');if(!w)return;let img=w.querySelector('img');if(!img){const init=w.querySelector('.dp-initials-big');if(init)init.remove();img=document.createElement('img');img.id='dpBigImg';w.insertBefore(img,w.querySelector('.dp-img-hover'));}img.src=url;img.style.display='block';}
 function closeDetail(){document.getElementById('detailPanel').classList.remove('open');document.getElementById('dpBackdrop').classList.remove('open');detailId=null;renderNodes();}
+
+function toggleOriginTag(id){
+  const pg=currentPage(); if(!pg) return;
+  pg.startPersonId = (pg.startPersonId===id) ? null : id;
+  save(); renderNodes(); updateDetailTagButtons();
+}
+function toggleTargetTag(id){
+  const pg=currentPage(); if(!pg) return;
+  pg.targetPersonId = (pg.targetPersonId===id) ? null : id;
+  save(); renderNodes(); updateDetailTagButtons();
+}
+function updateDetailTagButtons(){
+  if(!detailId) return;
+  const pg=currentPage(); if(!pg) return;
+  document.getElementById('dpOriginBtn')?.classList.toggle('active', pg.startPersonId===detailId);
+  document.getElementById('dpTargetBtn')?.classList.toggle('active', pg.targetPersonId===detailId);
+}
 function liveSize(val){if(!detailId)return;const p=pageState().people.find(x=>x.id===detailId);if(!p)return;p.size=parseFloat(val);document.getElementById('dp-size-val').textContent=Math.round(p.size*100);const el=document.getElementById(`nd-${detailId}`);if(!el)return;const sz=p.size,box=el.querySelector('.avatar-box');if(box){box.style.width=Math.round(80*sz)+'px';box.style.height=Math.round(80*sz)+'px';box.style.borderRadius=Math.round(6*sz)+'px';}const nm=el.querySelector('.node-name'),rl=el.querySelector('.node-role');if(nm){nm.style.fontSize=(0.77*sz).toFixed(2)+'rem';nm.style.maxWidth=Math.round(110*sz)+'px';}if(rl){rl.style.fontSize=(0.62*sz).toFixed(2)+'rem';rl.style.maxWidth=Math.round(110*sz)+'px';}renderConns();}
 function saveDetail(){if(!detailId)return;const p=pageState().people.find(x=>x.id===detailId);if(!p)return;p.name=document.getElementById('dp-name').value.trim()||p.name;p.role=document.getElementById('dp-role').value.trim();p.description=document.getElementById('dp-desc').value;p.ai_advice=document.getElementById('dp-ai').value;p.size=parseFloat(document.getElementById('dp-size').value)||1;const urlIn=document.getElementById('dp-photo').value.trim();const bigImg=document.querySelector('#dpBigWrap img');p.photo=bigImg?bigImg.src:(urlIn||p.photo);save();renderNodes();renderConns();const btn=document.getElementById('dpSaveBtn');if(btn){btn.textContent='✓ SAVED';setTimeout(()=>btn.textContent='SAVE',1500);}}
 function delFromDetail(){if(!detailId)return;const name=pageState().people.find(p=>p.id===detailId)?.name;if(!confirm(`Delete "${name}"?`))return;const pg=currentPage();pg.people=pg.people.filter(p=>p.id!==detailId);pg.conns=pg.conns.filter(c=>c.from!==detailId&&c.to!==detailId);closeDetail();save();render();}
