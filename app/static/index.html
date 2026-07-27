@@ -309,6 +309,7 @@ body {
   font-size: 9.5px; letter-spacing: 0.22em; color: var(--ink-faint);
 }
 #homeView .hv-foot .blink { animation: hvBlink 1.4s steps(1) infinite; color: var(--accent); }
+#homeView .hv-provider-warn { color: #e0902f; }
 
 /* ── BOOT ── */
 #hvBoot {
@@ -1314,6 +1315,7 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
       <!-- FOOTER -->
       <footer class="hv-foot">
         <span>ARTEMIS v2.6 · SECURE LINK ESTABLISHED <span class="blink">●</span></span>
+        <span id="hvProviderWarn" class="hv-provider-warn" style="display:none">⚠ NO SEARCH PROVIDER CONFIGURED — USING DUCKDUCKGO FALLBACK</span>
         <span id="hvFooterR">OPERATOR – · 0 BOARDS · 0 NODES INDEXED</span>
       </footer>
 

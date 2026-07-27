@@ -2115,10 +2115,29 @@ document.addEventListener('keydown', e => {
 });
 
 // ══════════════════════════════════════════════════════
+// PROVIDER STATUS — search providers (Serper/Brave) are configured server-side
+// only (platform secrets, e.g. `fly secrets set`); there is nothing for a user
+// to enter here. This just hides the "not configured" notice the instant
+// either key is present, so it's never shown once the operator has set one up.
+// ══════════════════════════════════════════════════════
+async function checkProviderStatus() {
+  const warn = document.getElementById('hvProviderWarn');
+  if (!warn) return;
+  try {
+    const s = await (await fetch('/status')).json();
+    const configured = s?.serper?.state !== 'not_configured' || s?.brave?.state !== 'not_configured';
+    warn.style.display = configured ? 'none' : '';
+  } catch {
+    warn.style.display = 'none';
+  }
+}
+
+// ══════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════
 (async function boot() {
   setOperatorName(operatorName());
   await Promise.all([loadBoardsFromBackend(), loadContactsFromBackend()]);
   showHome();
+  checkProviderStatus();
 })();
