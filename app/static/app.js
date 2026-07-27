@@ -386,7 +386,7 @@ function closeDetailRail() {
 function showCreateModal() {
   const scrim = document.getElementById('hvModalScrim');
   if (!scrim) return;
-  ['hvmName','hvmTarget','hvmFirm'].forEach(id => {
+  ['hvmName','hvmStart','hvmTarget'].forEach(id => {
     const el = document.getElementById(id); if(el) el.value='';
   });
   scrim.classList.add('open');
@@ -405,16 +405,29 @@ function hvModalScrimClick(e) {
 async function submitCreateBoard() {
   const name   = (document.getElementById('hvmName')?.value||'').trim();
   if (!name) { document.getElementById('hvmName')?.focus(); return; }
+  const start  = (document.getElementById('hvmStart')?.value||'').trim();
   const target = (document.getElementById('hvmTarget')?.value||'').trim();
-  const firm   = (document.getElementById('hvmFirm')?.value||'').trim();
+  if (!start || !target) { alert('Enter both a starting person and a target.'); return; }
 
   try {
     const res = await fetch('/boards', { method:'POST', headers:API_HEADERS,
-      body: JSON.stringify({ name: name.toUpperCase(), target_name: target.toUpperCase(), target_org: firm.toUpperCase() }) });
+      body: JSON.stringify({ name: name.toUpperCase(), target_name: target.toUpperCase(), target_org: '' }) });
     if (!res.ok) throw new Error(await res.text());
     const summary = await res.json();
     closeCreateModal();
-    openBoard(summary.id);
+    await openBoard(summary.id);
+
+    // designate the starting/target people straight away, same as Discover
+    const pg = currentPage();
+    if (pg) {
+      const w = document.getElementById('wrapper');
+      const cx = (w.clientWidth/2 - panX) / zoom, cy = (w.clientHeight/2 - panY) / zoom;
+      const startP = findOrCreatePerson(pg, start, cx - 260, cy);
+      const targetP = findOrCreatePerson(pg, target, cx + 260, cy);
+      pg.startPersonId = startP.id;
+      pg.targetPersonId = targetP.id;
+      save(); render(); fitToContent();
+    }
   } catch(e) { alert('Failed to create board: '+e.message); }
 }
 
@@ -908,13 +921,33 @@ function toggleMode(m){
   mode=(mode===m)?'normal':m;
   if(mode==='normal'){connSrc=null;document.getElementById('tempLine').style.display='none';}
   document.getElementById('wrapper').className='canvas-wrapper'+(mode!=='normal'?` m-${mode}`:'');
-  document.getElementById('btnConn').className='btn'+(mode==='connect'?' m-connect':'');
-  document.getElementById('btnDel').className='btn'+(mode==='delete'?' m-delete':'');
+  document.getElementById('miConnect')?.classList.toggle('active', mode==='connect');
+  document.getElementById('miDelete')?.classList.toggle('active', mode==='delete');
+  const menuBtn = document.getElementById('btnManualMenu');
+  if (menuBtn) menuBtn.className = 'btn' + (mode==='connect' ? ' m-connect' : mode==='delete' ? ' m-delete' : '');
   setHint({normal:'scroll=zoom · drag=pan · [C]onnect · [D]elete · [A]dd',connect:'click a person to start · Esc cancel',delete:'click person or line to delete · Esc cancel'}[mode]);
   renderNodes();
 }
 function exitMode(){mode='normal';connSrc=null;document.getElementById('tempLine').style.display='none';selectedIds.clear();toggleMode('normal');}
 function setHint(t){}
+
+function toggleManualMenu(e){
+  e.stopPropagation();
+  const menu = document.getElementById('manualMenu');
+  const opening = !menu.classList.contains('open');
+  if (opening) {
+    const r = document.getElementById('btnManualMenu').getBoundingClientRect();
+    menu.style.top = (r.bottom + 6) + 'px';
+    menu.style.left = r.left + 'px';
+  }
+  menu.classList.toggle('open', opening);
+}
+function closeManualMenu(){
+  document.getElementById('manualMenu')?.classList.remove('open');
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.tb-menu-wrap')) closeManualMenu();
+});
 function clearBoard(){if(!confirm('Clear this page?'))return;const pg=currentPage();if(!pg)return;pg.people=[];pg.conns=[];connSrc=null;save();closeDetail();render();}
 
 // ══════════════════════════════════════════════════════
