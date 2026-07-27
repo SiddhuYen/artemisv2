@@ -63,7 +63,8 @@ def _adjacency(db: Session):
     for (a, b), e in best.items():
         adj[a].append((b, e))
         adj[b].append((a, e))
-    return adj, person_by_id, src_by_id
+    degree = {pid: len(v) for pid, v in adj.items()}
+    return adj, person_by_id, src_by_id, degree
 
 
 def _edge_cost(e: RelationshipEdge) -> float:
@@ -71,10 +72,25 @@ def _edge_cost(e: RelationshipEdge) -> float:
     return -math.log(conf) + _STATUS_PENALTY.get(e.status, 1.0)
 
 
-def _best_path(adj, start: str, target: str, max_hops: int, excluded=None):
+def _node_penalty(person_by_id, degree, person_id: str) -> float:
+    """Cost added for routing THROUGH person_id (never applied to the final
+    target — see _best_path). Fame: a real edge to a Wikidata-notable person is
+    a poor bridge, they're unlikely to relay a stranger's intro. Mega-hub: a
+    node with far more edges than typical shouldn't absorb every route."""
+    p = person_by_id.get(person_id)
+    fame = config.FAME_PENALTY if (p and p.wikidata_qid) else 0.0
+    deg = degree.get(person_id, 0)
+    hub = config.DEGREE_PENALTY_COEF * math.log(deg) if deg > config.MEGA_HUB_DEGREE else 0.0
+    return fame + hub
+
+
+def _best_path(adj, start: str, target: str, max_hops: int, excluded=None,
+               person_by_id=None, degree=None):
     """Best (max-confidence) path, optionally skipping `excluded` intermediate
     nodes so callers can find genuinely different routes."""
     excluded = excluded or set()
+    person_by_id = person_by_id or {}
+    degree = degree or {}
     if start == target:
         return [(start, None)]
     best_cost = {start: 0.0}
@@ -88,20 +104,23 @@ def _best_path(adj, start: str, target: str, max_hops: int, excluded=None):
         for nbr, edge in adj.get(node, []):
             if nbr in excluded and nbr != target:
                 continue
-            nc = cost + _edge_cost(edge)
+            penalty = 0.0 if nbr == target else (
+                config.HOP_SURCHARGE + _node_penalty(person_by_id, degree, nbr))
+            nc = cost + _edge_cost(edge) + penalty
             if nbr not in best_cost or nc < best_cost[nbr]:
                 best_cost[nbr] = nc
                 heapq.heappush(heap, (nc, hops + 1, nbr, path + [(nbr, edge)]))
     return None
 
 
-def _diverse_paths(adj, start: str, target: str, max_hops: int, k: int):
+def _diverse_paths(adj, start: str, target: str, max_hops: int, k: int,
+                   person_by_id=None, degree=None):
     """Up to k routes; each avoids all bridge (intermediate) nodes used by the
     earlier ones, so they're genuinely different."""
     paths = []
     excluded = set()
     for _ in range(k):
-        hops = _best_path(adj, start, target, max_hops, excluded)
+        hops = _best_path(adj, start, target, max_hops, excluded, person_by_id, degree)
         if hops is None:
             break
         paths.append(hops)
@@ -152,9 +171,10 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         missing = name_a if a is None else name_b
         return {"connected": False, "reason": f"'{missing}' not found in the graph"}
 
-    adj, person_by_id, src_by_id = _adjacency(db)
+    adj, person_by_id, src_by_id, degree = _adjacency(db)
     max_hops = 2 * depth + 1
-    routes = _diverse_paths(adj, a.id, b.id, max_hops, config.CONNECT_MAX_PATHS)
+    routes = _diverse_paths(adj, a.id, b.id, max_hops, config.CONNECT_MAX_PATHS,
+                            person_by_id, degree)
     if not routes:
         return {
             "connected": False,

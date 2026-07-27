@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import config
 from ..models import (
     CandidatePath,
     GraphMatch,
@@ -62,11 +63,26 @@ class _PublicEdges:
         for (a, b), e in best.items():
             self.adj[a].append((b, e))
             self.adj[b].append((a, e))
+        # node degree (edge fan-out) — free to compute since adj is already built;
+        # used by _node_penalty's mega-hub guard.
+        self.degree: Dict[str, int] = {pid: len(v) for pid, v in self.adj.items()}
 
 
 def _edge_cost(e: RelationshipEdge) -> float:
     conf = max(e.confidence_raw or 0.01, 0.01)
     return -math.log(conf) + _STATUS_PENALTY.get(e.status, 1.0)
+
+
+def _node_penalty(pe: _PublicEdges, person_id: str) -> float:
+    """Cost added for routing THROUGH person_id (never applied to the final
+    target — see _best_path). Fame: a real edge to a Wikidata-notable person is
+    a poor bridge, they're unlikely to relay a stranger's intro. Mega-hub: a
+    node with far more edges than typical shouldn't absorb every route."""
+    p = pe.person_by_id.get(person_id)
+    fame = config.FAME_PENALTY if (p and p.wikidata_qid) else 0.0
+    deg = pe.degree.get(person_id, 0)
+    hub = config.DEGREE_PENALTY_COEF * math.log(deg) if deg > config.MEGA_HUB_DEGREE else 0.0
+    return fame + hub
 
 
 def _best_path(pe: _PublicEdges, start: str, target: str):
@@ -82,7 +98,8 @@ def _best_path(pe: _PublicEdges, start: str, target: str):
         if hops >= MAX_PUBLIC_HOPS:
             continue
         for nbr, edge in pe.adj.get(node, []):
-            ncost = cost + _edge_cost(edge)
+            penalty = 0.0 if nbr == target else config.HOP_SURCHARGE + _node_penalty(pe, nbr)
+            ncost = cost + _edge_cost(edge) + penalty
             if nbr not in best_cost or ncost < best_cost[nbr]:
                 best_cost[nbr] = ncost
                 heapq.heappush(heap, (ncost, hops + 1, nbr, path + [(nbr, edge)]))
