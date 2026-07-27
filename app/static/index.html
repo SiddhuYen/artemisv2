@@ -794,60 +794,6 @@ body {
 #liModal .li-btn.ghost:hover { border-color:var(--accent);color:var(--accent-bright);background:var(--accent-wash); }
 #liModal .li-btn:disabled { opacity:0.35;cursor:not-allowed; }
 
-/* ── AI SETTINGS MODAL ── */
-#aiScrim { position:fixed;inset:0;z-index:150;display:none;place-items:center;background:oklch(0.06 0.02 22/0.7);backdrop-filter:blur(2px);padding:20px; }
-#aiScrim.open { display:grid; }
-#aiModal {
-  width:460px;max-width:100%;position:relative;
-  background:linear-gradient(180deg,oklch(0.185 0.016 22),oklch(0.13 0.012 22));
-  border:1px solid oklch(0.635 0.205 22);
-  box-shadow:0 0 60px oklch(0.66 0.21 22/0.4),0 30px 80px oklch(0 0 0/0.6);
-  padding:26px;font-family:"Share Tech Mono","JetBrains Mono",monospace;
-  --accent:oklch(0.635 0.205 22);--accent-bright:oklch(0.72 0.205 22);--accent-dim:oklch(0.52 0.13 22);
-  --accent-line:oklch(0.635 0.205 22/0.30);--accent-glow:oklch(0.66 0.21 22/0.55);--accent-wash:oklch(0.40 0.11 22/0.10);
-  --bg0:oklch(0.13 0.012 22);--bg1:oklch(0.185 0.016 22);
-  --ink:oklch(0.93 0.02 22);--ink-dim:oklch(0.74 0.04 22);--ink-mute:oklch(0.58 0.045 22);--ink-faint:oklch(0.44 0.04 22);
-  color:var(--ink);
-}
-#aiModal .aim-lbl { font-size:10px;letter-spacing:0.3em;color:var(--ink-mute);margin-bottom:4px; }
-#aiModal h3 { font-family:"Rajdhani","Share Tech Mono",sans-serif;font-weight:700;font-size:22px;letter-spacing:0.06em;margin:0 0 18px;color:var(--accent-bright);text-shadow:0 0 14px var(--accent-glow); }
-.aim-provider { display:flex;gap:8px;margin-bottom:18px; }
-.aim-prov-btn { flex:1;height:40px;border:1px solid var(--accent-line);background:transparent;color:var(--ink-mute);font-family:inherit;font-size:11px;letter-spacing:0.14em;cursor:pointer;transition:all .16s; }
-.aim-prov-btn.active { border-color:var(--accent);color:var(--accent-bright);background:var(--accent-wash);text-shadow:0 0 8px var(--accent-glow); }
-.aim-prov-btn:hover:not(.active) { border-color:var(--accent-dim);color:var(--ink-dim); }
-.aim-field { margin-bottom:16px; }
-.aim-field label { display:block;font-size:10px;letter-spacing:0.18em;color:var(--accent-dim);margin-bottom:7px; }
-.aim-field input { width:100%;height:38px;padding:0 12px;background:oklch(0.12 0.012 22/0.7);border:1px solid var(--accent-line);color:var(--ink);font-family:inherit;font-size:13px;letter-spacing:0.04em;outline:0; }
-.aim-field input:focus { border-color:var(--accent);box-shadow:inset 0 0 14px var(--accent-wash); }
-.aim-field input::placeholder { color:var(--ink-faint); }
-.aim-hint { font-size:10px;color:var(--ink-faint);letter-spacing:0.1em;margin-top:6px;line-height:1.5; }
-.aim-hint a { color:var(--accent-bright);text-decoration:none; }
-.aim-hint a:hover { text-decoration:underline; }
-.aim-status { font-size:10px;letter-spacing:0.16em;margin-bottom:14px;min-height:16px; }
-.aim-status.ok { color:oklch(0.65 0.18 142); }
-.aim-status.err { color:oklch(0.65 0.18 28); }
-#aiModal .aim-actions { display:flex;gap:10px; }
-#aiModal .aim-btn { display:inline-flex;align-items:center;justify-content:center;flex:1;height:42px;border:1px solid var(--accent);background:linear-gradient(var(--accent-wash),transparent);color:var(--accent-bright);font-family:inherit;font-size:12px;letter-spacing:0.16em;cursor:pointer;transition:all .16s;text-shadow:0 0 8px var(--accent-glow); }
-#aiModal .aim-btn:hover { background:var(--accent);color:var(--bg0);text-shadow:none; }
-#aiModal .aim-btn.ghost { border-color:var(--accent-line);color:var(--ink-dim);background:transparent;text-shadow:none; }
-#aiModal .aim-btn.ghost:hover { border-color:var(--accent);color:var(--accent-bright);background:var(--accent-wash); }
-
-/* AI suggest button + result */
-.ai-suggest-btn {
-  display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;margin-top:10px;width:100%;
-  border:1px solid oklch(0.635 0.205 22/0.5);background:oklch(0.20 0.06 22/0.3);
-  color:oklch(0.72 0.205 22);font-family:"Share Tech Mono","JetBrains Mono",monospace;
-  font-size:11px;letter-spacing:0.18em;cursor:pointer;transition:all .16s;
-  text-shadow:0 0 8px oklch(0.66 0.21 22/0.55);justify-content:center;
-}
-.ai-suggest-btn:hover { border-color:oklch(0.635 0.205 22);background:oklch(0.40 0.11 22/0.15);box-shadow:0 0 16px oklch(0.66 0.21 22/0.3); }
-.ai-suggest-btn:disabled { opacity:0.35;cursor:not-allowed; }
-.ai-suggest-btn .ai-spinner { display:inline-block;width:12px;height:12px;border:1.5px solid oklch(0.635 0.205 22/0.3);border-top-color:oklch(0.72 0.205 22);border-radius:50%;animation:aiSpin .7s linear infinite; }
-@keyframes aiSpin { to { transform:rotate(360deg); } }
-.ai-result { margin-top:14px;border:1px solid oklch(0.635 0.205 22/0.25);background:oklch(0.14 0.014 22/0.6);padding:14px;font-size:11px;line-height:1.7;color:oklch(0.74 0.04 22);letter-spacing:0.04em;white-space:pre-wrap;display:none; }
-.ai-result.show { display:block; }
-.ai-no-key { font-size:10px;color:oklch(0.58 0.045 22);letter-spacing:0.14em;margin-top:10px;line-height:1.6; }
-.ai-no-key a { color:oklch(0.72 0.205 22);cursor:pointer;text-decoration:underline; }
 
 /* ══════════════════════════════════════════════════════
    CONNECTIONS PICKER PANEL (board view)
@@ -1115,11 +1061,6 @@ body {
 .dp-tag-btn.dp-tag-target.active { background: rgba(229,62,62,0.18); border-color: #e53e3e; color: #ff6666; }
 .dp-field { margin-bottom: 13px; }
 .dp-field label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1.2px; color: #cc5555; font-weight: 700; margin-bottom: 6px; }
-.dp-ai-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.dp-ai-header label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1.2px; color: #cc5555; font-weight: 700; }
-.btn-generate { padding: 4px 12px; background: transparent; border: 1px solid #993333; border-radius: 5px; color: #dd6666; font-size: 0.72rem; font-family: 'JetBrains Mono', monospace; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; transition: all 0.15s; }
-.btn-generate:hover { border-color: #e53e3e; color: #e53e3e; background: rgba(229,62,62,0.08); }
-.btn-generate:disabled { opacity: 0.4; cursor: not-allowed; }
 .dp-bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 16px; border-top: 1px solid #2a1818; flex-shrink: 0; }
 .btn-save { padding: 9px 24px; background: rgba(229,62,62,0.12); border: 1px solid #e53e3e; border-radius: 7px; color: #e53e3e; font-size: 0.82rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.8px; cursor: pointer; transition: all 0.15s; }
 .btn-save:hover { background: rgba(229,62,62,0.22); }
@@ -1439,7 +1380,6 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
             <input id="ctSearch" type="text" placeholder="SEARCH CONTACTS…" oninput="renderContacts()">
           </div>
           <button class="hv-btn ghost" onclick="showLinkedInImport()" title="Import your LinkedIn connections">⬆ LINKEDIN</button>
-          <button class="hv-btn ghost" onclick="showAISettings()" title="Configure AI path suggestions">⚙ AI SETTINGS</button>
           <button class="hv-btn ghost" onclick="clearAllContacts()" title="Delete all contacts" style="border-color:#8a4040;color:#dd5555;">✕ CLEAR ALL</button>
           <button class="hv-btn" onclick="showAddContactModal()">+ ADD CONTACT</button>
         </div>
@@ -1456,9 +1396,6 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
           <button class="rt-find-btn" onclick="execContactRoute()">FIND INTRO PATH ▸</button>
         </div>
         <div class="rt-result" id="rtResult"></div>
-        <button class="ai-suggest-btn" id="rtAiBtn" onclick="execAISuggest('rt')">⚡ AI SUGGEST PATH</button>
-        <div class="ai-result" id="rtAiResult"></div>
-        <div class="ai-no-key" id="rtNoKey" style="display:none">AI suggestions require an API key. <a onclick="showAISettings()">Configure AI ▸</a></div>
       </div>
 
       <!-- FOOTER -->
@@ -1580,9 +1517,6 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
     <button class="bvr-run-btn" id="bvrRunBtn" onclick="execBoardRoute()">TRACE ROUTE ▸</button>
     <div class="bvr-result-lbl" id="bvrResultLbl" style="display:none">// PATH FOUND</div>
     <div id="bvrResult"></div>
-    <button class="ai-suggest-btn" id="bvrAiBtn" onclick="execAISuggest('bvr')" style="margin-top:16px">⚡ AI SUGGEST PATH</button>
-    <div class="ai-result" id="bvrAiResult"></div>
-    <div class="ai-no-key" id="bvrNoKey" style="display:none">AI requires an API key. <a onclick="showAISettings()">Configure ▸</a></div>
   </div>
 </div>
 
@@ -1623,33 +1557,6 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
     <div class="li-actions">
       <button class="li-btn" id="liImportBtn" onclick="confirmLinkedInImport()" disabled>IMPORT ▸</button>
       <button class="li-btn ghost" onclick="closeLinkedInImport()">CANCEL</button>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════ AI SETTINGS MODAL ═══════════════════ -->
-<div id="aiScrim" onclick="aiScrimClick(event)">
-  <div id="aiModal">
-    <span class="art-br tl"></span><span class="art-br tr"></span>
-    <span class="art-br bl"></span><span class="art-br br2"></span>
-    <div class="aim-lbl">// AI CONFIGURATION</div>
-    <h3>AI PATH SUGGESTIONS</h3>
-    <div class="aim-provider">
-      <button class="aim-prov-btn active" id="aimOpenAI" onclick="setAIProvider('openai')">OPENAI</button>
-      <button class="aim-prov-btn" id="aimAnthropic" onclick="setAIProvider('anthropic')">ANTHROPIC</button>
-      <button class="aim-prov-btn" id="aimGemini" onclick="setAIProvider('gemini')">GEMINI ⚡</button>
-    </div>
-    <div class="aim-field">
-      <label id="aimKeyLabel">OPENAI API KEY</label>
-      <input id="aimKey" type="password" placeholder="sk-…">
-      <div class="aim-hint" id="aimHint">
-        Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>. Stored locally in your browser, never sent anywhere except directly to OpenAI.
-      </div>
-    </div>
-    <div class="aim-status" id="aimStatus"></div>
-    <div class="aim-actions">
-      <button class="aim-btn" onclick="saveAISettings()">SAVE &amp; TEST ▸</button>
-      <button class="aim-btn ghost" onclick="closeAISettings()">CANCEL</button>
     </div>
   </div>
 </div>

@@ -40,13 +40,13 @@ function _saveLocalPhotos(o) { localStorage.setItem('artemis_contact_photos', JS
 // ── translation: backend node/edge (opaque JSON) <-> board person/conn ──
 function personToBackendNode(p) {
   return { data: { id:p.id, label:p.name, kind:'person', role:p.role||'', company:p.company||'',
-    photo:p.photo||'', description:p.description||'', ai_advice:p.ai_advice||'', size:p.size||1 },
+    photo:p.photo||'', description:p.description||'', size:p.size||1 },
     position: { x:p.x, y:p.y } };
 }
 function backendNodeToPerson(n) {
   const d = n.data || {};
   return { id:d.id, name:d.label, role:d.role||d.title||'', company:d.company||d.org||'',
-    photo:d.photo||'', description:d.description||'', ai_advice:d.ai_advice||'', size:d.size||1,
+    photo:d.photo||'', description:d.description||'', size:d.size||1,
     x:(n.position&&n.position.x)||0, y:(n.position&&n.position.y)||0 };
 }
 function connToBackendEdge(c) {
@@ -619,7 +619,6 @@ document.addEventListener('keydown',e=>{
     case'Escape':
       if(selectedIds.size>0){selectedIds.clear();renderMultiSel();break;}
       if(document.getElementById('liScrim')?.classList.contains('open')){closeLinkedInImport();break;}
-      if(document.getElementById('aiScrim')?.classList.contains('open')){closeAISettings();break;}
       if(document.getElementById('discoverScrim')?.classList.contains('open')){closeDiscoverModal();break;}
       if(mode!=='normal')exitMode();else closeDetail();break;
     case'c':case'C':toggleMode('connect');break;
@@ -840,13 +839,6 @@ function openDetail(id){
       <div class="dp-field" style="flex:1"><label>// description</label>
         <textarea id="dp-desc" style="min-height:88px">${esc(p.description||'')}</textarea>
       </div>
-      <div class="dp-field" style="flex:1">
-        <div class="dp-ai-header">
-          <label>// AI's advice</label>
-          <button class="btn-generate" id="genBtn" onclick="generateAdvice()">⚡ GENERATE</button>
-        </div>
-        <textarea id="dp-ai" style="min-height:80px" placeholder="Click GENERATE for AI networking advice…">${esc(p.ai_advice||'')}</textarea>
-      </div>
       <div class="dp-bottom-row">
         <button class="btn-del" onclick="delFromDetail()">Delete Person</button>
         <button class="btn-save" id="dpSaveBtn" onclick="saveDetail()">SAVE</button>
@@ -880,25 +872,9 @@ function updateDetailTagButtons(){
   document.getElementById('dpTargetBtn')?.classList.toggle('active', pg.targetPersonId===detailId);
 }
 function liveSize(val){if(!detailId)return;const p=pageState().people.find(x=>x.id===detailId);if(!p)return;p.size=parseFloat(val);document.getElementById('dp-size-val').textContent=Math.round(p.size*100);const el=document.getElementById(`nd-${detailId}`);if(!el)return;const sz=p.size,box=el.querySelector('.avatar-box');if(box){box.style.width=Math.round(80*sz)+'px';box.style.height=Math.round(80*sz)+'px';box.style.borderRadius=Math.round(6*sz)+'px';}const nm=el.querySelector('.node-name'),rl=el.querySelector('.node-role');if(nm){nm.style.fontSize=(0.77*sz).toFixed(2)+'rem';nm.style.maxWidth=Math.round(110*sz)+'px';}if(rl){rl.style.fontSize=(0.62*sz).toFixed(2)+'rem';rl.style.maxWidth=Math.round(110*sz)+'px';}renderConns();}
-function saveDetail(){if(!detailId)return;const p=pageState().people.find(x=>x.id===detailId);if(!p)return;p.name=document.getElementById('dp-name').value.trim()||p.name;p.role=document.getElementById('dp-role').value.trim();p.description=document.getElementById('dp-desc').value;p.ai_advice=document.getElementById('dp-ai').value;p.size=parseFloat(document.getElementById('dp-size').value)||1;const urlIn=document.getElementById('dp-photo').value.trim();const bigImg=document.querySelector('#dpBigWrap img');p.photo=bigImg?bigImg.src:(urlIn||p.photo);save();renderNodes();renderConns();const btn=document.getElementById('dpSaveBtn');if(btn){btn.textContent='✓ SAVED';setTimeout(()=>btn.textContent='SAVE',1500);}}
+function saveDetail(){if(!detailId)return;const p=pageState().people.find(x=>x.id===detailId);if(!p)return;p.name=document.getElementById('dp-name').value.trim()||p.name;p.role=document.getElementById('dp-role').value.trim();p.description=document.getElementById('dp-desc').value;p.size=parseFloat(document.getElementById('dp-size').value)||1;const urlIn=document.getElementById('dp-photo').value.trim();const bigImg=document.querySelector('#dpBigWrap img');p.photo=bigImg?bigImg.src:(urlIn||p.photo);save();renderNodes();renderConns();const btn=document.getElementById('dpSaveBtn');if(btn){btn.textContent='✓ SAVED';setTimeout(()=>btn.textContent='SAVE',1500);}}
 function delFromDetail(){if(!detailId)return;const name=pageState().people.find(p=>p.id===detailId)?.name;if(!confirm(`Delete "${name}"?`))return;const pg=currentPage();pg.people=pg.people.filter(p=>p.id!==detailId);pg.conns=pg.conns.filter(c=>c.from!==detailId&&c.to!==detailId);closeDetail();save();render();}
 
-async function generateAdvice(){
-  const p=pageState().people.find(x=>x.id===detailId);if(!p)return;
-  let apiKey=localStorage.getItem('anthropicKey');
-  if(!apiKey){apiKey=prompt('Enter your Anthropic API key:');if(!apiKey)return;localStorage.setItem('anthropicKey',apiKey.trim());apiKey=apiKey.trim();}
-  const btn=document.getElementById('genBtn');if(btn){btn.textContent='⏳ …';btn.disabled=true;}
-  const name=document.getElementById('dp-name')?.value||p.name;
-  const affil=document.getElementById('dp-role')?.value||p.role||'';
-  const desc=document.getElementById('dp-desc')?.value||p.description||'';
-  const prompt2=`You are a strategic networking advisor. Give me specific, actionable advice on how to connect with and build a relationship with ${name}${affil?', who is '+affil:''}${desc?'. Context: '+desc.slice(0,300):''}. Be concise and tactical. Format as 3-4 bullet points starting with •`;
-  try{
-    const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:400,messages:[{role:'user',content:prompt2}]})});
-    if(!res.ok){if(res.status===401)localStorage.removeItem('anthropicKey');throw new Error(`API error ${res.status}`);}
-    const data=await res.json();const ta=document.getElementById('dp-ai');if(ta)ta.value=data.content[0].text;
-  }catch(err){alert('Error: '+err.message);}
-  finally{if(btn){btn.textContent='⚡ GENERATE';btn.disabled=false;}}
-}
 
 // ══════════════════════════════════════════════════════
 // ADD MODAL
@@ -933,7 +909,7 @@ function submitAdd(){
   const cx=(w.clientWidth/2-panX)/zoom,cy=(w.clientHeight/2-panY)/zoom;
   const j=()=>(Math.random()-.5)*220;
   const pg=currentPage();if(!pg)return;
-  const p={id:uid(),name,role:document.getElementById('mRole').value.trim(),photo,description:document.getElementById('mDesc').value.trim(),ai_advice:'',size:1,x:Math.round(cx+j()),y:Math.round(cy+j())};
+  const p={id:uid(),name,role:document.getElementById('mRole').value.trim(),photo,description:document.getElementById('mDesc').value.trim(),size:1,x:Math.round(cx+j()),y:Math.round(cy+j())};
   pg.people.push(p);save();render();closeModal();
   setTimeout(()=>openDetail(p.id),120);
 }
@@ -1251,7 +1227,7 @@ function submitImport() {
 
   const newPeople = entries.map((e, i) => ({
     id: uid(), name: e.name, role: e.affil, photo: e.photo,
-    description: '', ai_advice: '', size: 1,
+    description: '', size: 1,
     x: positions[i].x, y: positions[i].y
   }));
 
@@ -1300,7 +1276,7 @@ function findOrCreatePerson(pg, name, x, y) {
   const norm = name.toLowerCase().trim();
   let p = pg.people.find(p => p.name.toLowerCase().trim() === norm);
   if (!p) {
-    p = { id: uid(), name, role: '', photo: '', description: '', ai_advice: '', size: 1, x: Math.round(x), y: Math.round(y) };
+    p = { id: uid(), name, role: '', photo: '', description: '', size: 1, x: Math.round(x), y: Math.round(y) };
     pg.people.push(p);
   }
   return p;
@@ -1374,9 +1350,9 @@ function exportBoardCSV() {
   const nameOf = id => people.find(p=>p.id===id)?.name || id;
   const rows = people.map(p => {
     const myConns = conns.filter(c=>c.from===p.id||c.to===p.id).map(c=>nameOf(c.from===p.id?c.to:c.from)).join(' | ');
-    return [p.name, p.role||'', p.photo||'', p.description||'', p.ai_advice||'', myConns];
+    return [p.name, p.role||'', p.photo||'', p.description||'', myConns];
   });
-  const header = ['Name','Role','Photo','Description','Notes','Connected To'];
+  const header = ['Name','Role','Photo','Description','Connected To'];
   const csvLines = [header, ...rows].map(row =>
     row.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')
   );
@@ -1929,7 +1905,7 @@ function mergeConnectResultIntoBoard(data) {
       if (!p) {
         const angle = Math.PI/2 + (i * 137.508 * Math.PI / 180); i++;
         const radius = 200 + Math.floor(i/8)*140;
-        p = { id: uid(), name: hop.label, role: '', photo: '', description: '', ai_advice: '', size: 1,
+        p = { id: uid(), name: hop.label, role: '', photo: '', description: '', size: 1,
           x: Math.round(cx + Math.cos(angle)*radius), y: Math.round(cy + Math.sin(angle)*radius) };
         pg.people.push(p); byName.set(key, p);
       }
@@ -2060,195 +2036,6 @@ async function confirmLinkedInImport() {
 }
 
 // ══════════════════════════════════════════════════════
-// AI SETTINGS + PATH SUGGESTION (bring-your-own-key, client
-// side only — independent of the Artemis backend)
-// ══════════════════════════════════════════════════════
-const AI_STORAGE_KEY = 'artemis_ai_v1';
-
-function getAISettings() {
-  try { return JSON.parse(localStorage.getItem(AI_STORAGE_KEY)) || { provider: 'openai', key: '' }; }
-  catch(e) { return { provider: 'openai', key: '' }; }
-}
-function hasAIKey() { return !!(getAISettings().key); }
-
-let _aiProvider = 'openai';
-function showAISettings() {
-  const s = getAISettings();
-  _aiProvider = s.provider || 'openai';
-  document.getElementById('aimKey').value = s.key || '';
-  document.getElementById('aimStatus').textContent = '';
-  updateAIProviderUI();
-  document.getElementById('aiScrim').classList.add('open');
-  setTimeout(() => document.getElementById('aimKey').focus(), 60);
-}
-function closeAISettings() { document.getElementById('aiScrim').classList.remove('open'); }
-function aiScrimClick(e) { if (e.target === document.getElementById('aiScrim')) closeAISettings(); }
-function setAIProvider(p) {
-  _aiProvider = p;
-  const s = document.getElementById("aimStatus"); if(s){s.textContent="";s.className="aim-status";}
-  updateAIProviderUI();
-}
-function updateAIProviderUI() {
-  document.getElementById('aimOpenAI').classList.toggle('active', _aiProvider==='openai');
-  document.getElementById('aimAnthropic').classList.toggle('active', _aiProvider==='anthropic');
-  document.getElementById('aimGemini').classList.toggle('active', _aiProvider==='gemini');
-  const labels = { openai:'OPENAI API KEY', anthropic:'ANTHROPIC API KEY', gemini:'GEMINI API KEY' };
-  const placeholders = { openai:'sk-…', anthropic:'sk-ant-…', gemini:'AIza…' };
-  const hints = {
-    openai: `Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>. Stored locally, never shared.`,
-    anthropic: `Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>. Stored locally, never shared.`,
-    gemini: `Free tier — get a key at <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>. No credit card required. Stored locally, never shared.`
-  };
-  document.getElementById('aimKeyLabel').textContent = labels[_aiProvider] || 'API KEY';
-  document.getElementById('aimKey').placeholder = placeholders[_aiProvider] || '';
-  document.getElementById('aimHint').innerHTML = hints[_aiProvider] || '';
-}
-async function saveAISettings() {
-  const key = document.getElementById('aimKey').value.trim();
-  const statusEl = document.getElementById('aimStatus');
-  if (!key) { statusEl.textContent = '// Enter an API key first.'; statusEl.className='aim-status err'; return; }
-  statusEl.textContent = '// Testing connection…'; statusEl.className='aim-status';
-  try {
-    const { ok, errMsg } = await testAIKey(_aiProvider, key);
-    if (ok) {
-      localStorage.setItem(AI_STORAGE_KEY, JSON.stringify({ provider: _aiProvider, key }));
-      statusEl.textContent = '// Connected ✓'; statusEl.className='aim-status ok';
-      setTimeout(() => closeAISettings(), 900);
-    } else {
-      statusEl.textContent = '// ' + (errMsg || 'Key rejected — check it and try again.'); statusEl.className='aim-status err';
-    }
-  } catch(e) {
-    statusEl.textContent = '// Error: ' + (e.message||'unknown'); statusEl.className='aim-status err';
-  }
-}
-async function testAIKey(provider, key) {
-  if (provider === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-      body: JSON.stringify({ model:'gpt-4o-mini', messages:[{role:'user',content:'Hi'}], max_tokens:5 })
-    });
-    if (res.ok) return { ok: true };
-    const d = await res.json().catch(()=>({}));
-    return { ok: false, errMsg: d?.error?.message || ('OpenAI error '+res.status) };
-  } else if (provider === 'gemini') {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ contents:[{parts:[{text:'Hi'}]}], generationConfig:{maxOutputTokens:5} })
-    });
-    if (res.ok) return { ok: true };
-    const d = await res.json().catch(()=>({}));
-    return { ok: false, errMsg: d?.error?.message || ('Gemini error '+res.status) };
-  } else {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body: JSON.stringify({ model:'claude-haiku-4-5-20251001', max_tokens:5, messages:[{role:'user',content:'Hi'}] })
-    });
-    if (res.ok) return { ok: true };
-    const d = await res.json().catch(()=>({}));
-    return { ok: false, errMsg: d?.error?.message || ('Anthropic error '+res.status) };
-  }
-}
-
-async function callAI(prompt) {
-  const { provider, key } = getAISettings();
-  if (!key) return null;
-  if (provider === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-      body: JSON.stringify({ model:'gpt-4o-mini', messages:[{role:'user',content:prompt}], max_tokens:600, temperature:0.7 })
-    });
-    if (!res.ok) throw new Error('OpenAI error '+res.status);
-    const d = await res.json();
-    return d.choices?.[0]?.message?.content || null;
-  } else if (provider === 'gemini') {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ contents:[{parts:[{text:prompt}]}], generationConfig:{maxOutputTokens:600, temperature:0.7} })
-    });
-    if (!res.ok) throw new Error('Gemini error '+res.status);
-    const d = await res.json();
-    return d.candidates?.[0]?.content?.parts?.[0]?.text || null;
-  } else {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body: JSON.stringify({ model:'claude-haiku-4-5-20251001', max_tokens:600, messages:[{role:'user',content:prompt}] })
-    });
-    if (!res.ok) throw new Error('Anthropic error '+res.status);
-    const d = await res.json();
-    return d.content?.[0]?.text || null;
-  }
-}
-
-function buildAIPrompt(targetName) {
-  const contacts = (db.contacts||[]).slice(0,120);
-  const list = contacts.map(c => {
-    const meta = [c.role, c.company].filter(Boolean).join(' at ');
-    const desc = c.description ? ' — ' + c.description : '';
-    return `- ${c.name}${meta ? ' ('+meta+')' : ''}${desc}`;
-  }).join('\n');
-  return `You are a professional networking assistant helping find a connection path.
-
-My direct contacts (name, role, background):
-${list || '(none added yet)'}
-
-Target I want to reach: ${targetName}
-
-Using the background info on my contacts above, suggest the most plausible 2–5 step path from one of my contacts to ${targetName}. Prioritize contacts whose background suggests industry overlap or personal proximity to the target. Use real publicly known professional relationships for intermediary hops.
-
-Format:
-PATH:
-→ [Contact from my list] (why their background makes them the best starting point)
-→ [Intermediary name, role] — why they'd know the next person
-→ ${targetName}
-
-CONFIDENCE: High / Medium / Low
-NOTE: any important caveats`;
-}
-
-async function execAISuggest(context) {
-  const btnEl     = document.getElementById(context+'AiBtn');
-  const resultEl  = document.getElementById(context+'AiResult');
-  const noKeyEl   = document.getElementById(context+'NoKey');
-
-  let target;
-  if (context === 'rt') {
-    target = (document.getElementById('rtTarget')?.value||'').trim();
-    if (!target) { document.getElementById('rtTarget')?.focus(); return; }
-  } else {
-    const { target: t } = _routeEndpoints();
-    target = t && t.name;
-    if (!target) { alert('Set a target via ⌖ Discover first.'); return; }
-  }
-
-  if (!hasAIKey()) {
-    if(noKeyEl)   { noKeyEl.style.display='block'; }
-    if(resultEl)  { resultEl.classList.remove('show'); }
-    return;
-  }
-  if(noKeyEl) noKeyEl.style.display='none';
-
-  if (btnEl) { btnEl.disabled=true; btnEl.innerHTML='<span class="ai-spinner"></span> THINKING…'; }
-  if (resultEl) { resultEl.classList.remove('show'); resultEl.textContent=''; }
-
-  try {
-    const prompt = buildAIPrompt(target);
-    const text = await callAI(prompt);
-    if (resultEl && text) {
-      resultEl.textContent = text;
-      resultEl.classList.add('show');
-    }
-  } catch(e) {
-    if (resultEl) { resultEl.textContent = '// Error: '+e.message; resultEl.classList.add('show'); }
-  } finally {
-    if (btnEl) { btnEl.disabled=false; btnEl.innerHTML='⚡ AI SUGGEST PATH'; }
-  }
-}
-
-// ══════════════════════════════════════════════════════
 // CONNECTIONS PICKER PANEL (board view — adds a My Connections
 // contact onto the current board page as a plain node)
 // ══════════════════════════════════════════════════════
@@ -2300,7 +2087,7 @@ function addContactToBoard(contactId) {
   const j = () => (Math.random() - 0.5) * 200;
   pg.people.push({
     id: uid(), name: contact.name, role: contact.role || '', photo: contact.photo || '',
-    description: contact.description || '', ai_advice: '', size: 1,
+    description: contact.description || '', size: 1,
     x: Math.round(cx + j()), y: Math.round(cy + j()),
   });
   save(); render();
