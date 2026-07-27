@@ -736,8 +736,10 @@ body {
 .bvr-body h4 { font-family:"Rajdhani","Share Tech Mono",sans-serif;font-weight:700;font-size:16px;letter-spacing:0.08em;margin:0 0 6px;color:var(--accent-bright);text-shadow:0 0 14px var(--accent-glow); }
 .bvr-body .bvr-sub { font-size:10px;color:var(--ink-faint);letter-spacing:0.1em;margin-bottom:18px;line-height:1.6; }
 .bvr-flbl { font-size:9px;letter-spacing:0.22em;color:var(--accent-dim);margin-bottom:7px; }
-.bvr-select { width:100%;height:38px;padding:0 10px;background:oklch(0.12 0.012 22/0.7);border:1px solid var(--accent-line);color:var(--ink);font-family:inherit;font-size:12px;outline:0;margin-bottom:4px;cursor:pointer;-webkit-appearance:none; }
+.bvr-select { width:100%;height:38px;padding:0 10px;background:oklch(0.12 0.012 22/0.7);border:1px solid var(--accent-line);color:var(--ink);font-family:inherit;font-size:12px;outline:0;margin-bottom:14px;cursor:pointer;-webkit-appearance:none; }
 .bvr-select:focus { border-color:var(--accent); }
+.bvr-endpoint { height:38px;display:flex;align-items:center;padding:0 12px;background:oklch(0.12 0.012 22/0.7);border:1px solid var(--accent-line);color:var(--ink-mute);font-size:12px;margin-bottom:4px; }
+.bvr-endpoint.set { color:var(--accent-bright); }
 .bvr-divider { font-size:9px;letter-spacing:0.24em;color:var(--ink-faint);text-align:center;margin:10px 0; }
 .bvr-input { width:100%;height:38px;padding:0 12px;background:oklch(0.12 0.012 22/0.7);border:1px solid var(--accent-line);color:var(--ink);font-family:inherit;font-size:12px;outline:0;margin-bottom:14px; }
 .bvr-input:focus { border-color:var(--accent); }
@@ -1534,15 +1536,18 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
   </div>
   <div class="bvr-body">
     <h4>TRACE A PATH</h4>
-    <p class="bvr-sub">Find a real public path between a person on this board and any target, using live web search.</p>
-    <div class="bvr-flbl">SELECT BOARD PERSON</div>
-    <select class="bvr-select" id="bvrPersonSelect" onchange="bvrSyncInput()">
-      <option value="">— pick from board —</option>
+    <p class="bvr-sub">Finds every real public route between your starting person and target, using live web search.</p>
+    <div class="bvr-flbl">STARTING PERSON</div>
+    <div class="bvr-endpoint" id="bvrStartDisplay">— set via ⌖ Discover —</div>
+    <div class="bvr-flbl" style="margin-top:14px">TARGET</div>
+    <div class="bvr-endpoint" id="bvrTargetDisplay">— set via ⌖ Discover —</div>
+    <div class="bvr-flbl" style="margin-top:14px">SEARCH DEPTH</div>
+    <select class="bvr-select" id="bvrDepth">
+      <option value="1">1 — fast</option>
+      <option value="2" selected>2 — balanced</option>
+      <option value="3">3 — deep (slow)</option>
     </select>
-    <div class="bvr-divider">— OR TYPE ANY NAME —</div>
-    <input class="bvr-input" id="bvrTarget" type="text" placeholder="Target name…"
-      onkeydown="if(event.key==='Enter')execBoardRoute()">
-    <button class="bvr-run-btn" onclick="execBoardRoute()">TRACE ROUTE ▸</button>
+    <button class="bvr-run-btn" id="bvrRunBtn" onclick="execBoardRoute()">TRACE ROUTE ▸</button>
     <div class="bvr-result-lbl" id="bvrResultLbl" style="display:none">// PATH FOUND</div>
     <div id="bvrResult"></div>
     <button class="ai-suggest-btn" id="bvrAiBtn" onclick="execAISuggest('bvr')" style="margin-top:16px">⚡ AI SUGGEST PATH</button>
@@ -1861,24 +1866,20 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
   <div id="discoverModal">
     <span class="art-br tl"></span><span class="art-br tr"></span>
     <span class="art-br bl"></span><span class="art-br br2"></span>
-    <div class="dvm-lbl">// LIVE SEARCH</div>
-    <h3>DISCOVER CONNECTIONS</h3>
-    <p class="dvm-sub">Runs a real public-web search for this person and adds their discovered connections to this page.</p>
+    <div class="dvm-lbl">// ROUTE SETUP</div>
+    <h3>SET STARTING POINT &amp; TARGET</h3>
+    <p class="dvm-sub">Adds both people to this page. Press ⊙ Route afterward to search the public web for every path between them.</p>
     <div class="dvm-field">
-      <label>PERSON NAME</label>
-      <input id="dvName" type="text" placeholder="e.g. Tim Cook" onkeydown="if(event.key==='Enter')submitDiscover()">
+      <label>STARTING PERSON</label>
+      <input id="dvStart" type="text" placeholder="e.g. Fred Volinsky" onkeydown="if(event.key==='Enter')submitDiscover()">
     </div>
     <div class="dvm-field">
-      <label>DEPTH</label>
-      <select id="dvDepth">
-        <option value="1" selected>1 — direct connections (fast)</option>
-        <option value="2">2 — balanced</option>
-        <option value="3">3 — deep (slow)</option>
-      </select>
+      <label>TARGET PERSON</label>
+      <input id="dvTarget" type="text" placeholder="e.g. Tim Cook" onkeydown="if(event.key==='Enter')submitDiscover()">
     </div>
     <div class="dvm-status" id="dvStatus"></div>
     <div class="dvm-actions">
-      <button class="dvm-btn" id="dvSubmitBtn" onclick="submitDiscover()">DISCOVER ▸</button>
+      <button class="dvm-btn" id="dvSubmitBtn" onclick="submitDiscover()">ADD TO BOARD ▸</button>
       <button class="dvm-btn ghost" onclick="closeDiscoverModal()">CANCEL</button>
     </div>
   </div>

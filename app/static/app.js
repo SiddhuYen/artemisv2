@@ -428,6 +428,8 @@ async function openBoard(id) {
       id: pg.id, name: pg.name,
       people: ((pg.elements&&pg.elements.nodes)||[]).map(backendNodeToPerson),
       conns: ((pg.elements&&pg.elements.edges)||[]).map(backendEdgeToConn),
+      startPersonId: (pg.elements && pg.elements.startPersonId) || null,
+      targetPersonId: (pg.elements && pg.elements.targetPersonId) || null,
     }));
     if (!b) { b = { id: full.id }; db.boards.unshift(b); }
     b.name = full.name; b.targetName = full.target_name || '–'; b.targetOrg = full.target_org || '';
@@ -556,7 +558,8 @@ function save() {
 async function flushPageSave() {
   clearTimeout(pageSaveTimer); pageSaveTimer = null;
   const b = currentBoard(), pg = currentPage(); if (!b||!pg||!pg.id) return;
-  const elements = { nodes: pg.people.map(personToBackendNode), edges: pg.conns.map(connToBackendEdge) };
+  const elements = { nodes: pg.people.map(personToBackendNode), edges: pg.conns.map(connToBackendEdge),
+    startPersonId: pg.startPersonId || null, targetPersonId: pg.targetPersonId || null };
   try {
     await fetch(`/boards/${b.id}/pages/${pg.id}`, { method:'PATCH', headers:API_HEADERS, body:JSON.stringify({elements}) });
   } catch(e) { /* best-effort autosave */ }
@@ -1212,82 +1215,55 @@ function submitImport() {
 }
 
 // ══════════════════════════════════════════════════════
-// DISCOVER (new) — real public-web search via the backend,
-// merges discovered people/edges onto the current page.
+// DISCOVER (new) — designates the Starting Person and Target
+// for this page. Adds them as two plain nodes; no search runs
+// here. Press ⊙ Route afterward to actually search between them.
 // ══════════════════════════════════════════════════════
 function openDiscoverModal() {
-  document.getElementById('dvName').value = '';
+  document.getElementById('dvStart').value = '';
+  document.getElementById('dvTarget').value = '';
   const st = document.getElementById('dvStatus'); st.textContent=''; st.className='dvm-status';
+  const pg = currentPage();
+  if (pg) {
+    const start = pg.startPersonId && pg.people.find(p=>p.id===pg.startPersonId);
+    const target = pg.targetPersonId && pg.people.find(p=>p.id===pg.targetPersonId);
+    if (start) document.getElementById('dvStart').value = start.name;
+    if (target) document.getElementById('dvTarget').value = target.name;
+  }
   document.getElementById('discoverScrim').classList.add('open');
-  setTimeout(()=>document.getElementById('dvName')?.focus(),60);
+  setTimeout(()=>document.getElementById('dvStart')?.focus(),60);
 }
 function closeDiscoverModal(){ document.getElementById('discoverScrim').classList.remove('open'); }
 function discoverScrimClick(e){ if(e.target===document.getElementById('discoverScrim')) closeDiscoverModal(); }
 
-async function submitDiscover() {
-  const name = (document.getElementById('dvName').value||'').trim();
-  const depth = parseInt(document.getElementById('dvDepth').value,10)||1;
-  const statusEl = document.getElementById('dvStatus');
-  if (!name) { statusEl.textContent='Enter a name.'; statusEl.className='dvm-status err'; return; }
-  const btn = document.getElementById('dvSubmitBtn');
-  btn.disabled = true; statusEl.className='dvm-status';
-  statusEl.textContent = 'Searching the public web… this can take a minute or two.';
-  try {
-    const res = await fetch('/targets/search', { method:'POST', headers:API_HEADERS,
-      body: JSON.stringify({ target_name:name, max_depth:depth }) });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    const added = mergeDiscoverResultIntoBoard(data, name);
-    statusEl.textContent = `Found ${data.stats.people_found} people, ${data.stats.edges_found} edges · added ${added} new node(s) to this page.`;
-    setTimeout(closeDiscoverModal, 1100);
-  } catch(e) {
-    statusEl.textContent = 'Error: '+e.message; statusEl.className='dvm-status err';
-  } finally { btn.disabled = false; }
+// find-or-create a plain person node by name, positioned at (x,y) if new
+function findOrCreatePerson(pg, name, x, y) {
+  const norm = name.toLowerCase().trim();
+  let p = pg.people.find(p => p.name.toLowerCase().trim() === norm);
+  if (!p) {
+    p = { id: uid(), name, role: '', photo: '', description: '', ai_advice: '', size: 1, x: Math.round(x), y: Math.round(y) };
+    pg.people.push(p);
+  }
+  return p;
 }
 
-function mergeDiscoverResultIntoBoard(data, seedName) {
-  const pg = currentPage(); if (!pg) return 0;
-  const nodes = data.nodes || [], edges = data.edges || [];
-  const existingByName = new Map(pg.people.map(p => [p.name.toLowerCase(), p]));
-  const idByBackendId = new Map();
-  let added = 0;
+function submitDiscover() {
+  const startName = (document.getElementById('dvStart').value||'').trim();
+  const targetName = (document.getElementById('dvTarget').value||'').trim();
+  const statusEl = document.getElementById('dvStatus');
+  if (!startName || !targetName) { statusEl.textContent='Enter both a starting person and a target.'; statusEl.className='dvm-status err'; return; }
 
-  const seedNorm = seedName.toLowerCase().trim();
-  const seed = nodes.find(n => n.label.toLowerCase().trim() === seedNorm) || nodes[0];
+  const pg = currentPage(); if (!pg) return;
   const w = document.getElementById('wrapper');
   const cx = (w.clientWidth/2 - panX) / zoom, cy = (w.clientHeight/2 - panY) / zoom;
 
-  // seed goes at/near center (or its existing position if already on board)
-  let seedPerson = seed && existingByName.get(seed.label.toLowerCase());
-  if (seed && !seedPerson) {
-    seedPerson = { id: uid(), name: seed.label, role: '', photo: '', description: '', ai_advice: '', size: 1, x: Math.round(cx), y: Math.round(cy) };
-    pg.people.push(seedPerson); existingByName.set(seed.label.toLowerCase(), seedPerson); added++;
-  }
-  if (seed) idByBackendId.set(seed.id, seedPerson);
-
-  const others = nodes.filter(n => !seed || n.id !== seed.id);
-  others.forEach((n, i) => {
-    let p = existingByName.get(n.label.toLowerCase());
-    if (!p) {
-      const angle = (i / Math.max(others.length,1)) * Math.PI * 2;
-      const radius = 220 + Math.floor(i/10)*60;
-      p = { id: uid(), name: n.label, role: '', photo: '', description: '', ai_advice: '', size: 1,
-        x: Math.round((seedPerson?seedPerson.x:cx) + Math.cos(angle)*radius),
-        y: Math.round((seedPerson?seedPerson.y:cy) + Math.sin(angle)*radius) };
-      pg.people.push(p); existingByName.set(n.label.toLowerCase(), p); added++;
-    }
-    idByBackendId.set(n.id, p);
-  });
-
-  edges.forEach(e => {
-    const from = idByBackendId.get(e.from), to = idByBackendId.get(e.to);
-    if (!from || !to || from.id === to.id) return;
-    const already = pg.conns.find(c => (c.from===from.id&&c.to===to.id)||(c.from===to.id&&c.to===from.id));
-    if (!already) pg.conns.push({ id: uid(), from: from.id, to: to.id, label: e.type||'' });
-  });
+  const start = findOrCreatePerson(pg, startName, cx - 260, cy);
+  const target = findOrCreatePerson(pg, targetName, cx + 260, cy);
+  pg.startPersonId = start.id;
+  pg.targetPersonId = target.id;
 
   save(); render();
-  return added;
+  closeDiscoverModal();
 }
 
 // ══════════════════════════════════════════════════════
@@ -1811,62 +1787,64 @@ async function execContactRoute() {
   }
 }
 
+function _routeEndpoints() {
+  const pg = currentPage();
+  const start = pg && pg.startPersonId && pg.people.find(p=>p.id===pg.startPersonId);
+  const target = pg && pg.targetPersonId && pg.people.find(p=>p.id===pg.targetPersonId);
+  return { pg, start, target };
+}
+
 function showBoardRouteFinder() {
-  const page = currentPage();
-  const select = document.getElementById('bvrPersonSelect');
-  if (select && page) {
-    const people = page.people || [];
-    select.innerHTML = `<option value="">— pick from board —</option>` +
-      people.map(p => `<option value="${esc(p.name)}">${esc(p.name)}${p.role?' ('+p.role+')':''}</option>`).join('');
-  }
-  document.getElementById('bvrTarget').value = '';
+  const { start, target } = _routeEndpoints();
+  const startEl = document.getElementById('bvrStartDisplay');
+  const targetEl = document.getElementById('bvrTargetDisplay');
+  startEl.textContent = start ? start.name : '— set via ⌖ Discover —';
+  startEl.classList.toggle('set', !!start);
+  targetEl.textContent = target ? target.name : '— set via ⌖ Discover —';
+  targetEl.classList.toggle('set', !!target);
+  document.getElementById('bvrRunBtn').disabled = !(start && target);
   document.getElementById('bvrResult').innerHTML = '';
   document.getElementById('bvrResultLbl').style.display = 'none';
   document.getElementById('bvRoutePanel')?.classList.add('open');
   document.getElementById('bvRoutePanelScrim')?.classList.add('open');
+  if (start && target) execBoardRoute();
 }
 function closeBoardRouteFinder() {
   document.getElementById('bvRoutePanel')?.classList.remove('open');
   document.getElementById('bvRoutePanelScrim')?.classList.remove('open');
 }
-function bvrSyncInput() {
-  const sel = document.getElementById('bvrPersonSelect');
-  const inp = document.getElementById('bvrTarget');
-  if (sel && inp && sel.value) inp.value = sel.value;
-}
 
 async function execBoardRoute() {
-  const target = (document.getElementById('bvrTarget')?.value||'').trim();
+  const { start, target } = _routeEndpoints();
   const resultEl = document.getElementById('bvrResult');
   const lbl      = document.getElementById('bvrResultLbl');
   if (!resultEl) return;
-  if (!target) { resultEl.innerHTML=''; if(lbl) lbl.style.display='none'; return; }
-
-  const personSelect = document.getElementById('bvrPersonSelect');
-  const page = currentPage();
-  const personA = personSelect?.value || (page && page.people[0] && page.people[0].name) || '';
-  if (!personA) {
-    lbl.style.display='block'; lbl.textContent='// NO ROUTE';
-    resultEl.innerHTML = `<div class="bvr-no-path">Add at least one person to this board (or pick one above) before tracing a route.</div>`;
+  if (!start || !target) {
+    lbl.style.display='block'; lbl.textContent='// NO ENDPOINTS SET';
+    resultEl.innerHTML = `<div class="bvr-no-path">Use <b style="color:var(--accent)">⌖ Discover</b> to set a starting person and target for this page first.</div>`;
     return;
   }
+  const depth = parseInt(document.getElementById('bvrDepth')?.value,10) || 2;
   lbl.style.display='block'; lbl.textContent='// SEARCHING…';
-  resultEl.innerHTML = `<div class="bvr-no-path">Searching the public web…</div>`;
+  resultEl.innerHTML = `<div class="bvr-no-path">Searching the public web for every route between "${esc(start.name)}" and "${esc(target.name)}"…</div>`;
   try {
     const res = await fetch('/connect', { method:'POST', headers:API_HEADERS,
-      body: JSON.stringify({ person_a: personA, person_b: target, depth: 2 }) });
+      body: JSON.stringify({ person_a: start.name, person_b: target.name, depth }) });
     const data = await res.json();
     if (!data.connected) {
       lbl.textContent = '// NO ROUTE';
-      resultEl.innerHTML = `<div class="bvr-no-path">No public path found between "${esc(personA)}" and "${esc(target)}" — ${esc(data.reason||'')}</div>`;
+      resultEl.innerHTML = `<div class="bvr-no-path">No public path found between "${esc(start.name)}" and "${esc(target.name)}" — ${esc(data.reason||'')}. Try a higher depth.</div>`;
       return;
     }
-    lbl.textContent = '// ROUTE FOUND';
-    const steps = (data.path||[]).map((n,i,arr) => ({
-      name: n.label, role: n.relationship_from_previous||'', company: '',
-      kind: i===0 ? 'you' : (i===arr.length-1 ? 'target' : 'node'),
-    }));
-    resultEl.innerHTML = renderRoutePath(steps);
+    const routes = (data.paths && data.paths.length) ? data.paths : [{ path: data.path, hops: data.hops, score: data.score }];
+    lbl.textContent = `// ${routes.length} ROUTE${routes.length!==1?'S':''} FOUND`;
+    resultEl.innerHTML = routes.map((route, i) => {
+      const steps = (route.path||[]).map((n,idx,arr) => ({
+        name: n.label, role: n.relationship_from_previous||'', company: '',
+        kind: idx===0 ? 'you' : (idx===arr.length-1 ? 'target' : 'node'),
+      }));
+      return `<div style="margin-bottom:16px"><div class="bvr-flbl">ROUTE ${i+1} · ${route.hops} HOPS · SCORE ${route.score}</div>${renderRoutePath(steps)}</div>`;
+    }).join('');
     mergeConnectResultIntoBoard(data);
   } catch(e) {
     lbl.textContent = '// ERROR';
@@ -1880,6 +1858,8 @@ function mergeConnectResultIntoBoard(data) {
   const byName = new Map(pg.people.map(p => [p.name.toLowerCase(), p]));
   const w = document.getElementById('wrapper');
   const cx = (w.clientWidth/2 - panX) / zoom, cy = (w.clientHeight/2 - panY) / zoom;
+  // golden-angle spacing (never lands on the 0°/180° axis where start/target
+  // already sit) so new bridge nodes never stack on top of existing ones
   let i = 0;
 
   routes.forEach(route => {
@@ -1888,9 +1868,10 @@ function mergeConnectResultIntoBoard(data) {
       const key = hop.label.toLowerCase();
       let p = byName.get(key);
       if (!p) {
-        const angle = (i / 8) * Math.PI * 2; i++;
+        const angle = Math.PI/2 + (i * 137.508 * Math.PI / 180); i++;
+        const radius = 200 + Math.floor(i/8)*140;
         p = { id: uid(), name: hop.label, role: '', photo: '', description: '', ai_advice: '', size: 1,
-          x: Math.round(cx + Math.cos(angle)*260), y: Math.round(cy + Math.sin(angle)*260) };
+          x: Math.round(cx + Math.cos(angle)*radius), y: Math.round(cy + Math.sin(angle)*radius) };
         pg.people.push(p); byName.set(key, p);
       }
     });
@@ -2170,15 +2151,19 @@ NOTE: any important caveats`;
 }
 
 async function execAISuggest(context) {
-  const targetInput = context === 'rt'
-    ? document.getElementById('rtTarget')
-    : document.getElementById('bvrTarget');
   const btnEl     = document.getElementById(context+'AiBtn');
   const resultEl  = document.getElementById(context+'AiResult');
   const noKeyEl   = document.getElementById(context+'NoKey');
 
-  const target = targetInput?.value?.trim();
-  if (!target) { targetInput?.focus(); return; }
+  let target;
+  if (context === 'rt') {
+    target = (document.getElementById('rtTarget')?.value||'').trim();
+    if (!target) { document.getElementById('rtTarget')?.focus(); return; }
+  } else {
+    const { target: t } = _routeEndpoints();
+    target = t && t.name;
+    if (!target) { alert('Set a target via ⌖ Discover first.'); return; }
+  }
 
   if (!hasAIKey()) {
     if(noKeyEl)   { noKeyEl.style.display='block'; }
