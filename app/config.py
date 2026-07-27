@@ -163,6 +163,27 @@ RELATION_CONF_CEILING = float(os.environ.get("ARTEMIS_RELATION_CONF_CEILING", "0
 OPENALEX_MIN_WORKS = int(os.environ.get("ARTEMIS_OPENALEX_MIN_WORKS", "3"))
 OPENALEX_NAME_SIM = float(os.environ.get("ARTEMIS_OPENALEX_NAME_SIM", "0.8"))
 
+# --- homonym disambiguation -------------------------------------------------
+# builder.get_or_create_person() can ADOPT a name-matched Wikidata QID onto an
+# existing node (its "case 2": a same-named node with no QID yet). Before that
+# happens, compare the node's own already-accumulated edge evidence against
+# the candidate identity's text (see graph.disambiguate.domain_conflict) and
+# refuse to fuse them if the two plainly anchor in different professional
+# worlds. Default on: the check is deterministic and fails open whenever
+# either side lacks signal (a brand-new node, or a candidate with no
+# description text), so it costs nothing on the common notable-person path
+# and only ever prevents a false "same person" merge — never blocks a real
+# one. Disable only to reproduce pre-guard behavior for comparison/debugging.
+IDENTITY_VERIFY_ENABLED = os.environ.get(
+    "ARTEMIS_IDENTITY_VERIFY_ENABLED", "1") not in ("0", "false", "")
+# How many of a node's own existing edge-evidence snippets are folded into the
+# signal compared against a proposed identity. Small and cheap on purpose:
+# this is a coarse keyword-domain check, not a summarizer — a handful of
+# snippets already carries the professional-domain keywords if any are
+# present, and capping it keeps one prolific node's lookup bounded.
+IDENTITY_SIGNAL_MAX_SNIPPETS = int(
+    os.environ.get("ARTEMIS_IDENTITY_SIGNAL_MAX_SNIPPETS", "5"))
+
 # --- OpenCorporates (company officer networks) -----------------------------
 # Free-tier token from https://opencorporates.com/api_accounts/new ; absent => skipped.
 OPENCORPORATES_API_TOKEN = os.environ.get("OPENCORPORATES_API_TOKEN", "").strip()
