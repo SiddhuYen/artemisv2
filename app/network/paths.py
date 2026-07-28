@@ -143,6 +143,8 @@ def _build_path_json(pe, profile, match, target_id, hop_pairs) -> dict:
                 node["source_url"] = src.url
         if pid == target_id:
             node["reason"] += "  [target]"
+        if person and person.meta and person.meta.get("homonym_rejected"):
+            node["homonym_flag"] = person.meta["homonym_rejected"]
         nodes.append(node)
 
     return {
