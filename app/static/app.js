@@ -101,6 +101,9 @@ async function loadContactsFromBackend() {
       conns: links[p.id]||[],
     }));
   } catch (e) { console.error('Failed to load contacts', e); }
+  // Single hook for the network gate: whichever path just loaded contacts
+  // (boot, LinkedIn import, vCard import) closes it if there are now any.
+  if (typeof syncNetworkGate === 'function') syncNetworkGate();
 }
 
 function uid() { return Math.random().toString(36).slice(2)+Date.now().toString(36); }
@@ -2728,11 +2731,90 @@ async function checkProviderStatus() {
 }
 
 // ══════════════════════════════════════════════════════
+// NETWORK GATE
+// Artemis routes THROUGH the operator's own contacts. With none loaded it can
+// still map a target's public network, but every route it returns terminates
+// at a stranger — so an empty network is a correctness problem, not a missing
+// nice-to-have, and the operator should be told before their first search
+// rather than after it disappoints them.
+//
+// The boxes here deliberately do NOT reimplement parsing. They hand the file
+// straight to the existing import pipeline (processLinkedInFile / readVcfFiles)
+// and open the import modal on the matching tab, so the operator lands in the
+// same preview → de-dupe → confirm flow as the in-app importer, and there is
+// exactly one CSV parser and one vCard parser in the codebase.
+// ══════════════════════════════════════════════════════
+const BOOT_SPLASH_MS = 2100;   // #hvBoot: 1.6s hold + 0.5s fade (see index.html)
+
+function maybeShowNetworkGate() {
+  if (db.contacts.length) return;          // already has a network — nothing to warn about
+  document.getElementById('hvGate')?.classList.add('open');
+}
+
+function dismissNetworkGate() {
+  document.getElementById('hvGate')?.classList.remove('open');
+}
+
+// Hide-only, and called from loadContactsFromBackend so every path that can
+// populate contacts (either importer, a manual add) closes the gate without
+// each one having to remember to.
+function syncNetworkGate() {
+  if (db.contacts.length) dismissNetworkGate();
+}
+
+function _gateHandoff(tab) {
+  // Close the gate and open the real importer: the operator still gets the
+  // preview and confirm step, and a cancel there leaves them in the app rather
+  // than trapped back behind the gate.
+  dismissNetworkGate();
+  showLinkedInImport();
+  switchNetImportTab(tab);
+}
+
+function gateDropCsv(e) {
+  e.preventDefault();
+  document.getElementById('hgBoxCsv').classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  _gateHandoff('csv');
+  processLinkedInFile(file);
+}
+
+function gateCsvChange(e) {
+  const file = e.target.files[0];
+  e.target.value = '';                     // re-picking the same file must re-fire
+  if (!file) return;
+  _gateHandoff('csv');
+  processLinkedInFile(file);
+}
+
+function gateDropVcf(e) {
+  e.preventDefault();
+  document.getElementById('hgBoxVcf').classList.remove('dragover');
+  const files = Array.from(e.dataTransfer.files || []);
+  if (!files.length) return;
+  _gateHandoff('vcf');
+  readVcfFiles(files);
+}
+
+function gateVcfChange(e) {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';
+  if (!files.length) return;
+  _gateHandoff('vcf');
+  readVcfFiles(files);
+}
+
+// ══════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════
 (async function boot() {
+  const started = Date.now();
   setOperatorName(operatorName());
   await Promise.all([loadBoardsFromBackend(), loadContactsFromBackend()]);
   showHome();
   checkProviderStatus();
+  // Wait out whatever is left of the splash. Loading usually finishes first,
+  // and showing the gate early would stack it on top of the boot animation.
+  setTimeout(maybeShowNetworkGate, Math.max(0, BOOT_SPLASH_MS - (Date.now() - started)));
 })();
