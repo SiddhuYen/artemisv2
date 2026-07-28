@@ -62,10 +62,17 @@ def serialize_nodes(db: Session) -> List[GraphNode]:
 
 
 def serialize_edges(db: Session) -> List[GraphEdge]:
-    # preload sources for url lookup
-    src_map = {s.id: s for s in db.execute(select(Source)).scalars()}
+    rows = list(db.execute(select(RelationshipEdge)).scalars())
+    # preload only the sources actually referenced by these edges, not the
+    # whole table -- pruned/orphaned source rows shouldn't cost anything here.
+    src_ids = {e.source_id for e in rows if e.source_id}
+    src_map = {}
+    if src_ids:
+        src_map = {s.id: s for s in db.execute(
+            select(Source).where(Source.id.in_(src_ids))
+        ).scalars()}
     edges: List[GraphEdge] = []
-    for e in db.execute(select(RelationshipEdge)).scalars():
+    for e in rows:
         to_id = e.person_b_id or e.organization_id
         if not to_id:
             continue

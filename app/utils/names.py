@@ -4,9 +4,15 @@ Used both for dedup (normalize) and for filtering junk out of heuristic
 extraction (looks_like_person_name / org suffix detection).
 """
 import re
+import unicodedata
 
 _PUNCT = re.compile(r"[^\w\s]", flags=re.UNICODE)
 _WS = re.compile(r"\s+")
+
+# Generational suffixes, inconsistently included/omitted across scraped
+# sources for the same person ("John Smith" vs "John Smith Jr.") -- stripped
+# in strip_middle_initials() so both forms collapse to one dedup key.
+_GENERATIONAL_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 # Common honorifics / role words that pollute capitalised-token extraction.
 _STOPWORDS = {
@@ -23,6 +29,11 @@ _STOPWORDS = {
     "francisco", "city", "north", "south", "east", "west", "street", "avenue",
     "windows", "phone", "office", "server", "cloud", "online", "today",
     "world", "times", "post", "journal", "magazine", "press", "media",
+    # more place-name tokens (region/geography nicknames get referred to as
+    # "institutions" in prose — e.g. "the storied Silicon Valley institution"
+    # — and pass the 2-word-capitalized shape check just as easily as a name)
+    "silicon", "valley", "bay", "area", "coast", "county", "island", "district",
+    "harbor", "harbour",
     # generic institutional / descriptor words that form noisy pseudo-names
     "national", "international", "state", "higher", "education", "council",
     "committee", "conference", "symposium", "award", "civilian", "college",
@@ -31,6 +42,12 @@ _STOPWORDS = {
     # role/title fragments that scraped rosters glue onto names ("Partner Jason
     # Calacanis", "Abhay Mavalankar SVP") — never part of a real personal name.
     "partner", "gp", "vp", "svp", "evp", "coo", "managing", "principal", "head",
+    # legal/court-filing role words ("Defendant Elon Musk", "Plaintiff Jane Doe")
+    "defendant", "plaintiff", "petitioner", "respondent", "appellant",
+    "appellee", "witness", "juror",
+    # linking/auxiliary verbs — their presence means the "name" is really a
+    # sentence fragment ("Diana Hu Is YC"), never part of an actual person's name
+    "is", "was", "are", "were", "be", "been", "has", "have",
 }
 
 ORG_SUFFIXES = {
@@ -84,7 +101,7 @@ _DIMINUTIVES = {
     "ken": "kenneth", "kenny": "kenneth",
     "larry": "lawrence",
     "pete": "peter",
-    "phil": "philip", "philip": "phillip",
+    "phil": "philip",
     "ron": "ronald", "ronnie": "ronald",
     "fred": "frederick", "freddie": "frederick",
     "charlie": "charles", "chuck": "charles",
@@ -107,7 +124,7 @@ _DIMINUTIVES = {
 # Scraped-web boilerplate that the capitalised-token / NER extractors otherwise
 # mistake for people or orgs: cookie banners, legal/UI chrome, LinkedIn nav.
 # `is_noise_name` runs BEFORE the (optional) LLM entity filter, so this junk is
-# dropped even when Ollama is off. Tokens here must NOT collide with real name
+# dropped even when Claude is off. Tokens here must NOT collide with real name
 # words (kept out: fund/capital/group/trust which are legit org words).
 _NOISE_TOKENS = {
     "cookie", "cookies", "policy", "policies", "privacy", "agreement",
@@ -133,7 +150,7 @@ def is_noise_name(name: str) -> bool:
     """True if `name` is scraped boilerplate/navigation chrome or a page-title
     artifact rather than a real named entity (e.g. "Cookie Policy", "User
     Agreement", "Drew Glover - LinkedIn", "Drew Glover - CEO.com").
-    Deterministic — works with or without the Ollama entity filter."""
+    Deterministic — works with or without the Claude entity filter."""
     raw = (name or "").strip()
     if not raw:
         return True
@@ -155,24 +172,38 @@ def is_noise_name(name: str) -> bool:
 
 
 def normalize(name: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace — the base dedup key."""
+    """Lowercase, fold diacritics, strip punctuation, collapse whitespace —
+    the base dedup key. NFKD-decomposes accented characters into base
+    letter + combining mark (e.g. "é" -> "e" + a combining acute accent)
+    and drops the combining marks, so "José" and "Jose" -- scraped sources
+    are inconsistent about diacritics -- collapse to the same key. A no-op
+    for scripts without combining marks (CJK, Cyrillic, ...), so non-Latin
+    names are unaffected."""
     if not name:
         return ""
     s = name.strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = _PUNCT.sub(" ", s)
     s = _WS.sub(" ", s).strip()
     return s
 
 
 def strip_middle_initials(name: str) -> str:
-    """Drop single-letter middle initials so name variants collapse together.
+    """Drop single-letter middle initials and a trailing generational suffix
+    so name variants collapse together.
 
-    "John F. Kennedy" / "John F Kennedy" -> "John Kennedy". First and last
-    tokens are always kept; only interior single-letter tokens are removed.
+    "John F. Kennedy" / "John F Kennedy" -> "John Kennedy". "John Smith" /
+    "John Smith Jr." -> "John Smith" (scraped sources inconsistently
+    include/omit Jr./Sr./II/III/IV — the same person shouldn't fork into two
+    nodes over it). First and last (post-suffix) tokens are always kept;
+    only interior single-letter tokens and a trailing suffix are removed.
     """
     parts = name.split()
+    if len(parts) > 1 and parts[-1].rstrip(".").lower() in _GENERATIONAL_SUFFIXES:
+        parts = parts[:-1]
     if len(parts) <= 2:
-        return name.strip()
+        return " ".join(parts) if parts else name.strip()
     kept = [parts[0]]
     for mid in parts[1:-1]:
         token = mid.rstrip(".")
@@ -183,6 +214,18 @@ def strip_middle_initials(name: str) -> str:
     return " ".join(kept)
 
 
+def _resolve_diminutive(token: str) -> str:
+    """Follow the diminutive map to its final form. Some entries chain
+    (e.g. "phil" -> "philip" -> "phillip"); resolving once would leave "Phil"
+    and "Philip" at different keys ("philip" vs "phillip"). Cycle-guarded,
+    though the map is hand-authored and acyclic."""
+    seen = set()
+    while token in _DIMINUTIVES and token not in seen:
+        seen.add(token)
+        token = _DIMINUTIVES[token]
+    return token
+
+
 def person_norm_key(name: str) -> str:
     """Canonical dedup key for a person: normalised, middle-initials stripped,
     with the first name canonicalised through the diminutive map so nickname
@@ -191,7 +234,7 @@ def person_norm_key(name: str) -> str:
     if not base:
         return ""
     parts = base.split()
-    parts[0] = _DIMINUTIVES.get(parts[0], parts[0])
+    parts[0] = _resolve_diminutive(parts[0])
     return " ".join(parts)
 
 

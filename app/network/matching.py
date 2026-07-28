@@ -20,11 +20,11 @@ from sqlalchemy.orm import Session
 
 from ..models import GraphMatch, LocalProfile, Organization, Person, RelationshipEdge
 from ..utils.names import org_norm_key, person_norm_key
-from .fuzzy import HIGH_SIMILARITY, name_similarity
+from .fuzzy import name_similarity, similarity_threshold
 
 
-def _scale(sim: float, lo: float, hi: float) -> float:
-    t = (sim - HIGH_SIMILARITY) / (1.0 - HIGH_SIMILARITY) if sim > HIGH_SIMILARITY else 0.0
+def _scale(sim: float, lo: float, hi: float, threshold: float) -> float:
+    t = (sim - threshold) / (1.0 - threshold) if sim > threshold else 0.0
     return round(lo + (hi - lo) * min(max(t, 0.0), 1.0), 3)
 
 
@@ -75,7 +75,8 @@ def _match_profile_to_people(profile: LocalProfile, pg: _PublicGraph) -> List[di
             continue
 
         sim = name_similarity(profile.canonical_name, person.canonical_name)
-        if sim < HIGH_SIMILARITY:
+        threshold = similarity_threshold(profile.canonical_name, person.canonical_name)
+        if sim < threshold:
             continue  # no name signal -> never match on company/school alone
 
         company_hits = _overlap(profile.companies, pg.person_orgs.get(person.id, set()))
@@ -84,14 +85,14 @@ def _match_profile_to_people(profile: LocalProfile, pg: _PublicGraph) -> List[di
         if company_hits:
             out.append(dict(
                 person=person, match_type="name_company",
-                confidence=_scale(sim, 0.80, 0.90),
+                confidence=_scale(sim, 0.80, 0.90, threshold),
                 explanation=(f"Fuzzy name match ({sim:.2f}) + company overlap "
                              f"({', '.join(company_hits)})."),
             ))
         elif school_hits:
             out.append(dict(
                 person=person, match_type="name_school",
-                confidence=_scale(sim, 0.60, 0.75), weak=True,
+                confidence=_scale(sim, 0.60, 0.75, threshold), weak=True,
                 explanation=(f"Fuzzy name match ({sim:.2f}) + school overlap "
                              f"({', '.join(school_hits)}). WEAK: corroborate further."),
             ))

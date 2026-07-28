@@ -14,11 +14,26 @@ const GRAPH_ID = (() => {
 })();
 const API_HEADERS = { 'Content-Type': 'application/json', 'X-Graph-Id': GRAPH_ID };
 
+// A session cookie can expire while this tab sits open, after which every
+// request 401s. Catching that centrally sends the user to the sign-in page
+// once, instead of surfacing "authentication required" as a fake failure from
+// whichever of the ~30 call sites happened to fire first.
+(function guardSession() {
+  const rawFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const res = await rawFetch(...args);
+    if (res.status === 401 && !location.pathname.startsWith('/login')) {
+      location.href = '/login';
+    }
+    return res;
+  };
+})();
+
 function operatorName() { return localStorage.getItem('artemis_operator_name') || 'OPERATOR'; }
 function setOperatorName(name) {
   localStorage.setItem('artemis_operator_name', name);
-  ['hvBadge','ctBadge'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent = name.slice(0,2).toUpperCase(); });
-  ['hvUserName','ctUserName'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent = name.toUpperCase(); });
+  ['hvBadge','ctBadge','drBadge'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent = name.slice(0,2).toUpperCase(); });
+  ['hvUserName','ctUserName','drUserName'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent = name.toUpperCase(); });
 }
 function renameOperator() {
   const next = (prompt('Operator name:', operatorName()) || '').trim();
@@ -950,6 +965,14 @@ function closeManualMenu(){
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.tb-menu-wrap')) closeManualMenu();
 });
+// Discover-results "source" cards carry their URL in a data attribute (never
+// inline onclick=""): an inline handler's string is HTML-entity-decoded before
+// it's run as JS, so escaping quotes in esc() wouldn't stop a source_url
+// (live web-search data) from breaking out of the handler's JS string.
+document.addEventListener('click', (e) => {
+  const card = e.target.closest('.ct-card[data-src-url]');
+  if (card) window.open(card.dataset.srcUrl, '_blank');
+});
 function clearBoard(){if(!confirm('Clear this page?'))return;const pg=currentPage();if(!pg)return;pg.people=[];pg.conns=[];connSrc=null;save();closeDetail();render();}
 
 // ══════════════════════════════════════════════════════
@@ -1250,26 +1273,147 @@ function submitImport() {
 }
 
 // ══════════════════════════════════════════════════════
-// DISCOVER (new) — designates the Starting Person and Target
-// for this page. Adds them as two plain nodes; no search runs
-// here. Press ⊙ Route afterward to actually search between them.
+// DISCOVER — pick a person already on this board page and expand their real
+// public network (live web search, 2 hops deep by default) into a full-screen
+// "<name>'s Connections" view, styled like My Connections. This is the actual
+// discovery feature; Route Finder's Starting Person / Target are tagged
+// directly on a node's detail card (📍/🎯) instead of through this modal.
 // ══════════════════════════════════════════════════════
+let _dvSelectedId = null;
+let _dvRunSeq = 0;
+
 function openDiscoverModal() {
-  document.getElementById('dvStart').value = '';
-  document.getElementById('dvTarget').value = '';
+  _dvRunSeq++;
+  closeDetail();
+  _dvSelectedId = null;
   const st = document.getElementById('dvStatus'); st.textContent=''; st.className='dvm-status';
-  const pg = currentPage();
-  if (pg) {
-    const start = pg.startPersonId && pg.people.find(p=>p.id===pg.startPersonId);
-    const target = pg.targetPersonId && pg.people.find(p=>p.id===pg.targetPersonId);
-    if (start) document.getElementById('dvStart').value = start.name;
-    if (target) document.getElementById('dvTarget').value = target.name;
-  }
+  document.getElementById('dvSubmitBtn').disabled = false;
+  document.getElementById('dvSubmitBtn').textContent = 'RUN DISCOVER ▸';
+  document.getElementById('dvProgress')?.classList.remove('on');
+  const dvFill = document.getElementById('dvProgressFill'); if (dvFill) dvFill.style.width = '0%';
+  renderDiscoverPicker();
   document.getElementById('discoverScrim').classList.add('open');
-  setTimeout(()=>document.getElementById('dvStart')?.focus(),60);
 }
-function closeDiscoverModal(){ document.getElementById('discoverScrim').classList.remove('open'); }
+function closeDiscoverModal(cancelRun = true){
+  if (cancelRun) _dvRunSeq++;
+  document.getElementById('discoverScrim').classList.remove('open');
+}
 function discoverScrimClick(e){ if(e.target===document.getElementById('discoverScrim')) closeDiscoverModal(); }
+
+function renderDiscoverPicker() {
+  const pg = currentPage();
+  const people = (pg && pg.people) || [];
+  const listEl = document.getElementById('dvPersonList');
+  if (!people.length) {
+    listEl.innerHTML = '<div class="cp-empty">No one on this page yet.<br>Add a person to the board first.</div>';
+    return;
+  }
+  listEl.innerHTML = people.map(p => {
+    const ini2 = initials(p.name);
+    const avatar = p.photo
+      ? `<div class="cp-avatar"><img src="${esc(p.photo)}" onerror="this.parentNode.textContent='${ini2}'"></div>`
+      : `<div class="cp-avatar">${ini2}</div>`;
+    const sel = p.id === _dvSelectedId;
+    return `<div class="cp-item dv-pick-item${sel?' sel':''}" onclick="selectDiscoverPerson('${p.id}')">
+      ${avatar}
+      <div class="cp-info">
+        <div class="cp-name">${esc(p.name)}</div>
+        ${p.role ? `<div class="cp-role">${esc(p.role)}</div>` : ''}
+      </div>
+      <span class="dv-pick-mark">${sel?'✓':''}</span>
+    </div>`;
+  }).join('');
+}
+
+function selectDiscoverPerson(id) {
+  _dvSelectedId = id;
+  renderDiscoverPicker();
+}
+
+// Polls GET /jobs/{id} (a background /discover or /connect run) until it
+// finishes, calling onTick with each raw job payload {status,pct,message,...}
+// so callers can drive a real progress-bar fill instead of guessing. Resolves
+// with the job's result on success; throws on error/failure.
+async function pollJob(jobId, onTick, intervalMs = 700, shouldStop = null) {
+  while (true) {
+    if (shouldStop && shouldStop()) {
+      const err = new Error('Job cancelled');
+      err.cancelled = true;
+      throw err;
+    }
+    const res = await fetch(`/jobs/${jobId}`);
+    if (!res.ok) {
+      let detail = 'Job not found';
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
+    }
+    const job = await res.json();
+    if (onTick) onTick(job);
+    if (job.status === 'done') return job.result;
+    if (job.status === 'cancelled' || job.status === 'cancelling') {
+      const err = new Error('Job cancelled');
+      err.cancelled = true;
+      throw err;
+    }
+    if (job.status === 'error') throw new Error(job.error || 'Job failed');
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+}
+
+function progressTracker(fillEl) {
+  let lastPct = 0;
+  return job => {
+    const rawPct = Number.isFinite(Number(job?.pct)) ? Number(job.pct) : 0;
+    lastPct = Math.max(lastPct, Math.max(0, Math.min(100, rawPct)));
+    if (fillEl) fillEl.style.width = `${lastPct}%`;
+    return lastPct;
+  };
+}
+
+async function submitDiscover() {
+  const runSeq = ++_dvRunSeq;
+  const statusEl = document.getElementById('dvStatus');
+  const pg = currentPage();
+  const person = _dvSelectedId && pg && pg.people.find(p => p.id === _dvSelectedId);
+  if (!person) { statusEl.textContent='Select who to run Discover on.'; statusEl.className='dvm-status err'; return; }
+
+  const depth = parseInt(document.getElementById('dvDepth').value, 10) || 2;
+  const btn = document.getElementById('dvSubmitBtn');
+  btn.disabled = true; btn.textContent = 'SEARCHING…';
+  statusEl.textContent = `Expanding ${person.name}'s network (this reaches out to the live web, it can take a bit)…`;
+  statusEl.className = 'dvm-status';
+  const progressEl = document.getElementById('dvProgress');
+  const fillEl = document.getElementById('dvProgressFill');
+  const setProgress = progressTracker(fillEl);
+  progressEl?.classList.add('on');
+  if (fillEl) fillEl.style.width = '0%';
+
+  try {
+    const started = await (await fetch('/discover', {
+      method: 'POST', headers: API_HEADERS,
+      body: JSON.stringify({ person_name: person.name, depth }),
+    })).json();
+    if (started.detail) throw new Error(started.detail);
+    const data = await pollJob(started.job_id, job => {
+      if (runSeq !== _dvRunSeq) return;
+      const pct = setProgress(job);
+      if (job.message) statusEl.textContent = `[${pct}%] ${job.message}`;
+    }, 700, () => runSeq !== _dvRunSeq);
+    if (runSeq !== _dvRunSeq) return;
+    if (!data.found) throw new Error(data.reason || `Nobody found connected to ${person.name}.`);
+    closeDiscoverModal(false);
+    showDiscoverResultsView(data, depth);
+  } catch (e) {
+    if (runSeq !== _dvRunSeq) return;
+    statusEl.textContent = e.message || 'Discover failed.';
+    statusEl.className = 'dvm-status err';
+  } finally {
+    if (runSeq === _dvRunSeq) {
+      btn.disabled = false; btn.textContent = 'RUN DISCOVER ▸';
+      progressEl?.classList.remove('on');
+    }
+  }
+}
 
 // find-or-create a plain person node by name, positioned at (x,y) if new
 function findOrCreatePerson(pg, name, x, y) {
@@ -1282,23 +1426,89 @@ function findOrCreatePerson(pg, name, x, y) {
   return p;
 }
 
-function submitDiscover() {
-  const startName = (document.getElementById('dvStart').value||'').trim();
-  const targetName = (document.getElementById('dvTarget').value||'').trim();
-  const statusEl = document.getElementById('dvStatus');
-  if (!startName || !targetName) { statusEl.textContent='Enter both a starting person and a target.'; statusEl.className='dvm-status err'; return; }
+// ══════════════════════════════════════════════════════
+// DISCOVER RESULTS — "<name>'s Connections" full-screen view
+// ══════════════════════════════════════════════════════
+let _drPerson = '';
+let _drDepth = 2;
+let _drConnections = [];
 
-  const pg = currentPage(); if (!pg) return;
-  const w = document.getElementById('wrapper');
-  const cx = (w.clientWidth/2 - panX) / zoom, cy = (w.clientHeight/2 - panY) / zoom;
+function humanizeRelType(t) {
+  if (!t || t === 'unknown') return 'Connection';
+  return t.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
-  const start = findOrCreatePerson(pg, startName, cx - 260, cy);
-  const target = findOrCreatePerson(pg, targetName, cx + 260, cy);
-  pg.startPersonId = start.id;
-  pg.targetPersonId = target.id;
+function showDiscoverResultsView(data, depth) {
+  _drPerson = data.person;
+  _drDepth = depth;
+  _drConnections = data.connections || [];
 
-  save(); render();
-  closeDiscoverModal();
+  document.getElementById('homeView').style.display = 'none';
+  document.getElementById('boardView').style.display = 'none';
+  document.getElementById('contactsView').style.display = 'none';
+  document.getElementById('discoverResultsView').style.display = 'flex';
+
+  document.getElementById('drSub').textContent = `// ${_drPerson.toUpperCase()}'S NETWORK`;
+  document.getElementById('drTitle').textContent = `${_drPerson.toUpperCase()}'S CONNECTIONS`;
+  document.getElementById('drSearch').value = '';
+  setOperatorName(operatorName());
+  renderDiscoverResults();
+}
+
+function closeDiscoverResultsView() {
+  document.getElementById('discoverResultsView').style.display = 'none';
+  document.getElementById('boardView').style.display = 'flex';
+}
+
+function renderDiscoverResults() {
+  const filter = (document.getElementById('drSearch')?.value || '').toLowerCase();
+  let shown = _drConnections.slice();
+  if (filter) shown = shown.filter(c =>
+    c.label.toLowerCase().includes(filter) ||
+    humanizeRelType(c.relationship_type).toLowerCase().includes(filter)
+  );
+
+  const el = id => document.getElementById(id);
+  if (el('drCount')) el('drCount').textContent = `[ ${_drConnections.length} ]`;
+  if (el('drFooterR')) el('drFooterR').textContent =
+    `${_drConnections.length} CONNECTION${_drConnections.length!==1?'S':''} · ${_drDepth} HOP${_drDepth!==1?'S':''} DEEP`;
+
+  const grid = el('drGrid');
+  if (!grid) return;
+
+  if (!_drConnections.length) {
+    grid.innerHTML = `<div class="hv-no-match" style="padding:60px 0">
+      <div style="font-family:var(--display-hv,'Rajdhani');font-size:36px;color:var(--ink-faint);margin-bottom:10px">NOTHING FOUND</div>
+      No public connections turned up for ${esc(_drPerson)} within ${_drDepth} hop${_drDepth!==1?'s':''}.
+    </div>`;
+    return;
+  }
+  if (!shown.length) {
+    grid.innerHTML = `<div class="hv-no-match">// NO CONNECTIONS MATCH QUERY</div>`;
+    return;
+  }
+
+  grid.innerHTML = shown.map((c, i) => {
+    const ini2 = initials(c.label);
+    const av = ini2;
+    const pct = Math.round((c.confidence || 0) * 100);
+    const openSrc = c.source_url ? `data-src-url="${esc(c.source_url)}" style="cursor:pointer"` : '';
+    return `<div class="ct-card fr" ${openSrc} style="animation-delay:${(0.04+i*0.05).toFixed(2)}s">
+      <span class="br tl"></span><span class="br tr"></span><span class="br bl"></span><span class="br br2"></span>
+      <div class="ct-card-head">
+        <div class="ct-av">${av}</div>
+        <div class="ct-info">
+          <div class="ct-name">${esc(c.label)}</div>
+          <div class="ct-role-co">${esc(humanizeRelType(c.relationship_type))}</div>
+          <div class="ct-connected">◎ ${c.hops} HOP${c.hops!==1?'S':''} OUT</div>
+        </div>
+      </div>
+      <div class="ct-foot">
+        <span class="ct-knows">CONFIDENCE <b>${pct}%</b></span>
+        <span class="ct-enter">${c.source_url ? 'SOURCE ↗' : ''}</span>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ══════════════════════════════════════════════════════
@@ -1799,14 +2009,16 @@ async function execContactRoute() {
   const resultEl = document.getElementById('rtResult');
   if (!resultEl) return;
   if (!target.trim()) { resultEl.innerHTML = ''; return; }
+  const progressEl = document.getElementById('rtProgress');
   resultEl.innerHTML = `<div class="rt-no-path">// Searching public graph…</div>`;
+  progressEl?.classList.add('on');
   try {
     const people = await (await fetch('/people')).json();
     const norm = target.trim().toLowerCase();
     const person = people.find(p=>p.canonical_name.toLowerCase().trim()===norm)
       || people.find(p=>p.canonical_name.toLowerCase().includes(norm));
     if (!person) {
-      resultEl.innerHTML = `<div class="rt-no-path">// "${esc(target)}" isn't in the graph yet — try the <b style="color:var(--accent)">⌖ Discover</b> button on a board first.</div>`;
+      resultEl.innerHTML = `<div class="rt-no-path">// "${esc(target)}" isn't in the graph yet — add them to a board with <b style="color:var(--accent)">⬆ Import</b> or Manual Connections first.</div>`;
       return;
     }
     const matchRes = await (await fetch(`/match/${person.id}`, { method:'POST' })).json();
@@ -1819,6 +2031,8 @@ async function execContactRoute() {
     resultEl.innerHTML = renderRoutePath(candidatePathToSteps(relevant[0]));
   } catch(e) {
     resultEl.innerHTML = `<div class="rt-no-path">// Error: ${esc(e.message)}</div>`;
+  } finally {
+    progressEl?.classList.remove('on');
   }
 }
 
@@ -1833,39 +2047,115 @@ function showBoardRouteFinder() {
   const { start, target } = _routeEndpoints();
   const startEl = document.getElementById('bvrStartDisplay');
   const targetEl = document.getElementById('bvrTargetDisplay');
-  startEl.textContent = start ? start.name : '— set via ⌖ Discover —';
+  startEl.textContent = start ? start.name : '— tag a node 📍 in its detail card —';
   startEl.classList.toggle('set', !!start);
-  targetEl.textContent = target ? target.name : '— set via ⌖ Discover —';
+  targetEl.textContent = target ? target.name : '— tag a node 🎯 in its detail card —';
   targetEl.classList.toggle('set', !!target);
-  document.getElementById('bvrRunBtn').disabled = !(start && target);
+  if (!_bvrActiveJobId) document.getElementById('bvrRunBtn').disabled = !(start && target);
   document.getElementById('bvrResult').innerHTML = '';
   document.getElementById('bvrResultLbl').style.display = 'none';
+  document.getElementById('bvrProgress')?.classList.remove('on');
+  const bvrFill = document.getElementById('bvrProgressFill'); if (bvrFill) bvrFill.style.width = '0%';
+  // Cleared on every open, not carried over: stale context from a PREVIOUS
+  // pair's disambiguation ("biotech founder") would silently misdirect a
+  // search for a totally different, unrelated pair if left in place.
+  const ctxA = document.getElementById('bvrContextA'); if (ctxA) ctxA.value = '';
+  const ctxB = document.getElementById('bvrContextB'); if (ctxB) ctxB.value = '';
   document.getElementById('bvRoutePanel')?.classList.add('open');
   document.getElementById('bvRoutePanelScrim')?.classList.add('open');
   if (start && target) execBoardRoute();
 }
 function closeBoardRouteFinder() {
+  if (_bvrActiveJobId) cancelBoardRoute(true);
   document.getElementById('bvRoutePanel')?.classList.remove('open');
   document.getElementById('bvRoutePanelScrim')?.classList.remove('open');
 }
 
+let _bvrActiveJobId = null;
+let _bvrCancelRequested = false;
+let _bvrRunSeq = 0;
+
+function setBoardRouteRunning(running) {
+  const runBtn = document.getElementById('bvrRunBtn');
+  const cancelBtn = document.getElementById('bvrCancelBtn');
+  if (runBtn) {
+    runBtn.disabled = running || !(_routeEndpoints().start && _routeEndpoints().target);
+    runBtn.textContent = running ? 'TRACING ROUTE…' : 'TRACE ROUTE ▸';
+  }
+  if (cancelBtn) {
+    cancelBtn.style.display = running ? 'flex' : 'none';
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = 'CANCEL ROUTE ✕';
+  }
+}
+
+async function cancelBoardRoute(silent = false) {
+  const jobId = _bvrActiveJobId;
+  _bvrCancelRequested = true;
+  const cancelBtn = document.getElementById('bvrCancelBtn');
+  const lbl = document.getElementById('bvrResultLbl');
+  const resultEl = document.getElementById('bvrResult');
+  if (cancelBtn) {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'CANCELLING…';
+  }
+  if (!silent) {
+    if (lbl) { lbl.style.display = 'block'; lbl.textContent = '// CANCELLING…'; }
+    if (resultEl) resultEl.innerHTML = `<div class="bvr-no-path">Stopping this route search. In-flight web requests may take a moment to unwind.</div>`;
+  }
+  if (!jobId) return;
+  try {
+    await fetch(`/jobs/${jobId}/cancel`, { method:'POST', headers:API_HEADERS });
+  } catch(e) {
+    console.warn('Failed to cancel route job', e);
+  }
+}
+
 async function execBoardRoute() {
+  const runSeq = ++_bvrRunSeq;
   const { start, target } = _routeEndpoints();
   const resultEl = document.getElementById('bvrResult');
   const lbl      = document.getElementById('bvrResultLbl');
   if (!resultEl) return;
   if (!start || !target) {
     lbl.style.display='block'; lbl.textContent='// NO ENDPOINTS SET';
-    resultEl.innerHTML = `<div class="bvr-no-path">Use <b style="color:var(--accent)">⌖ Discover</b> to set a starting person and target for this page first.</div>`;
+    resultEl.innerHTML = `<div class="bvr-no-path">Tag a node 📍 in its detail card to set a starting person and target for this page first.</div>`;
     return;
   }
   const depth = parseInt(document.getElementById('bvrDepth')?.value,10) || 2;
+  const contextA = (document.getElementById('bvrContextA')?.value || '').trim();
+  const contextB = (document.getElementById('bvrContextB')?.value || '').trim();
+  const progressEl = document.getElementById('bvrProgress');
+  const fillEl = document.getElementById('bvrProgressFill');
+  const setProgress = progressTracker(fillEl);
+  if (_bvrActiveJobId) await cancelBoardRoute(true);
+  if (runSeq !== _bvrRunSeq) return;
+  _bvrActiveJobId = null;
+  _bvrCancelRequested = false;
+  setBoardRouteRunning(true);
   lbl.style.display='block'; lbl.textContent='// SEARCHING…';
   resultEl.innerHTML = `<div class="bvr-no-path">Searching the public web for every route between "${esc(start.name)}" and "${esc(target.name)}"…</div>`;
+  progressEl?.classList.add('on');
+  if (fillEl) fillEl.style.width = '0%';
   try {
-    const res = await fetch('/connect', { method:'POST', headers:API_HEADERS,
-      body: JSON.stringify({ person_a: start.name, person_b: target.name, depth }) });
-    const data = await res.json();
+    const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
+      body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
+                             context_a: contextA, context_b: contextB }) })).json();
+    if (started.detail) throw new Error(started.detail);
+    if (runSeq !== _bvrRunSeq) return;
+    _bvrActiveJobId = started.job_id;
+    if (_bvrCancelRequested) {
+      await cancelBoardRoute(true);
+      const err = new Error('Job cancelled');
+      err.cancelled = true;
+      throw err;
+    }
+    const data = await pollJob(started.job_id, job => {
+      if (runSeq !== _bvrRunSeq) return;
+      const pct = setProgress(job);
+      if (job.message) lbl.textContent = `// [${pct}%] ${job.message.toUpperCase()}`;
+    }, 700, () => _bvrCancelRequested || runSeq !== _bvrRunSeq);
+    if (runSeq !== _bvrRunSeq) return;
     if (!data.connected) {
       lbl.textContent = '// NO ROUTE';
       resultEl.innerHTML = `<div class="bvr-no-path">No public path found between "${esc(start.name)}" and "${esc(target.name)}" — ${esc(data.reason||'')}. Try a higher depth.</div>`;
@@ -1882,8 +2172,21 @@ async function execBoardRoute() {
     }).join('');
     mergeConnectResultIntoBoard(data);
   } catch(e) {
-    lbl.textContent = '// ERROR';
-    resultEl.innerHTML = `<div class="bvr-no-path">${esc(e.message)}</div>`;
+    if (runSeq !== _bvrRunSeq) return;
+    if (e.cancelled || _bvrCancelRequested) {
+      lbl.textContent = '// CANCELLED';
+      resultEl.innerHTML = `<div class="bvr-no-path">Route search cancelled.</div>`;
+    } else {
+      lbl.textContent = '// ERROR';
+      resultEl.innerHTML = `<div class="bvr-no-path">${esc(e.message)}</div>`;
+    }
+  } finally {
+    if (runSeq === _bvrRunSeq) {
+      _bvrActiveJobId = null;
+      _bvrCancelRequested = false;
+      setBoardRouteRunning(false);
+      progressEl?.classList.remove('on');
+    }
   }
 }
 
@@ -1922,21 +2225,45 @@ function mergeConnectResultIntoBoard(data) {
 }
 
 // ══════════════════════════════════════════════════════
-// LINKEDIN CSV IMPORT — client-side parse for the preview list
-// only; the actual import uploads the raw file to the real
-// /network/upload endpoint (which does its own robust parsing).
+// MY CONNECTIONS IMPORT — two tabs, one modal:
+//   • LinkedIn CSV — client-side parse for the preview list only; the import
+//     uploads the raw file to /network/upload (which parses it robustly).
+//   • iPhone contacts — a .vcf is parsed here so the user can pick who to bring
+//     over, then the chosen cards POST to /network/contacts/import, which runs
+//     the same ingestion as the CSV path (de-dupe, "You" edge, graph edges).
+// Both land in My Connections, not on a board page.
 // ══════════════════════════════════════════════════════
 let _liFile = null;
+let _netImportTab = 'csv';
 
 function showLinkedInImport() {
   _liFile = null;
   document.getElementById('liPreview').style.display = 'none';
   document.getElementById('liImportBtn').disabled = true;
+  resetVcfTab();
+  switchNetImportTab('csv');
   document.getElementById('liScrim').classList.add('open');
 }
 function closeLinkedInImport() {
   document.getElementById('liScrim').classList.remove('open');
   _liFile = null;
+}
+function switchNetImportTab(tab) {
+  _netImportTab = tab;
+  document.getElementById('liCsvSec').style.display = tab === 'csv' ? '' : 'none';
+  document.getElementById('liVcfSec').style.display = tab === 'vcf' ? '' : 'none';
+  document.getElementById('liTabCsv').className = 'li-tab' + (tab === 'csv' ? ' on' : '');
+  document.getElementById('liTabVcf').className = 'li-tab' + (tab === 'vcf' ? ' on' : '');
+  document.getElementById('liTitle').textContent =
+    tab === 'csv' ? 'LINKEDIN CONNECTIONS' : 'IPHONE CONTACTS';
+  refreshNetImportBtn();
+}
+function refreshNetImportBtn() {
+  const btn = document.getElementById('liImportBtn');
+  btn.disabled = _netImportTab === 'csv' ? !_liFile : !vcfPicked().length;
+}
+function confirmNetImport() {
+  return _netImportTab === 'csv' ? confirmLinkedInImport() : confirmVcfImport();
 }
 function liScrimClick(e) {
   if (e.target === document.getElementById('liScrim')) closeLinkedInImport();
@@ -2033,6 +2360,268 @@ async function confirmLinkedInImport() {
   } catch(e) {
     alert('Import failed: '+e.message);
   } finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+// ── iPhone contacts (.vcf / vCard) ────────────────────────────────────────
+// iOS exposes no web API for the address book, so the file is the interface:
+// a .vcf holding one card or a whole address book. Parsing happens here so the
+// user can choose who to import; only the picked cards are ever sent.
+// Chromium on Android also has the Contact Picker API — offered when present.
+let vcfContacts = [];      // {name, org, title, email, tel, sel}
+let _vcfShownCount = 0;
+
+function resetVcfTab() {
+  vcfContacts = [];
+  const fi = document.getElementById('vcfFileIn'); if (fi) fi.value = '';
+  const se = document.getElementById('vcfSearch'); if (se) se.value = '';
+  document.getElementById('vcfPreview').style.display = 'none';
+  document.getElementById('vcfSelectBar').style.display = 'none';
+  document.getElementById('vcfFixWrap').style.display = 'none';
+  document.getElementById('vcfList').innerHTML = '';
+  document.getElementById('vcfFixList').innerHTML = '';
+  const canPick = !!(navigator.contacts && navigator.contacts.select && window.ContactsManager);
+  document.getElementById('vcfPickBtn').style.display = canPick ? '' : 'none';
+}
+
+// RFC 6350 folding: a line beginning with a space/tab continues the previous one.
+function unfoldVcf(text) {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n[ \t]/g, '');
+}
+
+function vcfUnescape(v) {
+  return String(v || '').replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1').trim();
+}
+
+function _words(s) { return String(s || '').trim().split(/\s+/).filter(Boolean).length; }
+
+// PHOTO is deliberately ignored — contacts render with the same initials
+// avatar as every other connection.
+function parseVcards(text) {
+  const out = [];
+  const cards = unfoldVcf(text).split(/BEGIN:VCARD/i).slice(1);
+  for (const raw of cards) {
+    const body = raw.split(/END:VCARD/i)[0];
+    const c = { name:'', org:'', title:'', email:'', tel:'', sel:false, lastName:'' };
+    let nameFromN = '';
+    for (const line of body.split('\n')) {
+      const ci = line.indexOf(':');
+      if (ci < 0) continue;
+      const segs  = line.slice(0, ci).split(';');
+      const value = line.slice(ci + 1);
+      // properties can carry a group prefix, e.g. "item1.TEL"
+      let key = segs[0];
+      const dot = key.indexOf('.');
+      if (dot >= 0) key = key.slice(dot + 1);
+      key = key.trim().toUpperCase();
+      switch (key) {
+        case 'FN': if (!c.name) c.name = vcfUnescape(value); break;
+        case 'N': {
+          // N: Family;Given;Middle;Prefix;Suffix
+          const f = value.split(';').map(vcfUnescape);
+          nameFromN = [f[3], f[1], f[2], f[0], f[4]].filter(Boolean).join(' ').trim();
+          break;
+        }
+        case 'ORG':   if (!c.org)   c.org   = value.split(';').map(vcfUnescape).filter(Boolean).join(' · '); break;
+        case 'TITLE': if (!c.title) c.title = vcfUnescape(value); break;
+        case 'EMAIL': if (!c.email) c.email = vcfUnescape(value); break;
+        case 'TEL':   if (!c.tel)   c.tel   = vcfUnescape(value); break;
+      }
+    }
+    // Prefer whichever of FN / N carries a surname: iOS writes FN "Mom" next to
+    // an N of "Kowalski;Mom", and the structured field is the fuller name.
+    if (!c.name) c.name = nameFromN;
+    else if (_words(c.name) < 2 && _words(nameFromN) > 1) c.name = nameFromN;
+    if (c.name) out.push(c);
+  }
+  return out;
+}
+
+function vcfAffil(c) { return [c.title, c.org].filter(Boolean).join(' · '); }
+
+// Phone books are full of one-name entries — "Mom", "Dave", "Plumber". A bare
+// first name can't be matched against the graph and silently merges with every
+// other "Dave", so those never ride along with the main list: they get their own
+// step where you supply the surname or leave them out.
+function vcfNeedsLastName(c) { return _words(c.name) < 2; }
+function vcfFullName(c) {
+  return c.needsLast ? `${c.name} ${c.lastName}`.trim() : c.name;
+}
+// what would actually be imported right now
+function vcfPicked() {
+  return vcfContacts.filter(c => c.needsLast ? c.lastName.trim() : c.sel);
+}
+
+function vcfDrop(e) {
+  e.preventDefault();
+  document.getElementById('vcfDrop').classList.remove('dragover');
+  readVcfFiles(Array.from(e.dataTransfer.files || []));
+}
+function vcfFileChange(e) {
+  readVcfFiles(Array.from(e.target.files || []));
+  e.target.value = '';
+}
+
+function readVcfFiles(files) {
+  if (!files.length) return;
+  const hdr = document.getElementById('vcfPreviewHdr');
+  document.getElementById('vcfPreview').style.display = 'block';
+  hdr.textContent = 'reading…';
+  Promise.all(files.map(f => f.text()))
+    .then(texts => {
+      let cards = [];
+      texts.forEach(t => { cards = cards.concat(parseVcards(t)); });
+      showVcfContacts(cards, files.length > 1 ? `${files.length} files` : files[0].name);
+    })
+    .catch(() => { hdr.textContent = "couldn't read that file"; });
+}
+
+async function pickDeviceContacts() {
+  try {
+    const picked = await navigator.contacts.select(['name', 'email', 'tel'], { multiple: true });
+    showVcfContacts(picked.map(p => ({
+      name:  (p.name  || []).filter(Boolean)[0] || '',
+      org:'', title:'', sel:false,
+      email: (p.email || []).filter(Boolean)[0] || '',
+      tel:   (p.tel   || []).filter(Boolean)[0] || ''
+    })).filter(c => c.name), 'device');
+  } catch (e) {
+    document.getElementById('vcfPreviewHdr').textContent = 'contact picker cancelled or blocked';
+  }
+}
+
+function showVcfContacts(cards, label) {
+  // de-dupe cards repeated across files / lists
+  const seen = new Set();
+  vcfContacts = cards.filter(c => {
+    const k = c.name.toLowerCase() + '|' + (c.email || c.tel || '');
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  vcfContacts.forEach(c => { c.needsLast = vcfNeedsLastName(c); c.lastName = ''; });
+
+  document.getElementById('vcfPreview').style.display = 'block';
+  if (!vcfContacts.length) {
+    document.getElementById('vcfPreviewHdr').textContent =
+      `no contacts found in ${label} — expected a .vcf / vCard file`;
+    document.getElementById('vcfList').innerHTML = '';
+    document.getElementById('vcfSelectBar').style.display = 'none';
+    document.getElementById('vcfFixWrap').style.display = 'none';
+    refreshNetImportBtn();
+    return;
+  }
+  // a handful of cards is almost always "import all"; a whole address book is not
+  const full = vcfContacts.filter(c => !c.needsLast);
+  const preselect = full.length <= 25;
+  const existing = new Set((db.contacts || []).map(c => c.name.toLowerCase()));
+  full.forEach(c => { c.sel = preselect && !existing.has(c.name.toLowerCase()); });
+  document.getElementById('vcfSelectBar').style.display = full.length ? '' : 'none';
+  renderVcfList();
+  renderVcfFixList();
+}
+
+// The surname step. Rows are inputs, so this renders once per file load and is
+// never re-rendered on keystrokes — that would blow away the focused field.
+function renderVcfFixList() {
+  const wrap = document.getElementById('vcfFixWrap');
+  const rows = vcfContacts.map((c, i) => ({ c, i })).filter(({ c }) => c.needsLast);
+  wrap.style.display = rows.length ? '' : 'none';
+  if (!rows.length) return;
+  document.getElementById('vcfFixHdr').textContent =
+    `${rows.length} contact${rows.length !== 1 ? 's' : ''} with no last name · 0 filled in`;
+  document.getElementById('vcfFixList').innerHTML = rows.map(({ c, i }) => `
+    <div class="vcf-fix-row">
+      <span class="vfr-first">${esc(c.name)}</span>
+      <input type="text" class="vfr-input" placeholder="last name — blank = skip"
+             value="${esc(c.lastName)}" oninput="setVcfLastName(${i}, this.value)">
+      ${vcfAffil(c) ? `<span class="vr-co">${esc(vcfAffil(c))}</span>` : ''}
+    </div>`).join('');
+}
+
+function setVcfLastName(i, value) {
+  if (!vcfContacts[i]) return;
+  vcfContacts[i].lastName = value;
+  const rows = vcfContacts.filter(c => c.needsLast);
+  const filled = rows.filter(c => c.lastName.trim()).length;
+  document.getElementById('vcfFixHdr').textContent =
+    `${rows.length} contact${rows.length !== 1 ? 's' : ''} with no last name · ${filled} filled in`;
+  updateVcfHdr();
+}
+
+function setAllVcf(on) {
+  const q = (document.getElementById('vcfSearch').value || '').trim().toLowerCase();
+  vcfContacts.forEach(c => {
+    if (c.needsLast) return;   // those are governed by the surname field, not this
+    if (!q || c.name.toLowerCase().includes(q) || vcfAffil(c).toLowerCase().includes(q)) c.sel = on;
+  });
+  renderVcfList();
+}
+
+// ticking a box only changes the count — re-rendering the list here would throw
+// away the user's scroll position halfway down a long address book
+function toggleVcf(i, on) {
+  if (vcfContacts[i]) vcfContacts[i].sel = on;
+  updateVcfHdr();
+}
+
+function updateVcfHdr() {
+  const q = (document.getElementById('vcfSearch').value || '').trim();
+  const full = vcfContacts.filter(c => !c.needsLast);
+  const sel  = vcfPicked().length;
+  document.getElementById('vcfPreviewHdr').textContent =
+    `${full.length} contact${full.length !== 1 ? 's' : ''} with a full name · ${sel} to import` +
+    (q ? ` · ${_vcfShownCount} matching filter` : '');
+  refreshNetImportBtn();
+}
+
+function renderVcfList() {
+  const q = (document.getElementById('vcfSearch').value || '').trim().toLowerCase();
+  const existing = new Set((db.contacts || []).map(c => c.name.toLowerCase()));
+  const shown = vcfContacts
+    .map((c, i) => ({ c, i }))
+    .filter(({ c }) => !c.needsLast)
+    .filter(({ c }) => !q || c.name.toLowerCase().includes(q) || vcfAffil(c).toLowerCase().includes(q));
+
+  _vcfShownCount = shown.length;
+  updateVcfHdr();
+
+  const MAX = 300;
+  document.getElementById('vcfList').innerHTML = shown.slice(0, MAX).map(({ c, i }) => `
+    <label class="vcf-row">
+      <input type="checkbox" ${c.sel ? 'checked' : ''} onchange="toggleVcf(${i}, this.checked)">
+      <span class="vr-name">${esc(c.name)}</span>
+      ${vcfAffil(c) ? `<span class="vr-co">${esc(vcfAffil(c))}</span>` : ''}
+      <span class="vr-dupe">${existing.has(c.name.toLowerCase()) ? 'ALREADY IN ARTEMIS' : ''}</span>
+    </label>`).join('') +
+    (shown.length > MAX
+      ? `<div class="vcf-row" style="color:var(--ink-faint)">…and ${shown.length - MAX} more — use the filter</div>`
+      : '');
+}
+
+async function confirmVcfImport() {
+  const picked = vcfPicked();
+  if (!picked.length) return;
+  const btn = document.getElementById('liImportBtn');
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'IMPORTING…';
+  try {
+    const res = await fetch('/network/contacts/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contacts: picked.map(c => ({
+          name: vcfFullName(c), company: c.org, title: c.title, email: c.email,
+          notes: c.tel ? `Phone: ${c.tel}` : ''
+        }))
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    closeLinkedInImport();
+    await loadContactsFromBackend();
+    renderContacts();
+    alert(`Imported: ${data.ingested.created} new, ${data.ingested.updated} updated, ${data.ingested.skipped} skipped.`);
+  } catch (e) {
+    alert('Import failed: ' + e.message);
+  } finally { btn.textContent = orig; refreshNetImportBtn(); }
 }
 
 // ══════════════════════════════════════════════════════

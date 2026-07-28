@@ -1,6 +1,6 @@
-"""Extraction layer: Ollama when available, heuristic fallback otherwise.
+"""Extraction layer: Claude when a key is configured, heuristic fallback otherwise.
 
-Both extractors return the same hardened ExtractionOutput contract.
+Every extractor returns the same hardened ExtractionOutput contract.
 """
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from .confidence import (
     keyword_strength_factor,
     tier,
 )
+from .claude_extractor import claude_available, claude_extract
 from .heuristic import heuristic_extract
-from .ollama_extractor import ollama_available, ollama_extract
 from .spacy_extractor import spacy_available, spacy_extract
 from .schemas import (
     EdgeSignals,
@@ -27,13 +27,13 @@ def extract(
 ) -> ExtractionOutput:
     """Run the best available extractor for one (subject, text, silo) unit.
 
-    Precedence: Ollama per-source extraction (opt-in, slow, cleanest) ->
+    Precedence: Claude per-source extraction (opt-in, costly, cleanest) ->
     spaCy NER (grammar-aware, default when installed) -> capitalized-token
     heuristic (last-resort fallback).
     """
     from .. import config
-    if config.OLLAMA_EXTRACT and ollama_available():
-        result = ollama_extract(subject_person, text, silo, evidence, source_url)
+    if config.CLAUDE_EXTRACT and claude_available():
+        result = claude_extract(subject_person, text, silo, evidence, source_url)
         if result is not None:
             return result
     if spacy_available():
@@ -53,8 +53,8 @@ __all__ = [
     "keyword_strength_factor",
     "tier",
     "heuristic_extract",
-    "ollama_extract",
-    "ollama_available",
+    "claude_extract",
+    "claude_available",
     "spacy_extract",
     "spacy_available",
 ]

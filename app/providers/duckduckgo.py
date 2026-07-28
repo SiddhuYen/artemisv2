@@ -13,9 +13,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from bs4 import BeautifulSoup
 
 from .. import config
-from .base import SearchProvider, SearchResult, make_client
+from .base import SearchProvider, SearchResult, _call_with_hard_timeout, make_client
 from .ratelimit import CircuitBreaker, IntervalLimiter, TokenBucket
 from .stats import STATS
+
+
+def _do_request(endpoint: str, query: str):
+    with make_client() as c:
+        return c.post(endpoint, data={"q": query})
 
 _ENDPOINTS = [
     "https://html.duckduckgo.com/html/",
@@ -61,8 +66,18 @@ class DuckDuckGoProvider(SearchProvider):
             self._jitter.acquire()
             start = time.monotonic()
             try:
-                with make_client() as c:
-                    resp = c.post(endpoint, data={"q": query})
+                # Bypasses request_with_retry deliberately -- this loop has
+                # its OWN per-endpoint fallback + breaker semantics that
+                # don't map onto request_with_retry's generic retry-on-429.
+                # The hard-timeout backstop is what actually matters here:
+                # THIS exact call, unprotected, is the one measured live to
+                # hang in raw socket.connect() for 40+ seconds past its
+                # configured 8s timeout (DDG unreachable in a way that never
+                # produced a response httpx could time out on), blocking an
+                # entire node's expansion indefinitely.
+                resp = _call_with_hard_timeout(
+                    lambda: _do_request(endpoint, query),
+                    config.HTTP_TIMEOUT + config.HTTP_HARD_TIMEOUT_BUFFER)
             except Exception:
                 self._breaker.record_failure()
                 continue

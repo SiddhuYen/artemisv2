@@ -1,0 +1,185 @@
+"""Regression tests for the trace-route ("/connect") bugs fixed together:
+
+  1. A seed could be pruned mid-run: expand_graph's noise-shape prune only
+     exempted its OWN seed, but connect_people calls it twice (once per
+     endpoint) into one shared graph -- the second call's prune saw the
+     first call's seed as an ordinary, unprotected node.
+  2. _merge_aliases could promote a scraped-chrome surface ("Bill Gates -
+     Wikipedia") to canonical_name, because it shares the real seed's
+     norm_name -- which then makes the SAME node fail its own shape check.
+  3. _prune_invalid_nodes deleted a person via raw, un-flushed-aware bulk
+     SQL, leaving that person's edges (added to the session but not yet
+     flushed at commit time) pointing at an id that no longer exists.
+  4. _path_worthy hard-excluded every 'weak'-status or 'unknown'-typed
+     edge, rather than costing them -- on a sparsely-evidenced real graph
+     this excluded most of it and routinely reported two linked people as
+     "not connected" with no path to show at all.
+
+Bug 3's fallout (a dangling edge surviving after its endpoint is gone) is
+also guarded defensively in _adjacency, independent of what caused it --
+so already-corrupted data degrades gracefully instead of leaking a raw
+UUID into a rendered route.
+"""
+from app import config
+from app.graph import builder, connect as C
+from app.graph.expansion import _prune_invalid_nodes
+from app.models import Person, RelationshipEdge
+from app.utils.names import person_norm_key
+
+
+def _person(db, name, **kw):
+    p = Person(canonical_name=name, norm_name=person_norm_key(name), **kw)
+    db.add(p)
+    db.flush()
+    return p
+
+
+def _edge(db, a, b, rel="coworker", status="candidate", conf=0.5):
+    e = RelationshipEdge(person_a_id=a.id, person_b_id=b.id,
+                         relationship_type=rel, status=status, confidence_raw=conf)
+    db.add(e)
+    return e
+
+
+# --- bug 1: prune must exempt every protected endpoint, not just one -------
+def test_prune_protects_all_given_norms_not_just_one(db):
+    seed_a = _person(db, "Alpha Person")
+    seed_b = _person(db, "Beta Person")
+    junk = _person(db, "Some Page - LinkedIn")  # fails the shape check
+    db.commit()
+
+    protected = {person_norm_key("Alpha Person"), person_norm_key("Beta Person")}
+    _prune_invalid_nodes(db, protected)
+
+    assert db.get(Person, seed_a.id) is not None
+    assert db.get(Person, seed_b.id) is not None
+    assert db.get(Person, junk.id) is None
+
+
+def test_prune_with_single_protected_norm_still_deletes_the_other_seed(db):
+    """Sanity check that the OLD single-seed behavior really is the bug:
+    protecting only one endpoint's norm lets the other be pruned as junk."""
+    seed_a = _person(db, "Alpha Person")
+    noisy_seed_b = _person(db, "Beta Person - Wikipedia")  # e.g. after a bad
+    db.commit()                                            # canonical-name promotion
+
+    _prune_invalid_nodes(db, {person_norm_key("Alpha Person")})
+
+    assert db.get(Person, seed_a.id) is not None
+    assert db.get(Person, noisy_seed_b.id) is None  # the bug, reproduced
+
+
+# --- bug 2: canonical_name must never be overwritten by a noisy surface ---
+def test_merge_aliases_never_promotes_a_noisy_surface_to_canonical(db):
+    seed = _person(db, "Bill Gates")
+    builder._merge_aliases(seed, "Bill Gates - Wikipedia")
+    assert seed.canonical_name == "Bill Gates"
+    assert "Bill Gates - Wikipedia" in (seed.aliases or [])
+
+
+def test_merge_aliases_still_promotes_a_longer_clean_surface(db):
+    seed = _person(db, "Bill Gates")
+    builder._merge_aliases(seed, "William Henry Gates III")
+    assert seed.canonical_name == "William Henry Gates III"
+
+
+# --- bug 3: pending (unflushed) edges must not be orphaned by the prune ---
+def test_prune_flushes_before_deleting_so_pending_edges_are_not_orphaned(db):
+    junk = _person(db, "Some Page - LinkedIn")
+    good = _person(db, "Good Person")
+    db.commit()
+    _edge(db, junk, good)  # added to the session, NOT flushed yet
+
+    _prune_invalid_nodes(db, set())
+    db.commit()
+
+    surviving_edges = db.query(RelationshipEdge).all()
+    people_ids = {p.id for p in db.query(Person).all()}
+    for e in surviving_edges:
+        assert e.person_a_id in people_ids
+        assert e.person_b_id is None or e.person_b_id in people_ids
+
+
+# --- _adjacency must degrade gracefully on already-dangling edges ---------
+def test_adjacency_skips_edges_with_a_missing_endpoint(db):
+    good = _person(db, "Good Person")
+    db.commit()
+    ghost_id = "not-a-real-person-id"
+    db.add(RelationshipEdge(person_a_id=ghost_id, person_b_id=good.id,
+                            relationship_type="coworker", status="candidate",
+                            confidence_raw=0.5))
+    db.commit()
+
+    adj, person_by_id, src_by_id, degree = C._adjacency(db)
+    assert ghost_id not in adj
+    assert adj.get(good.id, []) == []
+
+
+# --- bug 4: weak/unknown edges must be traversable (costed, not excluded) -
+def test_weak_status_edge_is_traversable_when_it_is_the_only_route(db):
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="coworker", status="weak", conf=0.3)
+    db.commit()
+
+    adj, person_by_id, src_by_id, degree = C._adjacency(db)
+    routes = C._diverse_paths(adj, a.id, b.id, 3, 1, person_by_id, degree)
+    assert routes, "a weak-status edge must still form a path when it's the only one"
+
+
+def test_unknown_type_edge_is_traversable_when_it_is_the_only_route(db):
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="unknown", status="candidate", conf=0.4)
+    db.commit()
+
+    adj, person_by_id, src_by_id, degree = C._adjacency(db)
+    routes = C._diverse_paths(adj, a.id, b.id, 3, 1, person_by_id, degree)
+    assert routes, "an unknown-typed edge must still form a path when it's the only one"
+
+
+def test_typed_candidate_edge_still_beats_an_unknown_shortcut(db):
+    """The relaxation must not erase the preference for well-evidenced edges:
+    given a choice, routing still prefers the typed edge over an untyped one
+    of otherwise-equal confidence."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    typed = _edge(db, a, b, rel="coworker", status="candidate", conf=0.5)
+    db.commit()
+    assert C._edge_cost(typed) < C._edge_cost(
+        RelationshipEdge(person_a_id=a.id, person_b_id=b.id,
+                         relationship_type="unknown", status="candidate",
+                         confidence_raw=0.5)
+    )
+
+
+def test_rejected_status_edge_is_still_hard_excluded(db):
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="coworker", status="rejected", conf=0.9)
+    db.commit()
+
+    adj, person_by_id, src_by_id, degree = C._adjacency(db)
+    assert adj.get(a.id, []) == []
+
+
+def test_connect_people_forwards_route_exists_stop_predicate(db, monkeypatch):
+    a = _person(db, "Alpha Person")
+    b = _person(db, "Beta Person")
+    _edge(db, a, b, rel="coworker", status="candidate", conf=0.8)
+    db.commit()
+
+    observed = []
+
+    def fake_expand_both(db_arg, name_a, name_b, depth, protected, progress,
+                         context_a, context_b, on_step=None,
+                         cancel_checker=None, should_stop=None):
+        assert should_stop is not None
+        observed.append(should_stop(db_arg))
+
+    monkeypatch.setattr(C, "_expand_both_concurrently", fake_expand_both)
+
+    result = C.connect_people(db, "Alpha Person", "Beta Person", depth=2)
+
+    assert observed == [True]
+    assert result["connected"] is True

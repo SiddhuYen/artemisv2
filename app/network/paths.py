@@ -28,6 +28,7 @@ MAX_PUBLIC_HOPS = 4
 
 # relationship strength multiplier (how much a relationship type "carries" an intro)
 REL_STRENGTH = {
+    "linkedin_1st": 1.0, "podcast_guest": 1.0,
     "cofounder": 1.0, "board_member": 0.95, "advisor": 0.9, "investor": 0.85,
     "employee": 0.8, "coworker": 0.8, "coauthor": 0.8, "appointee": 0.75,
     "faculty": 0.7, "student": 0.7, "author": 0.6, "speaker": 0.5,
@@ -55,6 +56,10 @@ class _PublicEdges:
             a, b = e.person_a_id, e.person_b_id
             if not a or not b or a == b:
                 continue
+            if a not in self.person_by_id or b not in self.person_by_id:
+                continue  # dangling edge — its endpoint was pruned after this edge was written
+            if e.status == "rejected":
+                continue  # a reviewed, confirmed-false edge must never form a path
             key = tuple(sorted((a, b)))
             cur = best.get(key)
             if cur is None or (e.confidence_raw or 0) > (cur.confidence_raw or 0):
@@ -89,10 +94,11 @@ def _best_path(pe: _PublicEdges, start: str, target: str):
     """Return [(person_id, edge_used_to_reach_or_None), ...] or None."""
     if start == target:
         return [(start, None)]
+    counter_seed = 0
     best_cost: Dict[str, float] = {start: 0.0}
-    heap = [(0.0, 0, start, [(start, None)])]
+    heap = [(0.0, 0, counter_seed, start, [(start, None)])]
     while heap:
-        cost, hops, node, path = heapq.heappop(heap)
+        cost, hops, _t, node, path = heapq.heappop(heap)
         if node == target:
             return path
         if hops >= MAX_PUBLIC_HOPS:
@@ -102,7 +108,8 @@ def _best_path(pe: _PublicEdges, start: str, target: str):
             ncost = cost + _edge_cost(edge) + penalty
             if nbr not in best_cost or ncost < best_cost[nbr]:
                 best_cost[nbr] = ncost
-                heapq.heappush(heap, (ncost, hops + 1, nbr, path + [(nbr, edge)]))
+                counter_seed += 1
+                heapq.heappush(heap, (ncost, hops + 1, counter_seed, nbr, path + [(nbr, edge)]))
     return None
 
 

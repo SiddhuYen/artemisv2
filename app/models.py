@@ -28,8 +28,18 @@ ORG_TYPES = ("company", "nonprofit", "school", "government", "event", "unknown")
 RELATIONSHIP_TYPES = (
     "coworker", "cofounder", "board_member", "advisor", "investor",
     "employee", "speaker", "author", "student", "faculty",
-    "family_social", "interview", "coauthor", "appointee", "unknown",
+    "family_social", "interview", "coauthor", "appointee",
+    "podcast_guest",  # host<->guest, asserted by a podcast RSS feed episode
+    "linkedin_1st",   # verified direct connection, supplied by a LinkedIn export
+    "unknown",
 )
+
+# Organization<->organization facts (e.g. two firms co-invested in the same
+# funding round). Deliberately NEVER used to bridge two PEOPLE by chaining
+# person->org->org->person -- see Organization.meta["co_investments"] and
+# graph.builder.record_coinvestment. Kept as a separate vocabulary so it can
+# never be confused with a person-level RELATIONSHIP_TYPES value.
+ORG_RELATIONSHIP_TYPES = ("co_investor",)
 
 EDGE_STATUSES = ("weak", "candidate", "strong", "raw", "rejected", "accepted")
 

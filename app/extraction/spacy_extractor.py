@@ -11,6 +11,7 @@ heuristic extractor.
 """
 from __future__ import annotations
 
+import threading
 from collections import Counter
 from typing import Optional
 
@@ -33,23 +34,36 @@ MAX_ENTITIES_PER_TEXT = 25
 
 _nlp = None
 _loaded = False
+_load_lock = threading.Lock()
 _LEADING = ("the ", "The ", "a ", "an ")
 
 
 def spacy_available() -> bool:
+    """Double-checked locking: `_loaded` and `_nlp` must flip together. Without
+    the lock, a concurrent caller (nodes now process in parallel — see
+    expansion.py's per-hop worker pool) can observe `_loaded=True` while
+    spacy.load() is still running on another thread, read `_nlp` as still
+    None, and silently fall back to the weaker heuristic extractor for that
+    call even though spaCy IS available. Single-threaded callers pay one
+    uncontended lock acquisition; the fast path above avoids even that once
+    loaded."""
     global _nlp, _loaded
     if _loaded:
         return _nlp is not None
-    _loaded = True
-    if not config.SPACY_EXTRACT:
-        _nlp = None
-        return False
-    try:
-        import spacy
-        # only need NER + sentence boundaries; drop nothing required for ents
-        _nlp = spacy.load("en_core_web_sm")
-    except Exception:
-        _nlp = None
+    with _load_lock:
+        if _loaded:  # a racing thread may have just finished loading
+            return _nlp is not None
+        if not config.SPACY_EXTRACT:
+            _nlp = None
+            _loaded = True
+            return False
+        try:
+            import spacy
+            # only need NER + sentence boundaries; drop nothing required for ents
+            _nlp = spacy.load("en_core_web_sm")
+        except Exception:
+            _nlp = None
+        _loaded = True
     return _nlp is not None
 
 

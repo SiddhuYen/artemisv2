@@ -14,9 +14,19 @@ from typing import List
 
 from .. import config
 from . import cache
-from .base import SearchProvider, SearchResult, make_client
+from .base import SearchProvider, SearchResult, _call_with_hard_timeout, make_client
 from .ratelimit import IntervalLimiter
 from .stats import STATS
+
+
+def _do_request(query: str):
+    with make_client() as c:
+        return c.get(
+            config.BRAVE_ENDPOINT,
+            headers={"X-Subscription-Token": config.BRAVE_API_KEY,
+                     "Accept": "application/json"},
+            params={"q": query, "count": config.RESULTS_PER_QUERY},
+        )
 
 
 def _current_month() -> str:
@@ -76,20 +86,23 @@ class BraveProvider(SearchProvider):
         if not self.available():
             return []
         self._limiter.acquire()
-        with self._lock:
-            self._used = cache.incr_counter(self._quota_key)
         start = time.monotonic()
         try:
-            with make_client() as c:
-                resp = c.get(
-                    config.BRAVE_ENDPOINT,
-                    headers={"X-Subscription-Token": config.BRAVE_API_KEY,
-                             "Accept": "application/json"},
-                    params={"q": query, "count": config.RESULTS_PER_QUERY},
-                )
+            # Bypasses request_with_retry deliberately -- Brave's own status
+            # codes mean something request_with_retry's generic retry-on-429
+            # would get wrong (429/402 here means QUOTA EXHAUSTED, not
+            # "transient, retry me"; see below). The hard-timeout backstop
+            # still applies: measured live, a sibling provider (DuckDuckGo)
+            # hung in raw socket.connect() well past httpx's configured
+            # timeout, and this direct-call pattern is equally exposed.
+            resp = _call_with_hard_timeout(
+                lambda: _do_request(query),
+                config.HTTP_TIMEOUT + config.HTTP_HARD_TIMEOUT_BUFFER)
         except Exception:
-            return []
+            return []  # no response reached us -- don't burn quota on a network failure
         STATS.record_call(self.name, time.monotonic() - start)
+        with self._lock:
+            self._used = cache.incr_counter(self._quota_key)
 
         if resp.status_code in (401, 403):
             self._exhausted = True  # bad/expired key -> stop trying this run
@@ -101,6 +114,7 @@ class BraveProvider(SearchProvider):
             return []
         if resp.status_code != 200:
             return []
+        _mark_state("ok")  # clear any prior degraded state now that a call succeeded
 
         out: List[SearchResult] = []
         try:

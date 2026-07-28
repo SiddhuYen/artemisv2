@@ -21,6 +21,7 @@ Requires a search callable to LOCATE candidate roster URLs (person/firm name
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
@@ -253,9 +254,16 @@ class FirmsProvider:
         # one person's bio page.
         candidates.sort(key=lambda u: len(urlparse(u).path.strip("/").split("/")))
 
+        # Fetch every candidate concurrently, then pick the FIRST one (in the
+        # shallowest-path-preferred sort above) that verifies -- order still
+        # decides which page wins, only the I/O is parallelized.
+        pages: List[Page] = []
+        if candidates:
+            with ThreadPoolExecutor(max_workers=min(len(candidates), config.SEARCH_WORKERS)) as ex:
+                pages = list(ex.map(_fetch_readable, candidates))
+
         url = ""
-        for candidate in candidates:
-            page = _fetch_readable(candidate)
+        for candidate, page in zip(candidates, pages):
             if page.status_code == 200 and page.content and \
                     page_belongs_to_firm(candidate, page.content, firm_name):
                 url = candidate
@@ -348,17 +356,23 @@ class FirmsProvider:
         # Keep the FULLEST verified roster per firm: a bio page and the
         # roster both name the person and share a domain, but the bio page
         # lists a few colleagues where the roster lists the whole team.
+        urls = candidates[: 3 * config.MAX_FIRMS_PER_PERSON]
         best: dict = {}
-        for url in candidates[: 3 * config.MAX_FIRMS_PER_PERSON]:
-            roster = self.roster(url)  # no firm name yet; derived from the page
-            members = roster.get("members") or []
-            if target not in {person_norm_key(m) for m in members}:
-                continue  # Guard 3: this roster does not name them
-            if not roster.get("firm"):
-                continue
-            firm_key = org_norm_key(roster["firm"])
-            if len(members) > len(best.get(firm_key, {}).get("members") or []):
-                best[firm_key] = roster
+        if urls:
+            # Independent per-URL scrapes -- no ordering dependency (each
+            # candidate only competes on member count within its own firm
+            # key), so fetch them all concurrently.
+            with ThreadPoolExecutor(max_workers=min(len(urls), config.SEARCH_WORKERS)) as ex:
+                rosters = list(ex.map(self.roster, urls))  # no firm name yet; derived from the page
+            for roster in rosters:
+                members = roster.get("members") or []
+                if target not in {person_norm_key(m) for m in members}:
+                    continue  # Guard 3: this roster does not name them
+                if not roster.get("firm"):
+                    continue
+                firm_key = org_norm_key(roster["firm"])
+                if len(members) > len(best.get(firm_key, {}).get("members") or []):
+                    best[firm_key] = roster
 
         found = sorted(best.values(), key=lambda r: -len(r["members"]))[
             : config.MAX_FIRMS_PER_PERSON]

@@ -1,0 +1,57 @@
+# Render Blueprint for Artemis V2.
+#
+# Render → New → Blueprint → point at this repo. Everything below is created
+# automatically; the four secrets marked `sync: false` are prompted for in the
+# dashboard and never stored in git.
+#
+# Two constraints this file encodes, both load-bearing (see DEPLOY.md):
+#   1. ONE instance. The job registry, build queue, and rate limiter are all
+#      in-process. A second instance would have its own copy of each, so
+#      concurrency caps and rate limits would silently double and jobs would
+#      404 for whichever instance didn't run them.
+#   2. A persistent disk at /data. All SQLite state lives there — the search
+#      cache, the graph, the Brave quota counter. Without it every restart
+#      loses the graph and re-pays for search results already bought.
+#      NOTE: disks require a paid instance type. The free tier has no disk.
+services:
+  - type: web
+    name: artemis
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # smallest plan that supports a persistent disk
+    region: oregon         # move closer to you if it matters
+    numInstances: 1        # see (1) above — do not scale out
+    healthCheckPath: /healthz   # stays reachable even when ARTEMIS_ACCESS_TOKEN is set
+    autoDeploy: true
+
+    disk:
+      name: artemis-data
+      mountPath: /data
+      sizeGB: 3            # the search cache is the biggest consumer
+
+    envVars:
+      # --- secrets: prompted once in the dashboard, never committed --------
+      # Without this the app is wide open and every build spends money.
+      - key: ARTEMIS_ACCESS_TOKEN
+        sync: false
+      # Enables the Claude entity filter + relationship classifier. Absent,
+      # both no-op and the graph falls back to spaCy extraction.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Primary web search. Absent, routing falls back to Brave then DuckDuckGo.
+      - key: SERPER_API_KEY
+        sync: false
+      - key: BRAVE_API_KEY
+        sync: false
+
+      # --- state paths: must point at the mounted disk ---------------------
+      - key: ARTEMIS_DB_URL
+        value: sqlite:////data/artemis.db
+      - key: ARTEMIS_BOARDS_DB_URL
+        value: sqlite:////data/artemis_boards.db
+      - key: ARTEMIS_CACHE_DB
+        value: /data/artemis_cache.db
+      - key: ARTEMIS_GRAPH_DIR
+        value: /data/graphs
+      - key: ARTEMIS_CACHED_GRAPHS_DIR
+        value: /data/cached_graphs

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 from .. import config
@@ -22,6 +23,7 @@ from .edgar import EdgarProvider
 from .firms import FirmsProvider
 from .openalex import OpenAlexProvider
 from .opencorporates import OpenCorporatesProvider
+from .podcasts import PodcastProvider
 from .propublica import ProPublicaProvider
 from .stats import STATS
 from .wikipedia import WikipediaProvider
@@ -58,6 +60,7 @@ class SearchOrchestrator:
         self.opencorporates = OpenCorporatesProvider()
         self.edgar = EdgarProvider()
         self.propublica = ProPublicaProvider()
+        self.podcasts = PodcastProvider()
         self.duckduckgo = DuckDuckGoProvider()
         self._providers = {
             "serper": self.serper,
@@ -195,8 +198,12 @@ class SearchOrchestrator:
                    ("board_member", "cofounder")]
             ))[: config.PROPUBLICA_MAX_ORGS]
             board = []
-            for org in org_names:
-                board.extend(self.propublica.board_members(org))
+            if org_names:
+                # Independent per-org lookups -- fetch concurrently instead
+                # of one at a time.
+                with ThreadPoolExecutor(max_workers=len(org_names)) as ex:
+                    for members in ex.map(self.propublica.board_members, org_names):
+                        board.extend(members)
             if board:
                 nonprofit_text = self.propublica.colleagues_text(name, board)
 

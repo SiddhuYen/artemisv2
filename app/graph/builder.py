@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -30,7 +31,13 @@ from ..models import (
     Source,
 )
 from ..providers.base import SearchResult
-from ..utils.names import name_variants, org_norm_key, person_norm_key
+from ..utils.names import (
+    is_noise_name,
+    looks_like_person_name,
+    name_variants,
+    org_norm_key,
+    person_norm_key,
+)
 from . import disambiguate
 
 
@@ -108,7 +115,7 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
         if not allow_create:
             return None
         node_norm = norm if by_name is None else f"{norm}#{qid}"
-        return _new_person(db, name, node_norm, qid)
+        return _new_person_or_existing(db, name, node_norm, qid)
 
     # no QID: plain name-key dedup
     existing = db.execute(
@@ -119,7 +126,7 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
         return existing
     if not allow_create:
         return None
-    return _new_person(db, name, norm, None)
+    return _new_person_or_existing(db, name, norm, None)
 
 
 def _existing_evidence_signal(db: Session, person: Person) -> str:
@@ -137,6 +144,7 @@ def _existing_evidence_signal(db: Session, person: Person) -> str:
         select(RelationshipEdge.evidence_snippet)
         .where(or_(RelationshipEdge.person_a_id == person.id,
                    RelationshipEdge.person_b_id == person.id))
+        .order_by(RelationshipEdge.confidence_raw.desc(), RelationshipEdge.id)
         .limit(config.IDENTITY_SIGNAL_MAX_SNIPPETS)
     ).scalars()
     return " ".join(s for s in rows if s)
@@ -183,15 +191,46 @@ def _new_person(db: Session, name: str, norm: str, qid: Optional[str]) -> Person
     return person
 
 
+def _new_person_or_existing(db: Session, name: str, norm: str,
+                            qid: Optional[str]) -> Person:
+    """_new_person, tolerant of a concurrent insert of the same norm_name
+    racing in from another worker's own Session -- nodes within a hop, and the
+    two connect_people sides, now run on separate threads/sessions (see
+    expand_graph / connect.py), and each independently checks-then-creates.
+    Two workers can both miss an existing row and both attempt to insert the
+    same norm_name; norm_name is unique at the DB level (see Person.norm_name
+    in models.py), so the loser's flush raises IntegrityError instead of
+    silently duplicating the person. Recovering by re-selecting is correct,
+    not just safe: the winner's committed row IS the person both callers
+    wanted."""
+    try:
+        return _new_person(db, name, norm, qid)
+    except IntegrityError:
+        db.rollback()
+        existing = db.execute(
+            select(Person).where(Person.norm_name == norm)
+        ).scalar_one_or_none()
+        if existing is None:
+            raise  # the constraint fired on something else -- don't swallow that
+        _merge_aliases(existing, name)
+        return existing
+
+
 def _merge_aliases(person: Person, surface: str) -> None:
     aliases = set(person.aliases or [])
     for v in name_variants(surface):
         if v and v != person.canonical_name:
             aliases.add(v)
-    # prefer the longest surface form as the canonical display name
-    if len(surface.strip()) > len(person.canonical_name):
+    # Prefer the longest surface form as the canonical display name — but never
+    # promote a scraped-chrome surface ("Bill Gates - Wikipedia") over it. That
+    # string shares this person's norm_name (chrome is stripped before keying),
+    # so silently adopting it as canonical_name makes the shape check that
+    # protects this SAME node from _prune_invalid_nodes start failing on it.
+    stripped = surface.strip()
+    if (len(stripped) > len(person.canonical_name)
+            and not is_noise_name(stripped) and looks_like_person_name(stripped)):
         aliases.add(person.canonical_name)
-        person.canonical_name = surface.strip()
+        person.canonical_name = stripped
         aliases.discard(person.canonical_name)
     if aliases != set(person.aliases or []):
         person.aliases = sorted(aliases)
@@ -214,7 +253,20 @@ def get_or_create_org(
         return None
     org = Organization(name=name.strip(), norm_name=norm, type=org_type, meta={})
     db.add(org)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # same race as _new_person_or_existing: another worker's session won
+        # the insert for this norm_name first.
+        db.rollback()
+        existing = db.execute(
+            select(Organization).where(Organization.norm_name == norm)
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        if existing.type == "unknown" and org_type != "unknown":
+            existing.type = org_type
+        return existing
     return org
 
 
@@ -239,6 +291,43 @@ def save_source(
     db.add(source)
     db.flush()
     return source
+
+
+# --- org<->org facts (never bridged into the person graph) -----------------
+def record_coinvestment(db: Session, orgs: list, company: str,
+                        source_url: str = "") -> int:
+    """Record, on each firm, that it co-invested with the others in `company`.
+
+    Deliberately an ORGANIZATION-level fact ONLY, stored in `Organization.meta`
+    — never a RelationshipEdge, and never used to infer a tie between one
+    firm's employee and another's (no "employee of Org A -> Org A co-invested
+    with Org B -> employee/CEO of Org B" chaining). Pathfinding
+    (graph.connect._adjacency) reads RelationshipEdge rows exclusively, so a
+    fact stored here is structurally inert for person-to-person routing —
+    it can never become a bridge between two people.
+
+    Returns the number of (firm, other-firm) pairs newly recorded.
+    """
+    orgs = [o for o in orgs if o is not None]
+    if len(orgs) < 2:
+        return 0
+    recorded = 0
+    for org in orgs:
+        others = [o for o in orgs if o.id != org.id]
+        meta = dict(org.meta or {})
+        book = dict(meta.get("co_investments") or {})
+        for other in others:
+            entry = book.setdefault(other.norm_name,
+                                    {"firm": other.name, "rounds": []})
+            if not any(r.get("company") == company for r in entry["rounds"]):
+                entry["rounds"].append({"company": company,
+                                        "source_url": source_url})
+                recorded += 1
+        book_changed = meta.get("co_investments") != book
+        meta["co_investments"] = book
+        if book_changed:
+            org.meta = meta
+    return recorded
 
 
 # --- status policy ---------------------------------------------------------

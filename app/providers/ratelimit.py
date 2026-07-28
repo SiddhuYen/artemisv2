@@ -74,8 +74,10 @@ class CircuitBreaker:
             if self._state == self.OPEN:
                 if time.monotonic() - self._opened_at >= self._cooldown:
                     self._state = self.HALF_OPEN
-                    return True
+                    return True  # the one trial call
                 return False
+            if self._state == self.HALF_OPEN:
+                return False  # a trial is already in flight; wait for it to resolve
             return True
 
     def record_success(self) -> None:

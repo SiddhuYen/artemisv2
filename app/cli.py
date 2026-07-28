@@ -16,7 +16,7 @@ from collections import defaultdict
 from urllib.parse import urlparse
 
 from .db import SessionLocal, init_db
-from .extraction import ollama_available
+from .extraction import claude_available
 from .graph import builder
 from .graph.expansion import expand_graph
 from .graph.snapshot import save_graph_snapshot
@@ -28,6 +28,7 @@ from .utils.names import normalize, person_norm_key
 
 # most-specific / strongest relationship first — used to pick one label per pair
 _REL_PRIORITY = [
+    "linkedin_1st", "podcast_guest",
     "cofounder", "board_member", "investor", "employee", "faculty", "student",
     "advisor", "appointee", "coauthor", "author", "speaker", "coworker",
     "interview", "family_social", "unknown",
@@ -119,15 +120,15 @@ def run(target_name: str, depth: int, keep: bool, show_all: bool = False,
     from .extraction.entity_filter import is_filtering_active
     from .extraction import spacy_available
     from . import config as _cfg
-    if _cfg.OLLAMA_EXTRACT and ollama_available():
-        extractor = "ollama"
+    if _cfg.CLAUDE_EXTRACT and claude_available():
+        extractor = "claude"
     elif spacy_available():
         extractor = "spacy-ner"
     else:
         extractor = "heuristic"
-    filt = "on" if is_filtering_active() else "off (start Ollama to enable)"
+    filt = "on" if is_filtering_active() else "off (set ANTHROPIC_API_KEY to enable)"
     print(f"\n🔎  Building relationship graph for: {target_name}")
-    print(f"    depth={depth}  ·  extractor={extractor}  ·  ollama node-filter={filt}\n",
+    print(f"    depth={depth}  ·  extractor={extractor}  ·  claude node-filter={filt}\n",
           flush=True)
 
     db = SessionLocal()
@@ -264,27 +265,106 @@ def _find_target(db, name: str):
 def cmd_upload(argv) -> None:
     from .network.ingest import ingest_csv
     from .models import LocalProfile
+    p = argparse.ArgumentParser(prog="upload-network")
+    p.add_argument("path", help="path to a LinkedIn-style connections CSV")
+    p.add_argument("--owner", default="",
+                   help='whose contacts these are, e.g. "Jane Doe" -- when '
+                        'given, each contact also becomes a real linkedin_1st '
+                        'edge in the SHARED public graph (routable by anyone\'s '
+                        '/connect), anchored to a Person node for this name. '
+                        'Without it, ingestion stays in the private '
+                        'LocalProfile/LocalEdge tables only.')
     if not argv:
-        print("usage: python -m app.cli upload-network <path.csv>", file=sys.stderr)
+        print("usage: python -m app.cli upload-network <path.csv> "
+              '[--owner "Your Name"]', file=sys.stderr)
         sys.exit(1)
-    path = argv[0]
+    ns = p.parse_args(argv)
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(ns.path, "r", encoding="utf-8", errors="replace") as fh:
             content = fh.read()
     except OSError as exc:
-        print(f"cannot read {path}: {exc}", file=sys.stderr)
+        print(f"cannot read {ns.path}: {exc}", file=sys.stderr)
         sys.exit(1)
     init_db()
     db = SessionLocal()
     try:
-        stats = ingest_csv(db, content)
+        stats = ingest_csv(db, content, owner_name=ns.owner)
         total = db.query(LocalProfile).count()
     finally:
         db.close()
-    print(f"Ingested network from {path}")
+    print(f"Ingested network from {ns.path}")
     print(f"  created={stats['created']} updated={stats['updated']} "
           f"edges={stats['edges']} skipped={stats['skipped']}")
+    if ns.owner:
+        print(f"  shared-graph linkedin_1st edges: {stats['graph_edges']} "
+              f"(anchored to \"{ns.owner}\")")
     print(f"  total local profiles: {total}")
+
+
+class _OrgSearchAdapter:
+    """Adapts SearchOrchestrator to the plain search-provider interface
+    (`.available()` / `.search(query)`) that FundingProvider expects."""
+
+    def __init__(self, orch) -> None:
+        self._orch = orch
+
+    def available(self) -> bool:
+        return True  # ORCH degrades to [] internally when nothing is configured
+
+    def search(self, query: str):
+        return self._orch.search(query, is_person=False)
+
+
+def cmd_funding_rounds(argv) -> None:
+    """Look up a firm's funding rounds and record co-investor firms as an
+    ORG-level fact only (Organization.meta["co_investments"]) — never a
+    person-to-person edge. See graph.builder.record_coinvestment."""
+    from .graph.expansion import ORCH
+    from .graph import builder
+    from .providers.funding import FundingProvider
+    from .utils.names import org_norm_key
+
+    p = argparse.ArgumentParser(prog="funding-rounds")
+    p.add_argument("name", nargs="*", help="firm name, e.g. \"Fiat Ventures\"")
+    ns = p.parse_args(argv)
+    firm_name = " ".join(ns.name).strip()
+    if not firm_name:
+        print('usage: python -m app.cli funding-rounds "Firm Name"', file=sys.stderr)
+        sys.exit(1)
+
+    init_db()
+    STATS.reset()
+    funding = FundingProvider(_OrgSearchAdapter(ORCH))
+    print(f"\n💰  Looking up funding rounds naming: {firm_name}\n", flush=True)
+
+    db = SessionLocal()
+    try:
+        anchor = builder.get_or_create_org(db, firm_name, org_type="firm")
+        target = org_norm_key(firm_name)
+        total_pairs = 0
+        rounds = funding.rounds_for_firm(firm_name)
+        for round_ in rounds:
+            others = [n for n in round_["investors"]
+                     if org_norm_key(n) != target]
+            if not others:
+                continue
+            orgs = [anchor] + [builder.get_or_create_org(db, n, org_type="firm")
+                               for n in others]
+            recorded = builder.record_coinvestment(
+                db, orgs, round_.get("company") or "the round",
+                source_url=round_.get("source_url", ""))
+            total_pairs += recorded
+            names = ", ".join(o.name for o in orgs if o is not None)
+            print(f"  {round_.get('company') or 'a round'}: {names}"
+                  f"  ({recorded} new co-investor facts)")
+        db.commit()
+    finally:
+        db.close()
+
+    print(f"\nrounds found: {len(rounds)}   new co-investor facts recorded: {total_pairs}")
+    if not rounds:
+        print("  ⚠ No round announcements found naming this firm as an investor.")
+    _print_provider_stats()
 
 
 def cmd_connect(argv) -> None:
@@ -302,7 +382,8 @@ def cmd_connect(argv) -> None:
               '[--context-a "hint"] [--context-b "hint"]', file=sys.stderr)
         sys.exit(1)
     a, b = ns.names
-    depth = max(1, ns.depth)
+    depth = max(1, min(ns.depth, 3))  # mirrors the HTTP API's cap (main.py) --
+    # unbounded depth is exponential in EXPAND_NODE_CONCURRENCY x SEARCH_WORKERS
     init_db()
     STATS.reset()
     ctx = (f"  (A: {ns.context_a})" if ns.context_a else "") + \
@@ -344,7 +425,7 @@ def cmd_add_org(argv) -> None:
     p.add_argument("name", nargs="*")
     p.add_argument("--depth", type=int, default=1)
     ns = p.parse_args(argv)
-    depth = max(1, ns.depth)
+    depth = max(1, min(ns.depth, 3))  # mirrors the HTTP API's cap (main.py)
     org = " ".join(ns.name).strip()
     if not org:
         print('usage: python -m app.cli add-org-network "Org Name" [--depth N]',
@@ -465,7 +546,7 @@ def _run_search(argv) -> None:
     if not target:
         print("No name given.", file=sys.stderr)
         sys.exit(1)
-    run(target, max(1, args.depth), args.keep, args.show_all, context=args.context,
+    run(target, max(1, min(args.depth, 3)), args.keep, args.show_all, context=args.context,
         seed_is_person=not args.org)
 
 
@@ -475,6 +556,7 @@ _SUBCOMMANDS = {
     "connect": cmd_connect,
     "match": cmd_match,
     "paths": cmd_paths,
+    "funding-rounds": cmd_funding_rounds,
 }
 
 

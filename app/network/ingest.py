@@ -4,18 +4,56 @@ Handles inconsistent LinkedIn-style exports (variant/missing headers). Each row
 becomes a normalized LocalProfile. Unless the CSV carries explicit relationship
 columns, every uploaded profile is treated as directly connected to "You"
 (a local_edge with from_profile_id = NULL).
+
+When `owner_name` is supplied, each imported contact ALSO becomes a real
+`linkedin_1st` RelationshipEdge in the shared public graph (owner <-> contact),
+so /connect and /discover can route through it immediately — a CSV row is a
+structural assertion that the connection exists, exactly like DrewGloverDemo's
+linkedin_csv ingester. Without `owner_name`, ingestion stays scoped to the
+walled-off LocalProfile/LocalEdge tables (today's behavior), since there is no
+graph node to anchor the edges to.
 """
 from __future__ import annotations
 
 import csv
 import io
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import LocalEdge, LocalProfile
+from ..extraction.schemas import EdgeSignals, ExtractedEdge
+from ..models import LocalEdge, LocalProfile, Person
+from ..providers.base import SearchResult
 from ..utils.names import name_variants, person_norm_key
+
+# Confidence for a linkedin_1st edge — a CSV row IS the assertion (not
+# inferred from prose), so it sits above every web-sourced relationship type.
+_LINKEDIN_CONFIDENCE = 0.95
+
+
+def _linkedin_edge(db: Session, owner: Person, contact: Person, url: str) -> None:
+    from ..graph import builder  # local import: avoids a network<->graph cycle
+
+    if contact.id == owner.id:
+        return
+    # Stable per (owner, contact) synthetic URL when the row carries no
+    # profile URL, so re-uploading the same export stays idempotent instead
+    # of piling up duplicate Source rows / edges each time.
+    source_url = url or f"linkedin-import://{owner.norm_name}/{contact.norm_name}"
+    res = SearchResult(contact.canonical_name, source_url, "linkedin_csv",
+                       "linkedin_csv")
+    source = builder.save_source(db, res, "linkedin_csv_import")
+    edge = ExtractedEdge(
+        person_a=owner.canonical_name, person_b=contact.canonical_name,
+        other_kind="person", relationship_type="linkedin_1st",
+        method="LinkedIn connections export", source_url=source_url,
+        evidence_snippet=(f"{contact.canonical_name} is a verified LinkedIn "
+                          f"connection of {owner.canonical_name}."),
+        confidence_base=_LINKEDIN_CONFIDENCE, confidence_adjusted=_LINKEDIN_CONFIDENCE,
+        signals=EdgeSignals(trusted=True, explicit_keyword_match=True),
+    )
+    builder.add_edge_from_extraction(db, owner, edge, 0, source, contact)
 
 # header alias -> canonical field (compared case-insensitively, spaces/_ ignored)
 _HEADER_ALIASES = {
@@ -102,19 +140,35 @@ def _strip_preamble(text: str) -> str:
     return text
 
 
-def ingest_csv(db: Session, content: str) -> dict:
-    """Parse + persist a CSV. Returns {created, updated, edges, skipped}."""
+def ingest_csv(db: Session, content: str, owner_name: str = "") -> dict:
+    """Parse + persist a CSV. Returns {created, updated, edges, skipped,
+    graph_edges}. `graph_edges` (only non-zero when `owner_name` is given)
+    counts real linkedin_1st RelationshipEdge rows added to the shared graph —
+    see module docstring."""
     # Skip a possible BOM and any LinkedIn 'Notes:' preamble before the header.
     text = _strip_preamble(content.lstrip("﻿"))
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         return {"created": 0, "updated": 0, "edges": 0, "skipped": 0,
-                "error": "empty or headerless CSV"}
+                "graph_edges": 0, "error": "empty or headerless CSV"}
+    return ingest_rows(db, reader, owner_name=owner_name)
 
-    created = updated = edges = skipped = 0
+
+def ingest_rows(db: Session, rows: Iterable[Dict[str, str]],
+                owner_name: str = "") -> dict:
+    """Persist already-parsed rows — the shared tail of every import path, so a
+    vCard import (see /network/contacts/import) de-dupes, links to "You" and
+    seeds the public graph on exactly the same terms as a CSV upload. Keys are
+    matched through the same `_HEADER_ALIASES`, so a row is just
+    {"Name": ..., "Company": ..., "Position": ...}."""
+    from ..graph import builder  # local import: avoids a network<->graph cycle
+
+    owner = builder.get_or_create_person(db, owner_name) if owner_name.strip() else None
+
+    created = updated = edges = skipped = graph_edges = 0
     by_key: Dict[str, LocalProfile] = {}
 
-    for raw in reader:
+    for raw in rows:
         parsed = _profile_from_row(raw)
         if parsed is None:
             skipped += 1
@@ -144,8 +198,15 @@ def ingest_csv(db: Session, content: str) -> dict:
             edges += 1
         by_key[key] = existing
 
+        if owner is not None:
+            contact = builder.get_or_create_person(db, existing.canonical_name)
+            if contact is not None:
+                _linkedin_edge(db, owner, contact, existing.linkedin_url or "")
+                graph_edges += 1
+
     db.commit()
-    return {"created": created, "updated": updated, "edges": edges, "skipped": skipped}
+    return {"created": created, "updated": updated, "edges": edges,
+            "skipped": skipped, "graph_edges": graph_edges}
 
 
 def _merge_profile(existing: LocalProfile, parsed: dict) -> None:

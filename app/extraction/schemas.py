@@ -17,7 +17,7 @@ class EdgeSignals(BaseModel):
     sentence_cooccurrence: bool = False
     strength_keywords_found: List[str] = Field(default_factory=list)
     # the counterpart came from a STRUCTURED source (Wikidata/EDGAR/ProPublica/
-    # OpenAlex) with a clean canonical name -> skip the Ollama entity filter.
+    # OpenAlex) with a clean canonical name -> skip the Claude entity filter.
     trusted: bool = False
 
 

@@ -20,7 +20,7 @@ but no signal keyword for that silo is present, the edge is recorded as
 ## Stack
 
 Python 3.9+ · FastAPI · SQLite + SQLAlchemy 2.0 · httpx · BeautifulSoup4 · pydantic v2
-· optional Ollama (`http://localhost:11434`).
+· spaCy NER · optional Claude (Anthropic API).
 
 ## Run (terminal — primary)
 
@@ -45,11 +45,25 @@ source domain(s), and the evidence sentence.
 
 ### Extraction quality
 
-If a local **Ollama** daemon is reachable (`http://localhost:11434`) it is used
-for extraction and the graph is much cleaner. Otherwise the system falls back to
-a conservative **low-confidence heuristic extractor** (capitalised-name +
-org-suffix detection) — useful but noisy, which is why the CLI hides `unknown`
-edges by default.
+Set `ANTHROPIC_API_KEY` (in `.env` or the environment) and three **Claude**
+stages switch on automatically:
+
+| Stage | What it does | Model & cost |
+|-------|--------------|--------------|
+| Entity filter | Drops candidates that aren't real named people/orgs ("Cookie Policy", "Share Copied Bill Gates") | Haiku · batched 50/call, cached 30 days — cents per build |
+| Relationship classifier | Re-types `unknown` edges from their evidence sentence (`coworker`, `board_member`, …) | Haiku · batched 25/call, cached 30 days |
+| Per-source extraction | Reads each scraped page directly instead of pattern-matching it. Opt-in via `ARTEMIS_CLAUDE_EXTRACT=1` | Opus · one call per page — the expensive one |
+
+Without a key every stage is a transparent no-op: extraction falls back to
+**spaCy NER**, then to a conservative **low-confidence heuristic extractor**
+(capitalised-name + org-suffix detection) — useful but noisy, which is why the
+CLI hides `unknown` edges by default. The deterministic junk filter
+([utils/names.py](app/utils/names.py)) runs either way.
+
+All Claude calls are schema-constrained and fail closed: a missing key, a rate
+limit, or a timeout returns no verdict and the deterministic path takes over —
+an LLM failure can never fail a graph build. Knobs (model per stage, batch
+sizes, concurrency, effort) live in [app/config.py](app/config.py).
 
 ## Run (optional HTTP API)
 
@@ -61,13 +75,23 @@ uvicorn app.main:app --reload   # open http://localhost:8000/docs
 
 ## API
 
-| Method | Path              | Purpose |
-|--------|-------------------|---------|
-| POST   | `/targets/search` | Run the full pipeline for a target and expand the graph |
-| GET    | `/graph`          | Full node/edge graph |
-| GET    | `/people`         | All discovered people |
-| GET    | `/edges`          | All relationship edges |
-| GET    | `/health`         | Liveness + active extractor |
+| Method | Path                | Purpose |
+|--------|---------------------|---------|
+| POST   | `/targets/search`   | Build a target's neighborhood → `{"job_id"}` |
+| POST   | `/discover`         | Expand one person's network → `{"job_id"}` |
+| POST   | `/connect`          | Find paths between two people → `{"job_id"}` |
+| GET    | `/jobs/{id}`        | Status, percent, queue position, result |
+| POST   | `/jobs/{id}/cancel` | Stop a job, running or still queued |
+| GET    | `/graph`            | Full node/edge graph |
+| GET    | `/people`           | All discovered people |
+| GET    | `/edges`            | All relationship edges |
+| GET    | `/status`           | Providers, Claude stages, auth, build queue |
+| GET    | `/health`           | Liveness + active extractor |
+| POST   | `/login` `/logout`  | Exchange the access token for a session cookie |
+
+**Every build endpoint is asynchronous.** A build is minutes of live web
+crawling — longer than any managed host will hold a request open — so these
+return a job id immediately and the work runs in the background.
 
 ### `POST /targets/search`
 
@@ -77,7 +101,23 @@ uvicorn app.main:app --reload   # open http://localhost:8000/docs
 ```
 
 ```json
-// response
+// response — the build runs in the background
+{ "job_id": "8f14e45fceea167a5a36dedd4bea2543" }
+```
+
+Poll `GET /jobs/{job_id}` until `status` is `done`; `result` then holds the
+graph:
+
+```json
+{
+  "status": "running", "pct": 43, "queue_position": 0,
+  "message": "hop 2/2 · 7/15 nodes",
+  "result": null
+}
+```
+
+```json
+// once done, `result` is:
 {
   "nodes": [ { "id": "...", "label": "Tim Cook", "kind": "person", "type": null } ],
   "edges": [ {
@@ -89,6 +129,28 @@ uvicorn app.main:app --reload   # open http://localhost:8000/docs
              "edges_found": 22, "sources_fetched": 3 }
 }
 ```
+
+`status` is one of `queued` → `running` → `done` | `error` | `cancelled`.
+While `queued`, `queue_position` is how many builds are ahead.
+
+### Access control
+
+Set `ARTEMIS_ACCESS_TOKEN` and the whole surface — UI and API — requires it:
+
+```bash
+export ARTEMIS_ACCESS_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+curl -H "Authorization: Bearer $ARTEMIS_ACCESS_TOKEN" localhost:8000/status
+```
+
+Browsers get a sign-in page at `/login` which exchanges the token for an
+HttpOnly cookie. Leave the variable unset and the app stays open, which is what
+a local checkout wants — but never do that on a public URL: every build spends
+search quota and Anthropic tokens. Build endpoints are rate limited per client
+regardless (`ARTEMIS_BUILD_RATE_LIMIT`, default 12/hour); reads never are.
+
+Concurrency is bounded by `ARTEMIS_MAX_CONCURRENT_BUILDS` (default 2) with
+`ARTEMIS_MAX_QUEUED_BUILDS` (default 8) allowed to wait; past that a request is
+refused with 429 rather than joining a queue it would time out in.
 
 The graph output matches the required wire format: `nodes[{id,label}]` and
 `edges[{from,to,type,confidence,source_url}]` (plus extra evidence fields).
@@ -108,9 +170,10 @@ target ─▶ SILOS (8) ─▶ SearchProviders ─▶ scrape/summary ─▶ Extr
    endpoint (with redirect-link decoding + lite fallback) and the Wikipedia
    MediaWiki API. Shared `User-Agent`, in-memory caching, best-effort (never
    raises on network failure).
-3. **Extraction** ([app/extraction/](app/extraction/)) — Ollama strict-JSON
-   extractor with a heuristic fallback. Relationship type is chosen only from
-   signal keywords actually present in the text.
+3. **Extraction** ([app/extraction/](app/extraction/)) — Claude schema-constrained
+   extractor, with spaCy NER and a capitalised-token heuristic as fallbacks.
+   Relationship type is chosen only from signal keywords actually present in
+   the text.
 4. **Graph builder** ([app/graph/builder.py](app/graph/builder.py)) — dedup-aware
    upserts (people/orgs by normalized name, sources by URL, edges by endpoint +
    type + source). Confidence → status policy; `family_social` capped at
@@ -246,6 +309,35 @@ relationship_strength`. Org-overlap matches do not generate person paths.
 Tables: `local_profiles`, `local_edges`, `graph_matches`, `candidate_paths`
 ([models.py](app/models.py)). A new target search clears only the public graph
 and matches — your uploaded network is preserved.
+
+## Pre-built caches (warm backbones)
+
+Queries are much faster and cheaper when the people they route through are
+already in the graph. [scripts/build_yc_cache.py](scripts/build_yc_cache.py)
+pre-builds one such backbone: every Y Combinator partner plus their outward
+network.
+
+```bash
+# depth 1 first — the partner + direct-connection layer (~2h for the 33-name roster)
+ARTEMIS_DB_URL=sqlite:///./yc_cache.db python scripts/build_yc_cache.py --depth 1
+# then deepen; the second pass REUSES every hop-0 result above, not re-searching it
+ARTEMIS_DB_URL=sqlite:///./yc_cache.db python scripts/build_yc_cache.py --depth 2
+```
+
+It first materializes the roster clique — the team page structurally asserts
+that these people are colleagues, so those edges are `trusted` and skip the
+Claude entity filter (same treatment as expansion's phase-0c) — then expands
+each partner outward.
+
+**The graph is the cache.** Expansion marks each processed person, so a re-run
+reuses everything already discovered and only pays for newly-reached people
+(`expansion._reuse_existing_neighbors`). Interrupting a run and re-running it is
+safe and resumes where it left off. `--budget` bounds wall-clock seconds, but is
+only checked at hop boundaries, so an in-flight node can overrun it.
+
+Omitting `ARTEMIS_DB_URL` builds into the main shared graph instead of an
+isolated cache file. `--limit N` trims how many partners are *expanded*; the
+roster clique always covers the whole team.
 
 ## Deferred (next stage — not built)
 

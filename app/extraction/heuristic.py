@@ -32,8 +32,9 @@ from .confidence import (
 )
 from .schemas import EdgeSignals, ExtractedEdge, ExtractionOutput
 
-# capitalised run of 1..5 tokens (allowing &, ., -)
-_CANDIDATE = re.compile(r"\b[A-Z][A-Za-z.&\-]*(?:\s+[A-Z][A-Za-z.&\-]*){0,4}\b")
+# capitalised run of 1..5 tokens (allowing &, ., -, ' so apostrophe'd surnames
+# like "O'Brien"/"D'Angelo" form a single token instead of breaking in two)
+_CANDIDATE = re.compile(r"\b[A-Z][A-Za-z.&'\-]*(?:\s+[A-Z][A-Za-z.&'\-]*){0,4}\b")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 MAX_ENTITIES_PER_TEXT = 15
@@ -61,8 +62,8 @@ def _trim_person(phrase: str) -> str:
     return " ".join(parts)
 
 
-def _evidence_for(name: str, text: str, fallback: str) -> str:
-    for sent in _SENT_SPLIT.split(text):
+def _evidence_for(name: str, sentences: list, fallback: str) -> str:
+    for sent in sentences:
         if name.lower() in sent.lower():
             return sent.strip()[:400]
     return fallback[:400]
@@ -84,8 +85,9 @@ def heuristic_extract(
     person_counts: Counter = Counter()
     org_counts: Counter = Counter()
     display: dict = {}  # norm -> original display form
+    sentences = _SENT_SPLIT.split(text)
 
-    for sentence in _SENT_SPLIT.split(text):
+    for sentence in sentences:
         for match in _CANDIDATE.finditer(sentence):
             raw_phrase = match.group(0).strip(" .,-&")
             if is_noise_name(raw_phrase):
@@ -114,7 +116,7 @@ def heuristic_extract(
         out.entities.people.append(name)
         out.edges.append(
             _build_edge(subject_person, name, "person", "unknown",
-                        text, evidence, source_url, silo, count)
+                        sentences, evidence, source_url, silo, count)
         )
 
     for norm, count in org_counts.most_common(MAX_ENTITIES_PER_TEXT):
@@ -123,14 +125,14 @@ def heuristic_extract(
         out.entities.organizations.append(name)
         out.edges.append(
             _build_edge(subject_person, name, "organization", otype,
-                        text, evidence, source_url, silo, count)
+                        sentences, evidence, source_url, silo, count)
         )
 
     return out
 
 
-def _build_edge(subject, name, kind, org_type, text, evidence, source_url, silo, count):
-    ev = _evidence_for(name, text, evidence)
+def _build_edge(subject, name, kind, org_type, sentences, evidence, source_url, silo, count):
+    ev = _evidence_for(name, sentences, evidence)
     rel_type, explicit, _kw = classify_with_signal(ev, silo)
     factor, found = keyword_strength_factor(ev)
     cooc = sentence_cooccurrence(subject, name, ev)

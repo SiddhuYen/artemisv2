@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import heapq
 import math
+import threading
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
 from ..models import Person, RelationshipEdge, Source
@@ -24,6 +26,7 @@ from .expansion import expand_graph
 
 # relationship strength multiplier (shared with candidate-path scoring)
 REL_STRENGTH = {
+    "linkedin_1st": 1.0, "podcast_guest": 1.0,
     "cofounder": 1.0, "board_member": 0.95, "advisor": 0.9, "investor": 0.85,
     "employee": 0.8, "coworker": 0.8, "coauthor": 0.8, "appointee": 0.75,
     "faculty": 0.7, "student": 0.7, "author": 0.6, "speaker": 0.5,
@@ -32,15 +35,29 @@ REL_STRENGTH = {
 _STATUS_PENALTY = {"strong": 0.0, "candidate": 0.3, "raw": 1.0,
                    "weak": 2.0, "rejected": 12.0}
 
-# A path may only traverse edges with a KNOWN relationship type and at least
-# candidate-tier confidence. This stops weak co-occurrence noise (e.g. an
-# 'unknown 0.35' bridge through a boilerplate/homonym node) from forming a
-# path — the Fred→Cook run's junk routes were exactly such edges.
-_PATH_WORTHY_STATUS = {"candidate", "strong", "accepted"}
+# 'rejected' means an edge was reviewed (by a human or the LLM classifier) and
+# marked false — that is the only status that means "not a real connection"
+# rather than merely "weakly evidenced", so it's the only one excluded
+# outright. Everything else (weak status, an untyped 'unknown' relationship)
+# is priced instead via _STATUS_PENALTY / UNKNOWN_TYPE_SURCHARGE below.
+#
+# This used to be a hard filter requiring known-type + candidate-tier-or-above,
+# meant to stop weak co-occurrence noise (e.g. an 'unknown 0.35' bridge through
+# a boilerplate/homonym node) from forming a path — the Fred→Cook run's junk
+# routes were exactly such edges. But on a real, sparsely-evidenced graph most
+# edges land at 'weak' status or 'unknown' type (the Claude classifier that
+# retypes 'unknown' edges only reaches candidate-tier+ edges — see
+# _retype_unknown_edges), so the filter excluded ~80% of the graph and two
+# people who WERE linked in the data routinely came back "not connected" with
+# no path at all to show. A cost, unlike an exclusion, still prefers every
+# better-evidenced route there is and only falls back to a noisy bridge when
+# it's genuinely the only way across.
+_UNTRAVERSABLE_STATUS = {"rejected"}
+UNKNOWN_TYPE_SURCHARGE = 1.2  # extra cost for an untyped ('unknown') edge
 
 
 def _path_worthy(e: RelationshipEdge) -> bool:
-    return e.relationship_type != "unknown" and e.status in _PATH_WORTHY_STATUS
+    return e.status not in _UNTRAVERSABLE_STATUS
 
 
 def _adjacency(db: Session):
@@ -53,8 +70,10 @@ def _adjacency(db: Session):
         a, b = e.person_a_id, e.person_b_id
         if not a or not b or a == b:
             continue
+        if a not in person_by_id or b not in person_by_id:
+            continue  # dangling edge — its endpoint was pruned after this edge was written
         if not _path_worthy(e):
-            continue  # keep noise/unknown edges out of the pathable graph
+            continue  # 'rejected' — a reviewed, confirmed-false edge
         key = tuple(sorted((a, b)))
         cur = best.get(key)
         if cur is None or (e.confidence_raw or 0) > (cur.confidence_raw or 0):
@@ -69,7 +88,10 @@ def _adjacency(db: Session):
 
 def _edge_cost(e: RelationshipEdge) -> float:
     conf = max(e.confidence_raw or 0.01, 0.01)
-    return -math.log(conf) + _STATUS_PENALTY.get(e.status, 1.0)
+    cost = -math.log(conf) + _STATUS_PENALTY.get(e.status, 1.0)
+    if e.relationship_type == "unknown":
+        cost += UNKNOWN_TYPE_SURCHARGE
+    return cost
 
 
 def _node_penalty(person_by_id, degree, person_id: str) -> float:
@@ -93,10 +115,11 @@ def _best_path(adj, start: str, target: str, max_hops: int, excluded=None,
     degree = degree or {}
     if start == target:
         return [(start, None)]
+    counter_seed = 0
     best_cost = {start: 0.0}
-    heap = [(0.0, 0, start, [(start, None)])]
+    heap = [(0.0, 0, counter_seed, start, [(start, None)])]
     while heap:
-        cost, hops, node, path = heapq.heappop(heap)
+        cost, hops, _t, node, path = heapq.heappop(heap)
         if node == target:
             return path
         if hops >= max_hops:
@@ -109,7 +132,8 @@ def _best_path(adj, start: str, target: str, max_hops: int, excluded=None,
             nc = cost + _edge_cost(edge) + penalty
             if nbr not in best_cost or nc < best_cost[nbr]:
                 best_cost[nbr] = nc
-                heapq.heappush(heap, (nc, hops + 1, nbr, path + [(nbr, edge)]))
+                counter_seed += 1
+                heapq.heappush(heap, (nc, hops + 1, counter_seed, nbr, path + [(nbr, edge)]))
     return None
 
 
@@ -137,30 +161,121 @@ def _score(edges: List[RelationshipEdge]) -> float:
     return round(avg_conf * avg_strength, 3)
 
 
+def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
+    """Cheap post-node probe used during connect expansion."""
+    if db.in_transaction():
+        db.rollback()
+    a = db.execute(
+        select(Person).where(Person.norm_name == person_norm_key(name_a))
+    ).scalar_one_or_none()
+    b = db.execute(
+        select(Person).where(Person.norm_name == person_norm_key(name_b))
+    ).scalar_one_or_none()
+    if a is None or b is None:
+        return False
+    adj, person_by_id, _src_by_id, degree = _adjacency(db)
+    return bool(_diverse_paths(adj, a.id, b.id, max_hops, 1, person_by_id, degree))
+
+
+def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
+                              protected: set, progress, context_a: str, context_b: str,
+                              on_step: Optional[Callable[[dict], None]] = None,
+                              cancel_checker: Optional[Callable[[], None]] = None,
+                              should_stop: Optional[Callable[[Session], bool]] = None) -> None:
+    """Run both endpoints' expand_graph calls concurrently, each on its own
+    Session (bound to the same engine as `db` — a Session isn't thread-safe to
+    share). The two sides are fully independent expansions into the same
+    shared graph; nothing about A needs B done first, so there's no reason
+    the old "[1/2] then [2/2]" sequencing should hold up the wall clock.
+
+    Either side's exception propagates via future.result() — same as an
+    unhandled exception from a sequential call would have; this is not the
+    place to silently swallow a genuine failure (contrast with expand_graph's
+    OWN per-node worker pool, which deliberately skips a failed node rather
+    than aborting the whole hop — a full endpoint failing is not that)."""
+    engine = db.get_bind()
+    WorkerSession = sessionmaker(bind=engine, autoflush=False,
+                                 expire_on_commit=False, future=True)
+
+    def _run(name: str, context: str, label: str) -> None:
+        worker_db = WorkerSession()
+        try:
+            if cancel_checker:
+                cancel_checker()
+            if progress:
+                progress(f"\n[{label}] building graph for {name} (depth {depth})…")
+            step_cb = (lambda evt, side=label.lower(): on_step({**evt, "side": side})) if on_step else None
+            kwargs = {
+                "progress": progress,
+                "seed_context": context,
+                "protected_norms": protected,
+                "on_step": step_cb,
+                # Point-to-point bridging wants STRONGEST expansion, not the
+                # reachability walk /discover uses -- see connect_people. Passed
+                # per call so a concurrent /discover build keeps its own mode.
+                "prefer_reachable": False,
+            }
+            if cancel_checker:
+                kwargs["cancel_checker"] = cancel_checker
+            if should_stop:
+                kwargs["should_stop"] = should_stop
+            expand_graph(worker_db, name, depth, **kwargs)
+        finally:
+            worker_db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [
+            ex.submit(_run, name_a, context_a, "A"),
+            ex.submit(_run, name_b, context_b, "B"),
+        ]
+        for f in futures:
+            f.result()
+
+
 def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
-                   progress=None, context_a: str = "", context_b: str = "") -> dict:
+                   progress=None, context_a: str = "", context_b: str = "",
+                   on_step: Optional[Callable[[dict], None]] = None,
+                   cancel_checker: Optional[Callable[[], None]] = None) -> dict:
     """Build both graphs, then return the best path between the two people.
 
     context_a / context_b disambiguate a non-notable person (e.g. "Indiana
     Pacers owner") so the search targets the right entity, not a famous namesake.
+
+    `on_step`, like expand_graph's own, reports structured per-side hop/node
+    progress (each event tagged {"side": "a"|"b"}) instead of free-text lines.
     """
     # ADDITIVE: build both people INTO the shared global map (never reset), then
     # find a path over the WHOLE accumulated graph — a route may run through
     # people that OTHER runs discovered. Point-to-point bridging wants STRONGEST
     # expansion (toward shared, well-documented connections), not reachability;
-    # force it for this build and restore afterward (serialized by the API lock).
-    prev_reach = config.EXPAND_PREFER_REACHABLE
-    config.EXPAND_PREFER_REACHABLE = False
-    try:
-        if progress:
-            progress(f"\n[1/2] building graph for {name_a} (depth {depth})…")
-        expand_graph(db, name_a, depth, progress=progress, seed_context=context_a)
-        if progress:
-            progress(f"\n[2/2] building graph for {name_b} (depth {depth})…")
-        expand_graph(db, name_b, depth, progress=progress, seed_context=context_b)
-    finally:
-        config.EXPAND_PREFER_REACHABLE = prev_reach
+    # request it per-call. This used to assign config.EXPAND_PREFER_REACHABLE
+    # and restore it in a finally block, which made every concurrent build in
+    # the API unsafe and is why they were serialized behind one lock.
+    # Both endpoints must survive BOTH expansions' noise-shape prune, not just
+    # their own — expand_graph's own seed exemption only covers the call it's
+    # made on, and the second call's prune would otherwise be free to delete
+    # the first call's seed as an ordinary (unprotected) node.
+    both = {person_norm_key(name_a), person_norm_key(name_b)}
+    max_hops = 2 * depth + 1
+    route_found = threading.Event()
 
+    def should_stop(check_db: Session) -> bool:
+        if route_found.is_set():
+            return True
+        if _route_exists(check_db, name_a, name_b, max_hops):
+            route_found.set()
+            return True
+        return False
+
+    if cancel_checker:
+        cancel_checker()
+    _expand_both_concurrently(db, name_a, name_b, depth, both, progress,
+                              context_a, context_b, on_step=on_step,
+                              cancel_checker=cancel_checker,
+                              should_stop=should_stop)
+
+    if cancel_checker:
+        cancel_checker()
     a = db.execute(
         select(Person).where(Person.norm_name == person_norm_key(name_a))
     ).scalar_one_or_none()
@@ -172,9 +287,12 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         return {"connected": False, "reason": f"'{missing}' not found in the graph"}
 
     adj, person_by_id, src_by_id, degree = _adjacency(db)
-    max_hops = 2 * depth + 1
+    if cancel_checker:
+        cancel_checker()
     routes = _diverse_paths(adj, a.id, b.id, max_hops, config.CONNECT_MAX_PATHS,
                             person_by_id, degree)
+    if cancel_checker:
+        cancel_checker()
     if not routes:
         return {
             "connected": False,
@@ -185,6 +303,8 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
 
     paths = []
     for hops in routes:
+        if cancel_checker:
+            cancel_checker()
         path_nodes, edges_used, bridges = [], [], []
         for i, (pid, edge) in enumerate(hops):
             person = person_by_id.get(pid)
@@ -216,4 +336,69 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         "bridges": best["bridges"], "path": best["path"],
         "paths": paths,  # all diverse routes, best first
         "warnings": ["Path is unverified", "Requires Claude verification before activation"],
+    }
+
+
+def discover_person(db: Session, name: str, depth: int = 2, limit: int = 100) -> dict:
+    """Everyone reachable from `name` within `depth` hops, cheapest-first.
+
+    Unlike connect_people (which needs a specific bridge to a specific target),
+    this ranks the ENTIRE neighborhood — so a node's own penalty (fame, hub
+    fan-out) is charged even on the nodes we ultimately list, not just the ones
+    we route through. A celebrity three hops out should rank behind a
+    close colleague one hop out, not ahead of them.
+    """
+    root = db.execute(
+        select(Person).where(Person.norm_name == person_norm_key(name))
+    ).scalar_one_or_none()
+    if root is None:
+        return {"found": False, "reason": f"'{name}' is not in the graph"}
+
+    adj, person_by_id, src_by_id, degree = _adjacency(db)
+
+    counter_seed = 0
+    dist: Dict[str, float] = {root.id: 0.0}
+    hops_to: Dict[str, int] = {root.id: 0}
+    first_edge: Dict[str, RelationshipEdge] = {}
+    heap = [(0.0, 0, counter_seed, root.id)]
+    while heap:
+        cost, hops, _t, node = heapq.heappop(heap)
+        if cost > dist.get(node, float("inf")) or hops >= depth:
+            continue
+        for neighbor, edge in adj.get(node, []):
+            penalty = _node_penalty(person_by_id, degree, neighbor)
+            new_cost = cost + _edge_cost(edge) + penalty
+            if new_cost < dist.get(neighbor, float("inf")):
+                dist[neighbor] = new_cost
+                hops_to[neighbor] = hops + 1
+                first_edge[neighbor] = edge if node == root.id else first_edge.get(node)
+                counter_seed += 1
+                heapq.heappush(heap, (new_cost, hops + 1, counter_seed, neighbor))
+
+    connections = []
+    for pid, cost in sorted(dist.items(), key=lambda kv: (hops_to.get(kv[0], 0), kv[1])):
+        if pid == root.id:
+            continue
+        person = person_by_id.get(pid)
+        if person is None:
+            continue
+        edge = first_edge.get(pid)
+        source = src_by_id.get(edge.source_id) if edge and edge.source_id else None
+        connections.append({
+            "id": pid,
+            "label": person.canonical_name,
+            "hops": hops_to.get(pid, 0),
+            "cost": round(cost, 2),
+            "relationship_type": edge.relationship_type if edge else "unknown",
+            "confidence": round(edge.confidence_raw or 0.0, 2) if edge else 0.0,
+            "source_url": source.url if source else "",
+        })
+        if len(connections) >= limit:
+            break
+
+    return {
+        "found": True,
+        "person": root.canonical_name,
+        "connections": connections,
+        "count": len(connections),
     }

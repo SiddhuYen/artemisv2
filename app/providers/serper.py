@@ -16,9 +16,19 @@ from typing import List
 
 from .. import config
 from . import cache
-from .base import SearchProvider, SearchResult, make_client
+from .base import SearchProvider, SearchResult, _call_with_hard_timeout, make_client
 from .stats import STATS
 from .ratelimit import IntervalLimiter
+
+
+def _do_request(query: str):
+    with make_client() as c:
+        return c.post(
+            config.SERPER_ENDPOINT,
+            headers={"X-API-KEY": config.SERPER_API_KEY,
+                     "Content-Type": "application/json"},
+            content=json.dumps({"q": query, "num": config.RESULTS_PER_QUERY}),
+        )
 
 
 def _current_month() -> str:
@@ -74,20 +84,24 @@ class SerperProvider(SearchProvider):
         if not self.available():
             return []
         self._limiter.acquire()
-        with self._lock:
-            self._used = cache.incr_counter(self._quota_key)
         start = time.monotonic()
         try:
-            with make_client() as c:
-                resp = c.post(
-                    config.SERPER_ENDPOINT,
-                    headers={"X-API-KEY": config.SERPER_API_KEY,
-                             "Content-Type": "application/json"},
-                    content=json.dumps({"q": query, "num": config.RESULTS_PER_QUERY}),
-                )
+            # Bypasses request_with_retry deliberately -- Serper's own status
+            # codes mean something request_with_retry's generic retry-on-429
+            # would get wrong (429/402 here means QUOTA EXHAUSTED, not
+            # "transient, retry me"; see below). But the blocking call itself
+            # still needs the SAME hard-timeout backstop request_with_retry
+            # has: measured live, a sibling provider (DuckDuckGo) hung in raw
+            # socket.connect() well past httpx's configured timeout, and
+            # nothing about this direct-call pattern is immune to that.
+            resp = _call_with_hard_timeout(
+                lambda: _do_request(query),
+                config.HTTP_TIMEOUT + config.HTTP_HARD_TIMEOUT_BUFFER)
         except Exception:
-            return []
+            return []  # no response reached us -- don't burn quota on a network failure
         STATS.record_call(self.name, time.monotonic() - start)
+        with self._lock:
+            self._used = cache.incr_counter(self._quota_key)
 
         if resp.status_code in (401, 403):
             self._exhausted = True  # bad/expired key
@@ -99,6 +113,7 @@ class SerperProvider(SearchProvider):
             return []
         if resp.status_code != 200:
             return []
+        _mark_state("ok")  # clear any prior degraded state now that a call succeeded
 
         out: List[SearchResult] = []
         try:

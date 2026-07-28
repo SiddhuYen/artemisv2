@@ -77,10 +77,10 @@ SILOS: List[Silo] = [
         signals={
             "interview": "interview",
             "podcast": "interview",
-            "appointed": "appointee",
+            "named": "employee",
             "joins board": "board_member",
             "board": "board_member",
-            "named": "employee",
+            "appointed": "appointee",
         },
         priority_relationship_types=["interview", "employee", "board_member", "appointee"],
         confidence_multiplier=1.0,

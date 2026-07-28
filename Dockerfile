@@ -11,8 +11,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# deps first (better layer caching). spaCy model is the on-server extractor
-# (Ollama isn't available in the container; the app auto-falls back to spaCy).
+# deps first (better layer caching). spaCy is the default page-level extractor;
+# the Claude stages (entity filter, relationship classifier) switch on when
+# ANTHROPIC_API_KEY is present in the environment at runtime.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
  && python -m spacy download en_core_web_sm

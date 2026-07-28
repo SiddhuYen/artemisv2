@@ -9,6 +9,7 @@ so the EXISTING extraction/graph pipeline consumes them unchanged.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple
 
 from .. import config
@@ -149,26 +150,35 @@ class WikidataProvider:
 
         results: List[dict] = []
         seen = set()
-        for prop, rel, org_qid in org_targets:
-            org_label = self._labels([org_qid]).get(org_qid, "")
-            query = (
-                f"SELECT ?pLabel WHERE {{ ?p wdt:{prop} wd:{org_qid} . "
-                f"?p wdt:P31 wd:Q5 . SERVICE wikibase:label "
-                f"{{ bd:serviceParam wikibase:language 'en'. }} }} "
-                f"LIMIT {_MAX_COLLEAGUES_PER_ORG}"
-            )
-            for name in self._sparql_names(query):
-                k = name.lower()
-                if name and k not in seen:
-                    seen.add(k)
-                    results.append({"name": name, "relationship_type": rel,
-                                    "org": org_label, "phrase": _REL_PHRASE.get(rel, rel)})
+        if org_targets:
+            # Independent per-org lookups (label + SPARQL names) -- fetch
+            # concurrently instead of one at a time.
+            with ThreadPoolExecutor(max_workers=len(org_targets)) as ex:
+                per_org = list(ex.map(self._colleagues_for_target, org_targets))
+            for (_prop, rel, _org_qid), (org_label, names) in zip(org_targets, per_org):
+                for name in names:
+                    k = name.lower()
+                    if name and k not in seen:
+                        seen.add(k)
+                        results.append({"name": name, "relationship_type": rel,
+                                        "org": org_label, "phrase": _REL_PHRASE.get(rel, rel)})
+                    if len(results) >= _MAX_COLLEAGUES_TOTAL:
+                        break
                 if len(results) >= _MAX_COLLEAGUES_TOTAL:
                     break
-            if len(results) >= _MAX_COLLEAGUES_TOTAL:
-                break
         cache.set(key, "colleagues", {"colleagues": results}, config.CACHE_TTL_WIKI)
         return results
+
+    def _colleagues_for_target(self, target: Tuple[str, str, str]) -> Tuple[str, List[str]]:
+        prop, _rel, org_qid = target
+        org_label = self._labels([org_qid]).get(org_qid, "")
+        query = (
+            f"SELECT ?pLabel WHERE {{ ?p wdt:{prop} wd:{org_qid} . "
+            f"?p wdt:P31 wd:Q5 . SERVICE wikibase:label "
+            f"{{ bd:serviceParam wikibase:language 'en'. }} }} "
+            f"LIMIT {_MAX_COLLEAGUES_PER_ORG}"
+        )
+        return org_label, self._sparql_names(query)
 
     def colleagues_text(self, subject: str, colleagues: List[dict]) -> str:
         return " ".join(f"{subject} {c['phrase']} {c['name']}." for c in colleagues)

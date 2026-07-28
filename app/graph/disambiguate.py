@@ -52,8 +52,12 @@ _DOMAINS = {
     "medicine": {"physician", "surgeon", "cardiologist", "psychiatrist",
                  "dentist", "doctor of medicine"},
     "law": {"lawyer", "attorney", "barrister", "solicitor", "jurist", "judge"},
-    "military": {"general", "colonel", "brigadier", "admiral", "soldier",
-                 "army officer", "naval officer", "air force"},
+    # "general" alone is deliberately excluded: it collides with "general
+    # partner" (venture), "attorney general" (law), "general manager"
+    # (business), etc. — too polysemous for a bare-word match.
+    "military": {"colonel", "brigadier", "admiral", "soldier",
+                 "army officer", "naval officer", "air force",
+                 "four-star general", "major general", "lieutenant general"},
     "religion": {"priest", "pastor", "imam", "rabbi", "monk", "bishop",
                  "cleric", "theologian"},
     "arts": {"author", "novelist", "poet", "painter", "sculptor", "journalist",

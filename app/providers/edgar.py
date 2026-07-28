@@ -11,6 +11,7 @@ leadership/ownership). Cached.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 from .. import config
@@ -60,21 +61,26 @@ class EdgarProvider:
         if cached is not None:
             return cached.get("colleagues", [])
 
-        companies = self._companies_for_person(name)
+        companies = self._companies_for_person(name)[:_MAX_COMPANIES]
         results: List[dict] = []
         seen = set()
-        for company in companies[:_MAX_COMPANIES]:
-            for insider in self._insiders_for_company(company):
-                k = insider.lower()
-                if k == name.lower() or k in seen:
-                    continue
-                seen.add(k)
-                results.append({"name": insider, "relationship_type": "coworker",
-                                "company": company, "phrase": "coworker of"})
+        if companies:
+            # Independent per-company lookups -- fetch concurrently instead
+            # of one at a time (same pattern as expansion.py's search phases).
+            with ThreadPoolExecutor(max_workers=len(companies)) as ex:
+                per_company = list(ex.map(self._insiders_for_company, companies))
+            for company, insiders in zip(companies, per_company):
+                for insider in insiders:
+                    k = insider.lower()
+                    if k == name.lower() or k in seen:
+                        continue
+                    seen.add(k)
+                    results.append({"name": insider, "relationship_type": "coworker",
+                                    "company": company, "phrase": "coworker of"})
+                    if len(results) >= _MAX_TOTAL:
+                        break
                 if len(results) >= _MAX_TOTAL:
                     break
-            if len(results) >= _MAX_TOTAL:
-                break
         cache.set(key, "colleagues", {"colleagues": results}, config.CACHE_TTL_WIKI)
         return results
 

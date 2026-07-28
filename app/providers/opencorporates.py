@@ -9,6 +9,7 @@ Gracefully no-ops when the token is absent or calls fail. Cached.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from .. import config
@@ -50,22 +51,28 @@ class OpenCorporatesProvider:
         if cached is not None:
             return cached.get("colleagues", [])
 
-        companies = self._companies_for_officer(name)
+        companies = self._companies_for_officer(name)[:_MAX_COMPANIES]
         results: List[dict] = []
         seen = set()
-        for jur, num, company_name in companies[:_MAX_COMPANIES]:
-            for off_name, position in self._company_officers(jur, num):
-                if off_name.lower() == name.lower() or off_name.lower() in seen:
-                    continue
-                seen.add(off_name.lower())
-                rel = _relationship_for(position)
-                results.append({"name": off_name, "relationship_type": rel,
-                                "company": company_name,
-                                "phrase": _PHRASE.get(rel, "coworker of")})
+        if companies:
+            # Independent per-company lookups -- fetch concurrently instead
+            # of one at a time (same pattern as expansion.py's search phases).
+            with ThreadPoolExecutor(max_workers=len(companies)) as ex:
+                per_company = list(ex.map(
+                    lambda c: self._company_officers(c[0], c[1]), companies))
+            for (_jur, _num, company_name), officers in zip(companies, per_company):
+                for off_name, position in officers:
+                    if off_name.lower() == name.lower() or off_name.lower() in seen:
+                        continue
+                    seen.add(off_name.lower())
+                    rel = _relationship_for(position)
+                    results.append({"name": off_name, "relationship_type": rel,
+                                    "company": company_name,
+                                    "phrase": _PHRASE.get(rel, "coworker of")})
+                    if len(results) >= _MAX_TOTAL:
+                        break
                 if len(results) >= _MAX_TOTAL:
                     break
-            if len(results) >= _MAX_TOTAL:
-                break
         cache.set(key, "colleagues", {"colleagues": results}, config.CACHE_TTL_WIKI)
         return results
 

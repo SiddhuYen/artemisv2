@@ -13,8 +13,10 @@ Two hard rules on any host:
 
 Secrets are set as **platform env vars**, never committed (`.env` is gitignored).
 
-> ⚠️ No auth/rate-limiting yet — keep the URL private. Anyone with the link can
-> burn your Brave quota. Add a token before sharing widely.
+> ⚠️ **Set `ARTEMIS_ACCESS_TOKEN` before the URL leaves your hands.** Unset, the
+> app is wide open and every build spends real money (search quota + Anthropic
+> tokens). Generate one with:
+> `python -c "import secrets; print(secrets.token_urlsafe(32))"`
 
 ---
 
@@ -35,7 +37,9 @@ fly volumes create artemis_data --size 3 --region sjc
 
 # secrets (NOT in fly.toml / git) — both search providers are optional;
 # whichever are set are picked up on next deploy, no code changes needed.
-fly secrets set SERPER_API_KEY=your_serper_key \
+fly secrets set ARTEMIS_ACCESS_TOKEN=your_generated_token \
+                ANTHROPIC_API_KEY=your_anthropic_key \
+                SERPER_API_KEY=your_serper_key \
                 BRAVE_API_KEY=your_brave_key \
                 OPENCORPORATES_API_TOKEN=your_oc_token
 
@@ -61,6 +65,8 @@ Notes:
    (it uses the `Dockerfile`).
 2. **Disks** → add a disk, mount path **`/data`**, size ~3 GB.
 3. **Environment** → add:
+   - `ARTEMIS_ACCESS_TOKEN` (secret — gates the whole app; set this)
+   - `ANTHROPIC_API_KEY` (secret — enables the Claude extraction stages)
    - `SERPER_API_KEY`, `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN` (secrets — all optional)
    - `ARTEMIS_DB_URL=sqlite:////data/artemis.db`
    - `ARTEMIS_CACHE_DB=/data/artemis_cache.db`
@@ -76,8 +82,8 @@ A paid instance is required for a persistent disk.
 
 1. New Project → Deploy from GitHub repo (detects the `Dockerfile`).
 2. Add a **Volume** mounted at **`/data`**.
-3. **Variables**: same `SERPER_API_KEY`, `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN`, and the four
-   `ARTEMIS_*` paths above. Railway injects `$PORT`.
+3. **Variables**: same `ARTEMIS_ACCESS_TOKEN`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, `BRAVE_API_KEY`,
+   `OPENCORPORATES_API_TOKEN`, and the four `ARTEMIS_*` paths above. Railway injects `$PORT`.
 4. Keep **1 replica**.
 
 ---
@@ -87,6 +93,8 @@ A paid instance is required for a persistent disk.
 ```bash
 docker build -t artemis .
 docker run -p 8080:8080 \
+  -e ARTEMIS_ACCESS_TOKEN=your_token \
+  -e ANTHROPIC_API_KEY=your_key \
   -e SERPER_API_KEY=your_key \
   -e BRAVE_API_KEY=your_key \
   -v "$(pwd)/data:/data" \
@@ -94,9 +102,24 @@ docker run -p 8080:8080 \
 # open http://localhost:8080
 ```
 
+## Access control
+
+Set `ARTEMIS_ACCESS_TOKEN` and the entire surface — UI and API — requires it.
+Browsers get a sign-in page at `/login` that exchanges the token for an
+HttpOnly session cookie (the cookie holds a derived value, never the token).
+API clients send `Authorization: Bearer <token>`. Only `/healthz` and the login
+routes stay open, so a load balancer can still probe a locked app.
+
+Separately, and whether or not auth is on, the build endpoints are rate limited
+per client (`ARTEMIS_BUILD_RATE_LIMIT`, default 12 per hour) and login attempts
+are throttled (`ARTEMIS_LOGIN_RATE_LIMIT`, default 10 per 15 min). Reads are
+never limited. Behind a managed host the client is identified from the
+rightmost `X-Forwarded-For` hop; set `ARTEMIS_TRUST_PROXY_HEADERS=0` if you
+ever expose the app directly, or the header can be forged to evade limits.
+
 ## Search provider configuration status
 
-`SERPER_API_KEY` and `BRAVE_API_KEY` are read once at startup from the
+`ANTHROPIC_API_KEY`, `SERPER_API_KEY` and `BRAVE_API_KEY` are read once at startup from the
 platform's own secrets (`fly secrets set`, Render/Railway env vars, `docker run
 -e`) — there is no in-app settings screen for entering them, and the running
 app never returns their values to a client. `GET /status` reports each
@@ -108,9 +131,30 @@ the moment either secret is present, so end users never need to manage a key
 that's already handled for them.
 
 ## What runs where
-- **Extractor:** Ollama isn't in the container, so it falls back to **spaCy**
-  (the model is baked into the image). The deterministic junk filter still runs.
-  To save RAM you can set `ARTEMIS_SPACY_EXTRACT=0` (uses the heuristic instead).
-- **Long requests:** depth-1 Discover is quick; deep `connect` builds can run many
-  minutes and may hit a host proxy's idle timeout. Prefer Discover for the beta;
-  an async job model is the real fix (tracked as future work).
+- **Extractor:** with `ANTHROPIC_API_KEY` set, the Claude **entity filter** and
+  **relationship classifier** run on every build (both batched and cached 30
+  days in the `/data` cache, so cost stays low). Page-level extraction stays on
+  **spaCy** (the model is baked into the image) unless you opt in with
+  `ARTEMIS_CLAUDE_EXTRACT=1` — that one is a Claude call per scraped page and is
+  by far the most expensive setting in the app. With no key at all, every Claude
+  stage no-ops and the build still works, just noisier. To save RAM you can set
+  `ARTEMIS_SPACY_EXTRACT=0` (uses the heuristic instead).
+- **Models:** the two batched stages (entity filter, relationship classifier)
+  run on `ARTEMIS_CLAUDE_BATCH_MODEL` (default `claude-haiku-4-5` — narrow
+  judgment calls on short strings, ~5x cheaper); page-level extraction runs on
+  `ARTEMIS_CLAUDE_MODEL` (default `claude-opus-5`). Override either stage
+  individually with `ARTEMIS_CLAUDE_FILTER_MODEL` /
+  `ARTEMIS_CLAUDE_CLASSIFY_MODEL`. Raise the batch model to `claude-opus-5` if
+  the filter starts dropping real people. `GET /status` reports which stages are
+  live and whether a credential resolved — never the key itself.
+- **Long requests:** every build endpoint (`/discover`, `/connect`,
+  `/targets/search`) returns a `job_id` immediately and runs in the background,
+  so nothing is held open against a host proxy's idle timeout. Poll
+  `GET /jobs/{id}` for `pct`, `message`, `queue_position`, and the result;
+  `POST /jobs/{id}/cancel` stops a job whether it is running or still queued.
+  Jobs live in memory — a restart loses in-flight work, which is the accepted
+  trade for having no queue infrastructure on a single-box deployment.
+- **Concurrency:** `ARTEMIS_MAX_CONCURRENT_BUILDS` (default 2) builds run at
+  once, `ARTEMIS_MAX_QUEUED_BUILDS` (default 8) may wait; past that a request
+  gets an immediate 429 rather than joining a line it would time out in. Still
+  **one worker** — the queue and job registry are in-process.

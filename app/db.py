@@ -1,17 +1,15 @@
 """SQLAlchemy engine / session wiring.
 
-Two modes:
-  - default engine (``config.DB_URL``) — used by the CLI (a single local graph).
-  - per-graph engines (``graph_session(graph_id)``) — used by the HTTP API so
-    each browser session gets an ISOLATED SQLite file under ``config.GRAPH_DIR``.
-    Concurrent beta testers can't clobber each other's public graph.
+Two engines:
+  - default engine (``config.DB_URL``) — ONE shared global discovery graph
+    used by both the CLI and the HTTP API (see main.py's get_db).
+  - boards engine (``config.BOARDS_DB_URL``) — a separate file for the
+    Boards/Pages UI workspace, owner-scoped by X-Graph-Id (see safe_graph_id).
 
 All SQLite engines run in WAL mode with a busy timeout so readers don't block
 the writer and brief write contention retries instead of erroring.
 """
-import os
 import re
-import threading
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -75,11 +73,19 @@ def init_boards_db() -> None:
             cols = {r[1] for r in conn.exec_driver_sql(
                 "PRAGMA table_info(boards)").fetchall()}
             if cols and "mode" in cols:
-                conn.exec_driver_sql("DROP TABLE board_pages")
-                conn.exec_driver_sql("DROP TABLE boards")
+                # legacy single-canvas shape — drop only tables that actually
+                # exist, in either order, so a partial legacy schema (e.g. no
+                # board_pages yet) can't abort this block halfway and leave
+                # the incompatible `boards` table behind.
+                existing = {r[0] for r in conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                for t in ("board_pages", "boards"):
+                    if t in existing:
+                        conn.exec_driver_sql(f"DROP TABLE {t}")
         Base.metadata.create_all(bind=boards_engine, tables=_board_tables())
     except Exception:
         pass  # non-SQLite or table absent — safe to ignore
+    _migrate_boards(boards_engine)
 
 
 def _drop_legacy_boards_tables(bind) -> None:
@@ -99,14 +105,9 @@ def _drop_legacy_boards_tables(bind) -> None:
         pass  # non-SQLite or absent — safe to ignore
 
 
-def _migrate(bind) -> None:
+def _add_columns(bind, add_columns) -> None:
     """Tiny additive migrations for existing SQLite DBs (create_all won't ALTER
     an existing table). Each guarded so it's a no-op when already applied."""
-    add_columns = [
-        ("people", "wikidata_qid", "TEXT"),
-        ("people", "processed", "INTEGER DEFAULT 0"),
-        ("local_profiles", "connected_on", "TEXT"),
-    ]
     with bind.begin() as conn:
         for table, col, coltype in add_columns:
             try:
@@ -117,6 +118,22 @@ def _migrate(bind) -> None:
                         f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
             except Exception:
                 pass  # non-SQLite or already present — safe to ignore
+
+
+def _migrate(bind) -> None:
+    _add_columns(bind, [
+        ("people", "wikidata_qid", "TEXT"),
+        ("people", "processed", "INTEGER DEFAULT 0"),
+        ("local_profiles", "connected_on", "TEXT"),
+    ])
+
+
+def _migrate_boards(bind) -> None:
+    _add_columns(bind, [
+        ("boards", "target_name", "TEXT"),
+        ("boards", "target_org", "TEXT"),
+        ("boards", "status", "TEXT DEFAULT 'active'"),
+    ])
 
 
 def get_db():
@@ -137,33 +154,13 @@ def get_boards_db():
         db.close()
 
 
-# --- per-graph (per-session) engines for the HTTP API ----------------------
+# Sanitizes the X-Graph-Id header into a safe filename-stem-shaped owner id
+# for scoping Boards (see main.py's _owner_id) — NOT used for the discovery
+# graph, which is one shared engine for everyone (see module docstring).
 _GRAPH_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
-_graph_makers: dict = {}
-_graph_lock = threading.Lock()
 
 
 def safe_graph_id(graph_id: str) -> str:
     """Sanitize a client-supplied graph id into a safe filename stem."""
     gid = _GRAPH_ID_RE.sub("", graph_id or "")[:64]
     return gid or "default"
-
-
-def graph_session(graph_id: str):
-    """Return a Session bound to an isolated per-graph SQLite file.
-
-    Engines are created once per graph id and cached; tables are created on
-    first use. Callers own the session and must close it.
-    """
-    gid = safe_graph_id(graph_id)
-    with _graph_lock:
-        maker = _graph_makers.get(gid)
-        if maker is None:
-            os.makedirs(config.GRAPH_DIR, exist_ok=True)
-            url = f"sqlite:///{os.path.join(config.GRAPH_DIR, gid + '.db')}"
-            eng = _make_engine(url)
-            init_db(bind=eng)
-            maker = sessionmaker(bind=eng, autoflush=False,
-                                 expire_on_commit=False, future=True)
-            _graph_makers[gid] = maker
-    return maker()

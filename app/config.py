@@ -3,7 +3,8 @@
 All knobs live here so silos / expansion / providers stay declarative.
 
 Secrets/keys: put them in a `.env` file in the project root (e.g.
-`BRAVE_API_KEY=bsa-xxxx`). It is loaded automatically and never committed.
+`ANTHROPIC_API_KEY=sk-ant-...`, `BRAVE_API_KEY=bsa-xxxx`). It is loaded
+automatically and never committed.
 """
 import os
 
@@ -28,6 +29,17 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+def _env_bool(name: str, default: str) -> bool:
+    """Parse a boolean env var, recognizing common truthy/falsy spellings
+    (0/1, true/false, yes/no, on/off) case-insensitively. A value that isn't
+    a recognized falsy spelling is truthy, so a typo like "flase" still
+    behaves as an explicit override rather than silently doing nothing --
+    but "no"/"off" (easy things to type meaning "disable this") are honored
+    instead of being silently treated as enabled."""
+    val = os.environ.get(name, default).strip().lower()
+    return val not in ("0", "false", "no", "off", "n", "")
+
+
 # --- storage ---------------------------------------------------------------
 DB_URL = os.environ.get("ARTEMIS_DB_URL", "sqlite:///./artemis.db")
 # Per-session graph isolation (HTTP API): each browser session gets its own
@@ -48,7 +60,40 @@ HTTP_TIMEOUT = float(os.environ.get("ARTEMIS_HTTP_TIMEOUT", "8.0"))
 # retry: only on 429/5xx, exponential backoff, honor Retry-After
 HTTP_RETRIES = int(os.environ.get("ARTEMIS_HTTP_RETRIES", "3"))
 HTTP_BACKOFF_BASE = float(os.environ.get("ARTEMIS_HTTP_BACKOFF", "0.4"))  # seconds
+# Random extra delay ADDED on top of every backoff/Retry-After sleep (both in
+# request_with_retry). Without it, N threads that all get rate-limited in the
+# same instant compute the IDENTICAL deterministic delay and retry in the same
+# instant again — a self-synchronizing collision that node/side-level
+# concurrency (expansion.py, connect.py) made real: measured live, it turned a
+# 429 into a repeating storm rather than a one-time backoff.
+HTTP_BACKOFF_JITTER = float(os.environ.get("ARTEMIS_HTTP_BACKOFF_JITTER", "0.75"))
 HTTP_RETRY_STATUS = (429, 500, 502, 503, 504)
+# Extra seconds ADDED on top of HTTP_TIMEOUT for the hard, unavoidable timeout
+# wrapped around every request (see providers.base._call_with_hard_timeout).
+# httpx's own `timeout=HTTP_TIMEOUT` is supposed to bound this already, but
+# measured live in this environment it did not: a DuckDuckGo call sat in raw
+# socket.connect() for 40+ seconds (an unreachable host with packets silently
+# dropped rather than rejected, which some networks/sandboxes do) — well past
+# its configured 8s timeout, hanging the entire node indefinitely with no
+# recourse. The hard timeout below runs the call on a background thread and
+# gives up waiting at HTTP_TIMEOUT + this buffer, REGARDLESS of what httpx or
+# the OS does; the buffer just avoids racing httpx's own (usually correct)
+# timeout and killing a request that would have succeeded a moment later.
+HTTP_HARD_TIMEOUT_BUFFER = float(os.environ.get("ARTEMIS_HTTP_HARD_TIMEOUT_BUFFER", "3.0"))
+# Hard ceiling on outbound HTTP requests in flight AT ONCE, process-wide,
+# regardless of caller — a request_with_retry() call holds one slot for its
+# entire attempt (including any backoff sleeps between retries), so a slot
+# stuck backing off is a slot NOT handed to a fresh request piling onto the
+# same struggling host. This is the actual fix for concurrent expansion
+# overwhelming a provider: EXPAND_NODE_CONCURRENCY x SEARCH_WORKERS x (2
+# connect_people sides) can want up to ~64 requests at once, far past what
+# Serper (5 QPS) or EDGAR/OpenCorporates/ProPublica (well under that) can
+# absorb — those callers now queue on this semaphore instead of firing a burst
+# that 429s. Deliberately NOT per-provider: two providers each individually
+# "under quota" can still jointly overwhelm the local machine's outbound
+# connection budget, and provider-specific QPS is already enforced by each
+# provider's own limiter (ratelimit.py) on top of this.
+MAX_CONCURRENT_REQUESTS = int(os.environ.get("ARTEMIS_MAX_CONCURRENT_REQUESTS", "10"))
 
 # --- providers -------------------------------------------------------------
 # Brave Search REST API (PRIMARY web search). Key from env; absent => skipped.
@@ -67,10 +112,27 @@ BRAVE_MONTHLY_QUOTA = int(os.environ.get("ARTEMIS_BRAVE_QUOTA", "1000"))
 
 # Provider routing (configurable). Tried in order; stop at first useful result.
 # Serper is primary, Brave is the backup, DuckDuckGo the free last resort.
-ROUTE_PERSON = os.environ.get(
-    "ARTEMIS_ROUTE_PERSON", "wikipedia,wikidata,serper,brave,duckduckgo").split(",")
-ROUTE_DEFAULT = os.environ.get(
-    "ARTEMIS_ROUTE_DEFAULT", "serper,brave,duckduckgo").split(",")
+def _route_list(name: str, default: str) -> list:
+    """Comma-split env var into provider keys, trimming whitespace and
+    dropping empty entries -- so "serper, brave" (a stray space after the
+    comma) doesn't silently produce a " brave" entry that fails to match
+    the provider registry and drops out of routing with no error."""
+    return [p.strip() for p in os.environ.get(name, default).split(",") if p.strip()]
+
+
+
+# NOTE: search() (orchestrator.py) stops at the first provider that returns
+# ANY results, so order here is a real priority, not just a fallback list.
+# Wikipedia MUST come after serper/brave: MediaWiki's srsearch is a loose
+# full-text search that returns *something* for almost any query containing
+# a real person's name (even a silo-specific query like "X board member"),
+# so putting it first was silently starving Serper/Brave -- the actual
+# general web search this route is supposed to be primary -- of every
+# person query. Wikipedia still participates as a free structured fallback
+# before the aggressively rate-limited DuckDuckGo, just not ahead of primary.
+ROUTE_PERSON = _route_list(
+    "ARTEMIS_ROUTE_PERSON", "serper,brave,wikipedia,wikidata,duckduckgo")
+ROUTE_DEFAULT = _route_list("ARTEMIS_ROUTE_DEFAULT", "serper,brave,duckduckgo")
 
 # Per-provider rate limits (seconds between calls / token bucket)
 WIKI_MIN_INTERVAL = float(os.environ.get("ARTEMIS_WIKI_MIN_INTERVAL", "0.1"))
@@ -106,16 +168,26 @@ DEFAULT_MAX_DEPTH = 2
 EXPAND_TOP_N_PER_DEPTH = int(os.environ.get("ARTEMIS_EXPAND_TOP_N", "20"))
 # expansion safety / anti-explosion
 EXPAND_TOP_STRONG = int(os.environ.get("ARTEMIS_EXPAND_TOP_STRONG", "15"))
+# How many frontier nodes a single hop processes CONCURRENTLY (each on its own
+# DB session — see expand_graph). Deliberately separate from SEARCH_WORKERS,
+# which bounds concurrency INSIDE one node's own searches/page-fetches — the
+# two multiply (worst case EXPAND_NODE_CONCURRENCY x SEARCH_WORKERS open
+# connections at once, x2 again since connect_people also runs both endpoints
+# concurrently), easily wanting 60+ requests in flight. That used to hit
+# providers as a real burst; now it queues on MAX_CONCURRENT_REQUESTS
+# (base.py) instead, so this can run at its intended value again — the actual
+# fix for the self-inflicted request storm is the global cap + jittered
+# backoff, not a low number here.
+EXPAND_NODE_CONCURRENCY = int(os.environ.get("ARTEMIS_EXPAND_NODE_CONCURRENCY", "4"))
 # Reachability mode: when expanding, prefer the LEAST-famous real connections
 # (no Wikipedia page, fewer sources) instead of the strongest/most-famous ones.
 # This walks the graph DOWN the fame gradient toward a normal person's network,
 # which is how a warm-intro path to your own contacts is actually found.
-EXPAND_PREFER_REACHABLE = os.environ.get(
-    "ARTEMIS_EXPAND_PREFER_REACHABLE", "1") not in ("0", "false", "")
+EXPAND_PREFER_REACHABLE = _env_bool("ARTEMIS_EXPAND_PREFER_REACHABLE", "1")
 # Down-weight family_social edges so expansion explores PROFESSIONAL connections
 # (colleagues, boards, co-founders, investors, political) instead of walking the
 # subject's family tree. A path between two people runs through work, not relatives.
-DOWNWEIGHT_FAMILY = os.environ.get("ARTEMIS_DOWNWEIGHT_FAMILY", "1") not in ("0", "false", "")
+DOWNWEIGHT_FAMILY = _env_bool("ARTEMIS_DOWNWEIGHT_FAMILY", "1")
 FAMILY_PENALTY = float(os.environ.get("ARTEMIS_FAMILY_PENALTY", "1.5"))
 PROFESSIONAL_BONUS = float(os.environ.get("ARTEMIS_PROFESSIONAL_BONUS", "1.0"))
 # Shared global map accumulates people across ALL runs, so the cap is high.
@@ -155,30 +227,78 @@ MEGA_HUB_DEGREE = int(os.environ.get("ARTEMIS_MEGA_HUB_DEGREE", "40"))
 # grows gently past the threshold rather than jumping at a hard cliff.
 DEGREE_PENALTY_COEF = float(os.environ.get("ARTEMIS_DEGREE_PENALTY_COEF", "0.5"))
 
+# --- Claude (Anthropic API) -------------------------------------------------
+# The LLM stages (per-source extraction, entity filter, relationship
+# classifier) all run on Claude. Absent a key every one of them is a
+# transparent no-op and the pipeline falls back to spaCy/heuristic extraction
+# and deterministic filtering — the app runs, the graph is just noisier.
+#
+# The key is read from the platform's own secret store (`fly secrets set`,
+# Render/Railway env vars, `docker run -e`) or a local .env; it is never
+# returned to a client. Leave ANTHROPIC_API_KEY unset to let the SDK resolve
+# credentials itself (ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+CLAUDE_MODEL = os.environ.get("ARTEMIS_CLAUDE_MODEL", "claude-opus-5")
+# Model for the two HIGH-VOLUME batched stages (entity filter, relationship
+# classifier). Both are narrow, schema-constrained judgment calls on short
+# strings — "is this a real person's name", "what relationship does this
+# sentence state" — where the cheapest current model is sufficient and runs
+# ~5x cheaper than CLAUDE_MODEL. Per-source extraction, which reads whole
+# pages, stays on CLAUDE_MODEL. Raise this to CLAUDE_MODEL if the filter starts
+# dropping real people or the classifier mislabels edges.
+CLAUDE_BATCH_MODEL = os.environ.get("ARTEMIS_CLAUDE_BATCH_MODEL", "claude-haiku-4-5")
+# Per-call ceiling and retry budget. The SDK retries 429/5xx itself with
+# exponential backoff; past that a call returns None and the caller falls back.
+CLAUDE_TIMEOUT = float(os.environ.get("ARTEMIS_CLAUDE_TIMEOUT", "60.0"))
+CLAUDE_MAX_RETRIES = int(os.environ.get("ARTEMIS_CLAUDE_MAX_RETRIES", "3"))
+# Claude calls in flight at once, process-wide (see extraction/claude_client).
+# Separate from MAX_CONCURRENT_REQUESTS: that one protects search providers
+# with 1–5 QPS limits, this one protects an account rate limit — and the
+# budget.
+CLAUDE_MAX_CONCURRENCY = int(os.environ.get("ARTEMIS_CLAUDE_MAX_CONCURRENCY", "8"))
+# Reasoning depth. These are narrow, high-volume classification calls with a
+# schema-constrained answer, not open-ended reasoning, so the default is low —
+# it is the main latency and cost lever if a build feels slow.
+#
+# NOT universally supported: `effort` is rejected outright by some models
+# (Haiku 4.5 among them, which is CLAUDE_BATCH_MODEL's default). The client
+# omits it for those rather than sending a request that would 400 — see
+# extraction/claude_client._supports_effort. Set to "" to never send it.
+CLAUDE_EFFORT = os.environ.get("ARTEMIS_CLAUDE_EFFORT", "low")
+CLAUDE_SYSTEM_PROMPT = (
+    "You extract and validate facts from messy public web text for a "
+    "relationship-graph builder. Every answer must be grounded in the text "
+    "you are given. Never guess, never infer beyond what is stated, and omit "
+    "anything you are unsure about — a missing entry is always better than a "
+    "fabricated one."
+)
+
 # --- confidence model ------------------------------------------------------
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
 # Confidence ceilings — heuristic extraction is never trusted highly.
 HEURISTIC_BASE_CONFIDENCE = 0.25
-OLLAMA_BASE_CONFIDENCE = 0.55
-# Use Ollama for per-source EXTRACTION (cleanest but slow — one LLM call per
-# page). Default OFF: heuristic extraction stays primary even when Ollama is up,
-# so the (cheap, batched) entity filter below can run without hours of latency.
-OLLAMA_EXTRACT = os.environ.get("ARTEMIS_OLLAMA_EXTRACT", "0") not in ("0", "false", "")
+CLAUDE_BASE_CONFIDENCE = 0.55
+# Use Claude for per-source EXTRACTION: one LLM call per scraped page. This is
+# the cleanest extraction path and the single biggest accuracy lever, but it is
+# also by far the most expensive stage — a depth-2 build scrapes dozens of
+# pages per node across ~16 nodes. Default OFF so the cheap, batched filter and
+# classifier below can run on their own; turn it on deliberately.
+CLAUDE_EXTRACT = _env_bool("ARTEMIS_CLAUDE_EXTRACT", "0")
+CLAUDE_EXTRACT_MODEL = os.environ.get("ARTEMIS_CLAUDE_EXTRACT_MODEL", CLAUDE_MODEL)
 # spaCy NER extraction (Tier 4): grammar-aware, kills prose-fragment noise.
-# Preferred over the heuristic when installed; far cheaper than Ollama extraction.
-SPACY_EXTRACT = os.environ.get("ARTEMIS_SPACY_EXTRACT", "1") not in ("0", "false", "")
+# Preferred over the heuristic when installed; far cheaper than Claude extraction.
+SPACY_EXTRACT = _env_bool("ARTEMIS_SPACY_EXTRACT", "1")
 SPACY_BASE_CONFIDENCE = float(os.environ.get("ARTEMIS_SPACY_BASE_CONFIDENCE", "0.35"))
-# Ollama entity filter: drop extracted nodes that aren't real named people/orgs.
-# Auto-enabled when Ollama is reachable; no-op otherwise. Cached 30 days.
-OLLAMA_FILTER = os.environ.get("ARTEMIS_OLLAMA_FILTER", "1") not in ("0", "false", "")
-OLLAMA_FILTER_MODEL = os.environ.get("ARTEMIS_OLLAMA_FILTER_MODEL", OLLAMA_MODEL)
-OLLAMA_FILTER_BATCH = int(os.environ.get("ARTEMIS_OLLAMA_FILTER_BATCH", "50"))
-# Ollama relationship classifier: re-type 'unknown' edges from their evidence.
-OLLAMA_CLASSIFY_RELATIONS = os.environ.get(
-    "ARTEMIS_OLLAMA_CLASSIFY", "1") not in ("0", "false", "")
-OLLAMA_CLASSIFY_BATCH = int(os.environ.get("ARTEMIS_OLLAMA_CLASSIFY_BATCH", "25"))
-OLLAMA_CLASSIFY_MIN_CONF = float(os.environ.get("ARTEMIS_OLLAMA_CLASSIFY_MIN_CONF", "0.5"))
+# Claude entity filter: drop extracted nodes that aren't real named people/orgs.
+# Auto-enabled when a key is present; no-op otherwise. Batched and cached 30
+# days, so each distinct name is paid for once.
+CLAUDE_FILTER = _env_bool("ARTEMIS_CLAUDE_FILTER", "1")
+CLAUDE_FILTER_MODEL = os.environ.get("ARTEMIS_CLAUDE_FILTER_MODEL", CLAUDE_BATCH_MODEL)
+CLAUDE_FILTER_BATCH = int(os.environ.get("ARTEMIS_CLAUDE_FILTER_BATCH", "50"))
+# Claude relationship classifier: re-type 'unknown' edges from their evidence.
+CLAUDE_CLASSIFY_RELATIONS = _env_bool("ARTEMIS_CLAUDE_CLASSIFY", "1")
+CLAUDE_CLASSIFY_MODEL = os.environ.get("ARTEMIS_CLAUDE_CLASSIFY_MODEL", CLAUDE_BATCH_MODEL)
+CLAUDE_CLASSIFY_BATCH = int(os.environ.get("ARTEMIS_CLAUDE_CLASSIFY_BATCH", "25"))
+CLAUDE_CLASSIFY_MIN_CONF = float(os.environ.get("ARTEMIS_CLAUDE_CLASSIFY_MIN_CONF", "0.5"))
 RELATION_CONF_CEILING = float(os.environ.get("ARTEMIS_RELATION_CONF_CEILING", "0.85"))
 
 # --- OpenAlex (academic coauthors) -----------------------------------------
@@ -197,8 +317,7 @@ OPENALEX_NAME_SIM = float(os.environ.get("ARTEMIS_OPENALEX_NAME_SIM", "0.8"))
 # description text), so it costs nothing on the common notable-person path
 # and only ever prevents a false "same person" merge — never blocks a real
 # one. Disable only to reproduce pre-guard behavior for comparison/debugging.
-IDENTITY_VERIFY_ENABLED = os.environ.get(
-    "ARTEMIS_IDENTITY_VERIFY_ENABLED", "1") not in ("0", "false", "")
+IDENTITY_VERIFY_ENABLED = _env_bool("ARTEMIS_IDENTITY_VERIFY_ENABLED", "1")
 # How many of a node's own existing edge-evidence snippets are folded into the
 # signal compared against a proposed identity. Small and cheap on purpose:
 # this is a coarse keyword-domain check, not a summarizer — a handful of
@@ -214,25 +333,45 @@ OPENCORP_MIN_INTERVAL = float(os.environ.get("ARTEMIS_OPENCORP_MIN_INTERVAL", "0
 
 # --- SEC EDGAR (public-company insider networks) ---------------------------
 # Free, no key — but SEC requires a declared User-Agent with contact info.
-EDGAR_ENABLED = os.environ.get("ARTEMIS_EDGAR_ENABLED", "1") not in ("0", "false", "")
+EDGAR_ENABLED = _env_bool("ARTEMIS_EDGAR_ENABLED", "1")
 EDGAR_USER_AGENT = os.environ.get(
     "ARTEMIS_EDGAR_USER_AGENT", "Artemis Graph Builder research@artemis.local")
 EDGAR_MIN_INTERVAL = float(os.environ.get("ARTEMIS_EDGAR_MIN_INTERVAL", "0.2"))
 
 # --- ProPublica Nonprofit Explorer (990 boards) ----------------------------
-PROPUBLICA_ENABLED = os.environ.get("ARTEMIS_PROPUBLICA_ENABLED", "1") not in ("0", "false", "")
+PROPUBLICA_ENABLED = _env_bool("ARTEMIS_PROPUBLICA_ENABLED", "1")
 PROPUBLICA_MIN_INTERVAL = float(os.environ.get("ARTEMIS_PROPUBLICA_MIN_INTERVAL", "0.3"))
 PROPUBLICA_MAX_ORGS = int(os.environ.get("ARTEMIS_PROPUBLICA_MAX_ORGS", "3"))
 
 # --- Firms (VC/company team-roster scraping) --------------------------------
 # A roster page listing a person is a structural assertion ("this page lists
 # its own team"), a much stronger signal than a search-engine snippet.
-FIRMS_ENABLED = os.environ.get("ARTEMIS_FIRMS_ENABLED", "1") not in ("0", "false", "")
+FIRMS_ENABLED = _env_bool("ARTEMIS_FIRMS_ENABLED", "1")
 MAX_ROSTER_MEMBERS = int(os.environ.get("ARTEMIS_MAX_ROSTER_MEMBERS", "40"))
 MAX_FIRMS_PER_PERSON = int(os.environ.get("ARTEMIS_MAX_FIRMS_PER_PERSON", "3"))
 # raw HTML cached/parsed per page fetch (before html_to_text's further cut to
 # MAX_PAGE_CHARS) — a roster grid can sit far down the markup of a long page.
 MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", str(MAX_PAGE_CHARS * 4)))
+
+# --- Podcasts (RSS host<->guest structural edges) ---------------------------
+# An episode asserts one thing: this host interviewed this guest. Tier-1 data —
+# never a guest<->guest edge (see providers/podcasts.py).
+PODCASTS_ENABLED = _env_bool("ARTEMIS_PODCASTS_ENABLED", "1")
+PODCAST_MAX_EPISODES = int(os.environ.get("ARTEMIS_PODCAST_MAX_EPISODES", "300"))
+PODCAST_EPISODE_SEARCH_LIMIT = int(
+    os.environ.get("ARTEMIS_PODCAST_EPISODE_SEARCH_LIMIT", "50"))
+MAX_PODCAST_APPEARANCES = int(os.environ.get("ARTEMIS_MAX_PODCAST_APPEARANCES", "6"))
+MAX_HOST_FEED_GUESTS = int(os.environ.get("ARTEMIS_MAX_HOST_FEED_GUESTS", "60"))
+
+# --- Funding rounds (org<->org co-investment facts, NOT person edges) -------
+# A round announcement names the investors in it — a structural assertion
+# about the FIRMS, never chained into a person-to-person edge (no "employee
+# of Org A -> Org A co-invested with Org B -> employee of Org B" inference).
+# See graph.builder.record_coinvestment, which stores this only on
+# Organization.meta["co_investments"] and is never read by pathfinding.
+FUNDING_ENABLED = _env_bool("ARTEMIS_FUNDING_ENABLED", "1")
+MAX_ROUNDS_PER_FIRM = int(os.environ.get("ARTEMIS_MAX_ROUNDS_PER_FIRM", "5"))
+MAX_COINVESTOR_FIRMS = int(os.environ.get("ARTEMIS_MAX_COINVESTOR_FIRMS", "6"))
 
 # --- headless-browser rendering (Playwright, OPTIONAL) -----------------------
 # JS-only team pages (React/Vue SPAs) return an empty shell to a plain GET.
@@ -241,13 +380,25 @@ MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", str(MAX_PAGE_CHARS
 # back to the plain fetch — nothing else in the system is affected.
 BROWSER_TIMEOUT_S = float(os.environ.get("ARTEMIS_BROWSER_TIMEOUT_S", "12.0"))
 BROWSER_SETTLE_S = float(os.environ.get("ARTEMIS_BROWSER_SETTLE_S", "3.0"))
+
+# --- network/upload (My Connections CSV) -------------------------------------
+MAX_UPLOAD_BYTES = int(os.environ.get("ARTEMIS_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+# /network/contacts/import takes JSON rows instead of a file, so it needs its own
+# ceiling — a phone address book is a few thousand cards at the very top end.
+MAX_IMPORT_CONTACTS = int(os.environ.get("ARTEMIS_MAX_IMPORT_CONTACTS", "10000"))
+
 # tier thresholds: < WEAK_MAX = weak, [WEAK_MAX, STRONG_MIN] = candidate,
 # > STRONG_MIN = strong (eligible for expansion priority)
 WEAK_MAX = 0.3
 STRONG_MIN = 0.6
-# ceilings enforced by the evidence rules
-COOCCURRENCE_ONLY_CEILING = 0.39   # sentence co-occurrence alone is weak
-NO_EXPLICIT_KEYWORD_CEILING = 0.59  # no explicit keyword => cannot be 'strong'
+# ceilings enforced by the evidence rules, without an explicit silo keyword --
+# ordered weakest to strongest evidence so the cap reflects how much was
+# actually corroborated, not just "some cap under STRONG_MIN":
+NO_EXPLICIT_KEYWORD_CEILING = 0.59  # absolute backstop: no explicit keyword => never 'strong'
+NO_COOCCURRENCE_CEILING = 0.29     # subject/target never share a sentence -- stays 'weak'
+COOCCURRENCE_ONLY_CEILING = 0.39   # they co-occur, but no strength keyword either
+GENERIC_STRENGTH_CEILING = 0.5     # co-occur + a strength keyword (e.g. "led"), but that
+                                    # keyword never named the actual relationship type
 # strength keywords boost confidence when present in the evidence text
 STRENGTH_KEYWORDS = [
     "cofounder", "co-founder", "board", "appointed", "joined",
@@ -255,3 +406,51 @@ STRENGTH_KEYWORDS = [
 ]
 STRENGTH_KEYWORD_STEP = 0.15  # per distinct strength keyword found
 STRENGTH_FACTOR_CEILING = 1.6
+
+# --- access control ---------------------------------------------------------
+# Shared-token gate for the whole app (UI + API). UNSET = wide open, which is
+# right for a local checkout and wrong for anything with a public URL: every
+# build spends real money (search quota + Anthropic tokens), so an open
+# deployment is a bill anyone with the link can run up.
+#
+# Set it the same way as any other secret — `fly secrets set
+# ARTEMIS_ACCESS_TOKEN=...`, a Render/Railway env var, or a line in .env.
+# Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+ACCESS_TOKEN = os.environ.get("ARTEMIS_ACCESS_TOKEN", "").strip()
+# Browser session cookie set by POST /login. Holds a value DERIVED from the
+# token, never the token itself (see auth.session_value).
+SESSION_COOKIE = os.environ.get("ARTEMIS_SESSION_COOKIE", "artemis_session")
+SESSION_MAX_AGE_S = int(os.environ.get("ARTEMIS_SESSION_MAX_AGE_S", str(30 * 86400)))
+# Trust X-Forwarded-For for the client IP. True on any managed host (Fly,
+# Render, Railway all terminate TLS in front of the app), so rate limits key on
+# the real caller rather than lumping every request under one proxy IP. Set to
+# 0 if the app is ever exposed directly — an untrusted client can forge the
+# header and evade per-IP limits.
+TRUST_PROXY_HEADERS = _env_bool("ARTEMIS_TRUST_PROXY_HEADERS", "1")
+
+# --- rate limiting ----------------------------------------------------------
+# Token bucket per client for the endpoints that cost money (/discover,
+# /connect, /targets/search). Burst = bucket capacity; the refill rate is
+# BUILD_RATE_LIMIT per BUILD_RATE_WINDOW_S. Cheap reads are never limited.
+BUILD_RATE_LIMIT = int(os.environ.get("ARTEMIS_BUILD_RATE_LIMIT", "12"))
+BUILD_RATE_WINDOW_S = float(os.environ.get("ARTEMIS_BUILD_RATE_WINDOW_S", "3600"))
+# Failed /login attempts per client per window, so a shared token can't be
+# brute-forced through the public URL.
+LOGIN_RATE_LIMIT = int(os.environ.get("ARTEMIS_LOGIN_RATE_LIMIT", "10"))
+LOGIN_RATE_WINDOW_S = float(os.environ.get("ARTEMIS_LOGIN_RATE_WINDOW_S", "900"))
+
+# --- build admission --------------------------------------------------------
+# Graph builds that may run CONCURRENTLY. Was effectively 1: connect_people
+# mutated a config global, so every build had to be serialized behind one
+# mutex and a second user simply waited. That global is now a per-call
+# argument (expand_graph's `prefer_reachable`), so builds can overlap.
+#
+# Kept small on purpose — this multiplies against EXPAND_NODE_CONCURRENCY and
+# SEARCH_WORKERS. Outbound HTTP is still globally bounded by
+# MAX_CONCURRENT_REQUESTS, so raising this adds waiting builds, not provider
+# load; the real limits are host RAM and Anthropic/search spend.
+MAX_CONCURRENT_BUILDS = int(os.environ.get("ARTEMIS_MAX_CONCURRENT_BUILDS", "2"))
+# Builds allowed to QUEUE behind those. Past this a request is rejected
+# immediately with 429 instead of joining a line it would time out in — a
+# queue nobody will wait through is worse than a clear refusal.
+MAX_QUEUED_BUILDS = int(os.environ.get("ARTEMIS_MAX_QUEUED_BUILDS", "8"))

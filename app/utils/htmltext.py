@@ -5,6 +5,7 @@ import json
 from typing import List
 
 from bs4 import BeautifulSoup
+from bs4.exceptions import ParserRejectedMarkup
 
 from .. import config
 
@@ -13,7 +14,20 @@ _STRIP_TAGS = ["script", "style", "noscript", "head", "nav", "footer",
 
 
 def soup_of(html: str) -> BeautifulSoup:
-    return BeautifulSoup(html or "", "html.parser")
+    """Parse `html`, degrading to an EMPTY document on markup the parser
+    refuses.
+
+    html.parser raises ParserRejectedMarkup on genuinely malformed pages, and
+    this is the chokepoint every consumer goes through (html_to_text,
+    text_blocks, jsonld_names, firms._page_title). Letting it propagate means
+    one bad page out of ~35 aborts a whole person's expansion — a real YC
+    cache build lost Sam Altman's entire hop-0 that way. An unreadable page
+    asserts nothing, which is exactly what an empty soup yields, so the node
+    keeps the other 34 pages' evidence instead of losing all of it."""
+    try:
+        return BeautifulSoup(html or "", "html.parser")
+    except ParserRejectedMarkup:
+        return BeautifulSoup("", "html.parser")
 
 
 def html_to_text(html: str) -> str:

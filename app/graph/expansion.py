@@ -18,18 +18,18 @@ expanded. No Claude / external-network matching here.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Dict, List, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
 from ..extraction import extract, tier
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
-from ..extraction.schemas import ExtractedEdge
+from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
 from ..silos import COLLEAGUE_SILO, SILOS, STRUCTURED_SILO
@@ -45,7 +45,7 @@ from . import builder
 # search orchestrator (Brave primary -> Wikipedia/Wikidata -> DuckDuckGo fallback)
 ORCH = SearchOrchestrator()
 
-# phase-0 sources whose names are clean structured labels (no Ollama filtering)
+# phase-0 sources whose names are clean structured labels (no Claude filtering)
 _CLEAN_STRUCTURED = {"wikidata", "wikidata-colleagues", "propublica-board"}
 
 
@@ -66,7 +66,7 @@ class _Candidate:
     max_conf: float = 0.0
     professional_edges: int = 0   # coworker/board/cofounder/investor/political/…
     family_edges: int = 0         # family_social (spouse/child/parent/sibling/friend)
-    trusted: bool = False         # came from a structured source (skip Ollama filter)
+    trusted: bool = False         # came from a structured source (skip Claude filter)
 
     def avg_conf(self) -> float:
         return sum(self.confidences) / len(self.confidences) if self.confidences else 0.0
@@ -136,6 +136,31 @@ def _record(disc: Dict[str, _Candidate], edge: ExtractedEdge) -> None:
         cand.trusted = True
 
 
+def _merge_disc(into: Dict[str, _Candidate], other: Dict[str, _Candidate]) -> None:
+    """Combine one worker's discovered-candidate tallies into the hop's shared
+    `disc` map. Frontier nodes now process concurrently (see expand_graph),
+    each accumulating into its OWN local dict via _record/_reuse_existing_
+    neighbors; this is where those local dicts recombine, on the controlling
+    thread as ex.map() yields results back -- never inside a worker -- so
+    `into` needs no lock. Two different nodes can discover the SAME candidate
+    (e.g. two coworkers both mention the same third person), so this replays
+    _record's per-field accumulation rather than a plain dict update, which
+    would silently drop one side's evidence."""
+    for norm, c in other.items():
+        existing = into.get(norm)
+        if existing is None:
+            into[norm] = c
+            continue
+        existing.sources |= c.sources
+        existing.confidences.extend(c.confidences)
+        existing.max_conf = max(existing.max_conf, c.max_conf)
+        existing.strong_edges += c.strong_edges
+        existing.explicit_edges += c.explicit_edges
+        existing.professional_edges += c.professional_edges
+        existing.family_edges += c.family_edges
+        existing.trusted = existing.trusted or c.trusted
+
+
 def _reuse_existing_neighbors(db: Session, subject: Person,
                               disc: Dict[str, _Candidate], progress=None) -> None:
     """Populate `disc` from a node's ALREADY-persisted person edges (from any
@@ -202,7 +227,13 @@ def _dedup_and_cap(edges: List[ExtractedEdge]) -> List[ExtractedEdge]:
 
 
 def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _Candidate],
-                    progress=None, is_person: bool = True, context: str = "") -> None:
+                    progress=None, is_person: bool = True, context: str = "",
+                    cancel_checker: Optional[Callable[[], None]] = None) -> None:
+    def check_cancel() -> None:
+        if cancel_checker:
+            cancel_checker()
+
+    check_cancel()
     subject = builder.get_or_create_person(db, subject_name)
     if subject is None:
         return
@@ -218,6 +249,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # --- phase 0: structured enrichment (Tier-1 high recall) ---------------
     # Wikipedia full article + Wikidata facts + colleagues, plus the page's
     # person-links added directly as clean contacts.
+    check_cancel()
     enrichment = ORCH.enrich_person(subject_name) if effective_is_person else None
     if enrichment:
         # anchor the subject's identity to its Wikidata QID (homonym disambiguation):
@@ -243,6 +275,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             ("wikidata-colleagues", enrichment.get("colleagues_text", ""), COLLEAGUE_SILO),
             ("propublica-board", enrichment.get("nonprofit_text", ""), COLLEAGUE_SILO),
         ):
+            check_cancel()
             if not text:
                 continue
             url = f"{wiki_url}#{label}"  # distinct source per label (preserve provenance)
@@ -250,12 +283,13 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             source = builder.save_source(db, res, f"enrich:{label}", text)
             source_by_url[res.url] = source
             out = extract(subject_name, text, silo, text[:200], res.url)
-            # clean structured facts -> trusted (skip Ollama entity filter); the
+            # clean structured facts -> trusted (skip Claude entity filter); the
             # full article/summary are prose and still need filtering.
             _mark_trusted(out.edges, label in _CLEAN_STRUCTURED)
             candidate_edges.extend(out.edges)
 
     # --- phase 0b: shared-affiliation colleague sources (lower confidence) ---
+    check_cancel()
     if effective_is_person:
         for src_name, url, query, text in (
             ("openalex", "https://openalex.org/", "enrich:openalex",
@@ -265,6 +299,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             ("edgar", "https://www.sec.gov/cgi-bin/browse-edgar", "enrich:edgar",
              ORCH.edgar_enrichment(subject_name)["edgar_text"]),
         ):
+            check_cancel()
             if not text:
                 continue
             res = SearchResult(subject_name, url, src_name, src_name)
@@ -278,12 +313,15 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # Unlike the enrichments above, each colleague carries the actual roster
     # page it was scraped from — a stronger, citable structural assertion —
     # so each distinct roster gets its own Source rather than one shared URL.
+    check_cancel()
     if effective_is_person:
         firm_cols = ORCH.firm_enrichment(subject_name)["firms"]
         by_url: Dict[str, List[dict]] = {}
         for c in firm_cols:
+            check_cancel()
             by_url.setdefault(c.get("url") or "", []).append(c)
         for url, cols in by_url.items():
+            check_cancel()
             if not url:
                 continue
             text = ORCH.firms.colleagues_text(subject_name, cols)
@@ -296,7 +334,48 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             _mark_trusted(out.edges, True)  # scraped roster names (skip entity filter)
             candidate_edges.extend(out.edges)
 
+    # --- phase 0d: podcast host<->guest (structural, tier-1) ---------------
+    # An episode asserts one thing: this host interviewed this subject. Direct
+    # edge creation (not the text/silo pipeline below) because 'podcast_guest'
+    # is its own relationship_type, not one a silo's keyword map produces.
+    # Never a guest<->guest edge — see providers/podcasts.py.
+    check_cancel()
+    if effective_is_person and config.PODCASTS_ENABLED:
+        known_orgs = [
+            o.name for o in db.execute(
+                select(Organization)
+                .join(RelationshipEdge, RelationshipEdge.organization_id == Organization.id)
+                .where(RelationshipEdge.person_a_id == subject.id)
+            ).scalars()
+        ]
+        appearances = ORCH.podcasts.appearances(subject_name, known_orgs=known_orgs)
+        for appearance in appearances:
+            check_cancel()
+            url = appearance.get("episode_url") or ""
+            if not url:
+                continue
+            res = SearchResult(appearance.get("episode_title", ""), url,
+                               "podcast_rss", "podcasts")
+            source = builder.save_source(db, res, "enrich:podcasts")
+            source_by_url[res.url] = source
+            for host_name in appearance.get("hosts", []):
+                if person_norm_key(host_name) == person_norm_key(subject_name):
+                    continue
+                edge = ExtractedEdge(
+                    person_a=subject_name, person_b=host_name,
+                    other_kind="person", relationship_type="podcast_guest",
+                    method="podcast RSS feed", source_url=url,
+                    evidence_snippet=(
+                        f"{host_name} interviewed {subject_name} on "
+                        f"{appearance.get('show', 'a podcast')} "
+                        f"(“{appearance.get('episode_title', '')}”)."),
+                    confidence_base=0.85, confidence_adjusted=0.85,
+                    signals=EdgeSignals(trusted=True, explicit_keyword_match=True),
+                )
+                candidate_edges.append(edge)
+
     # --- phase 1: build (silo, query) pairs, then DEDUP across silos -------
+    check_cancel()
     pairs = []
     for silo in SILOS:
         for query in silo.render_queries(subject_name)[: config.MAX_QUERIES_PER_SILO]:
@@ -311,14 +390,17 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # --- phase 2: routed search, concurrent (cache-first) ------------------
     def _do_search(query):
         try:
+            check_cancel()
             return query, ORCH.search(query, is_person=effective_is_person)
         except Exception:
+            check_cancel()
             return query, []
 
     with ThreadPoolExecutor(max_workers=config.SEARCH_WORKERS) as ex:
         searched = list(ex.map(_do_search, unique_queries))
 
     # --- phase 3: fetch result pages concurrently (cache-first, deduped) ---
+    check_cancel()
     to_scrape: Set[str] = set()
     for _query, results in searched:
         for rank, res in enumerate(results):
@@ -327,13 +409,21 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
     page_text: Dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=config.SEARCH_WORKERS) as ex:
-        for url, page in ex.map(lambda u: (u, ORCH.fetch(u)), to_scrape):
+        def _do_fetch(url):
+            check_cancel()
+            return url, ORCH.fetch(url)
+
+        for url, page in ex.map(_do_fetch, to_scrape):
+            check_cancel()
             page_text[url] = html_to_text(page.content) if page.content else ""
 
     # --- phase 4: extraction per (result × originating silo) --------------
+    check_cancel()
     for query, results in searched:
+        check_cancel()
         silos = query_to_silos.get(query, set())
         for rank, res in enumerate(results):
+            check_cancel()
             if res.provider == "wikipedia":
                 full_text = ORCH.wikipedia.summary(res.title) or None
             elif rank < config.SCRAPE_TOP_N:
@@ -346,19 +436,28 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             text = full_text or f"{res.title}. {res.snippet}"
 
             for silo in silos:
+                check_cancel()
                 out = extract(subject_name, text, silo, res.snippet, res.url)
                 candidate_edges.extend(out.edges)
 
     # --- phase 5: dedup + per-node cap, then persist ----------------------
+    check_cancel()
     final_edges = _dedup_and_cap(candidate_edges)
     if progress and len(candidate_edges) > len(final_edges):
         progress(f"  [hop {hop}] {subject_name}  ·  capped "
                  f"{len(candidate_edges)} → {len(final_edges)} edges (anti-explosion)")
 
+    # Snapshot the cap once for this node's whole edge batch instead of
+    # re-querying COUNT(*) on every candidate edge (up to MAX_EDGES_PER_NODE
+    # per node) -- the cap is already a soft/best-effort bound (concurrent
+    # hop workers can each read a stale count too), so reusing one snapshot
+    # for a single node's edges costs nothing beyond what's already true.
+    at_cap = builder.at_node_cap(db)
     for edge in final_edges:
+        check_cancel()
         if edge.other_kind == "person":
             counterpart = builder.get_or_create_person(
-                db, edge.person_b, allow_create=not builder.at_node_cap(db)
+                db, edge.person_b, allow_create=not at_cap
             )
             if counterpart is None:
                 continue
@@ -368,7 +467,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             _record(disc, edge)
         else:
             counterpart = builder.get_or_create_org(
-                db, edge.organization, edge.org_type, allow_create=not builder.at_node_cap(db)
+                db, edge.organization, edge.org_type, allow_create=not at_cap
             )
             if counterpart is None:
                 continue
@@ -383,7 +482,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
 
 def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
-                       progress=None) -> List[str]:
+                       progress=None, prefer_reachable: Optional[bool] = None) -> List[str]:
     """Choose the next hop's frontier.
 
     Two modes:
@@ -392,9 +491,18 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
         with no Wikipedia page and few sources — to walk DOWN the fame gradient
         toward a normal person's network (warm-intro pathfinding).
 
-    Ollama filtering (when active) removes junk nodes from the frontier first.
+    `prefer_reachable` selects between them PER CALL. It used to be read
+    straight off the config global, which meant connect_people had to flip that
+    global for the duration of its build and restore it afterwards — process
+    global state that forced every build in the API to run one at a time. As a
+    parameter it is just an argument two concurrent builds can disagree about.
+    None keeps the configured default.
+
+    Claude filtering (when active) removes junk nodes from the frontier first.
     """
-    if config.EXPAND_PREFER_REACHABLE:
+    if prefer_reachable is None:
+        prefer_reachable = config.EXPAND_PREFER_REACHABLE
+    if prefer_reachable:
         # real people with at least a candidate-tier edge (not just explicit/strong),
         # since the bridge people toward a normal network are weakly-linked by design.
         eligible = [c for norm, c in disc.items()
@@ -405,27 +513,27 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
     if not eligible:
         return []
 
-    # pre-rank to bound the expensive checks (Ollama + Wikipedia notability).
+    # pre-rank to bound the expensive checks (Claude + Wikipedia notability).
     # family-only nodes go LAST (hard) when down-weighting, so a few high-source
     # relatives can't crowd out genuine professional connections.
     fam = config.DOWNWEIGHT_FAMILY
-    if config.EXPAND_PREFER_REACHABLE:
+    if prefer_reachable:
         eligible.sort(key=lambda c: (c.demote_family(fam), len(c.sources), -c.avg_conf()))
     else:
         eligible.sort(key=lambda c: (c.demote_family(fam), -c.score()))
     shortlist = eligible[: max(config.EXPAND_TOP_STRONG * 3, 30)]
 
     if is_filtering_active():
-        # trusted (structured-source) candidates skip the Ollama check entirely
+        # trusted (structured-source) candidates skip the Claude check entirely
         to_check = [c for c in shortlist if not c.trusted]
         valid = filter_entities([c.name for c in to_check], "person")
         dropped = [c.name for c in to_check if c.name not in valid]
         shortlist = [c for c in shortlist if c.trusted or c.name in valid]
         if progress and dropped:
-            progress(f"  ⊘ Ollama filter skipped {len(dropped)} non-person frontier "
+            progress(f"  ⊘ Claude filter skipped {len(dropped)} non-person frontier "
                      f"nodes (e.g. {', '.join(dropped[:3])})")
 
-    if config.EXPAND_PREFER_REACHABLE and shortlist:
+    if prefer_reachable and shortlist:
         # fame signal: has a Wikidata-backed Wikipedia page -> famous -> deprioritize
         notable = ORCH.notable_set([c.name for c in shortlist])
         # least-famous first, but family-only nodes last (prefer professional ties),
@@ -445,34 +553,163 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
 
 
 def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
-                 seed_is_person: bool = True, seed_context: str = "") -> dict:
+                 seed_is_person: bool = True, seed_context: str = "",
+                 protected_norms: Optional[Set[str]] = None,
+                 on_step: Optional[Callable[[dict], None]] = None,
+                 cancel_checker: Optional[Callable[[], None]] = None,
+                 should_stop: Optional[Callable[[Session], bool]] = None,
+                 prefer_reachable: Optional[bool] = None) -> dict:
+    """`protected_norms` are exempt from the final noise-shape prune in addition
+    to this call's own seed. connect_people needs this: it runs expand_graph
+    TWICE (once per endpoint) into the same shared graph, and without it the
+    second call's prune sees the first call's seed as just another node —
+    nothing marks it as an endpoint the caller still needs. Defaults to only
+    this call's own seed, i.e. today's single-seed behavior, for every other
+    caller (CLI, /expand, org_discovery).
+
+    `on_step`, unlike `progress` (a free-text log line), reports STRUCTURED
+    hop/node counters — {"phase": "hop_start"|"node_done", "hop", "total",
+    "done"} — so a caller (the HTTP API) can turn them into an actual percent
+    complete instead of an indeterminate spinner.
+
+    `should_stop`, when provided, is checked before each hop and after each
+    processed node. connect_people uses it to stop discovery as soon as the two
+    endpoint graphs have met, instead of always exhausting the requested depth.
+
+    `prefer_reachable` overrides config.EXPAND_PREFER_REACHABLE for THIS call
+    only (see _ranked_expandable). connect_people passes False; leaving it None
+    keeps the configured default. Per-call rather than global so two builds can
+    run concurrently without fighting over one another's strategy."""
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
 
+    # Frontier nodes within one hop are independent of each other -- nothing
+    # about processing candidate #3 needs candidate #2 done first -- so they
+    # run concurrently, each on its OWN Session (bound to the same engine as
+    # `db`; a Session isn't thread-safe to share). Hops themselves stay
+    # sequential: _ranked_expandable needs every node in a hop finished before
+    # it can rank the next one, a real data dependency, not an oversight.
+    engine = db.get_bind()
+    WorkerSession = sessionmaker(bind=engine, autoflush=False,
+                                 expire_on_commit=False, future=True)
+
+    def check_cancel() -> None:
+        if cancel_checker:
+            cancel_checker()
+
+    def stop_requested(session: Session) -> bool:
+        check_cancel()
+        return bool(should_stop and should_stop(session))
+
+    def _process_one(name: str, hop: int) -> Dict[str, "_Candidate"]:
+        local_disc: Dict[str, _Candidate] = {}
+        worker_db = WorkerSession()
+        try:
+            if stop_requested(worker_db):
+                return local_disc
+            check_cancel()
+            # If this node was already expanded (this run, a prior run, or by
+            # another teammate in the shared map), REUSE its persisted
+            # neighbors to rank the next frontier instead of re-searching —
+            # so we keep the shallow work and just continue deeper
+            # (incremental deepening).
+            existing = builder.get_or_create_person(worker_db, name, allow_create=False)
+            if existing is not None and existing.processed:
+                _reuse_existing_neighbors(worker_db, existing, local_disc, progress)
+            else:
+                # only the seed at hop 0 may be an org; discovered nodes are people.
+                # the disambiguation context applies only to the seed (hop 0).
+                kwargs = {
+                    "progress": progress,
+                    "is_person": (seed_is_person or hop > 0),
+                    "context": (seed_context if hop == 0 else ""),
+                }
+                if cancel_checker:
+                    kwargs["cancel_checker"] = cancel_checker
+                _process_person(worker_db, name, hop, local_disc, **kwargs)
+        except Exception as exc:
+            worker_db.rollback()
+            try:
+                check_cancel()
+            except Exception:
+                raise
+            if progress:
+                progress(f"  ⚠ {name!r} at hop {hop} failed "
+                         f"({exc.__class__.__name__}) — skipped")
+        finally:
+            worker_db.close()
+        return local_disc
+
     for hop in range(0, max_depth):
+        if stop_requested(db):
+            if progress:
+                progress("  ✓ stop condition met; stopping expansion early")
+            break
         disc: Dict[str, _Candidate] = {}
-        processed = 0
+        to_process: List[str] = []
         for name in frontier:
             norm = person_norm_key(name)
             if norm in visited:
                 continue
             visited.add(norm)
-            # If this node was already expanded (this run, a prior run, or by
-            # another teammate in the shared map), REUSE its persisted neighbors
-            # to rank the next frontier instead of re-searching — so we keep the
-            # shallow work and just continue deeper (incremental deepening).
-            existing = builder.get_or_create_person(db, name, allow_create=False)
-            if existing is not None and existing.processed:
-                _reuse_existing_neighbors(db, existing, disc, progress)
-            else:
-                # only the seed at hop 0 may be an org; discovered nodes are people.
-                # the disambiguation context applies only to the seed (hop 0).
-                _process_person(db, name, hop, disc, progress=progress,
-                                is_person=(seed_is_person or hop > 0),
-                                context=(seed_context if hop == 0 else ""))
-            processed += 1
-        per_depth.append(processed)
+            to_process.append(name)
+
+        if on_step:
+            check_cancel()
+            on_step({"phase": "hop_start", "hop": hop, "max_depth": max_depth,
+                     "total": len(to_process)})
+
+        if len(to_process) > 1:
+            workers = min(config.EXPAND_NODE_CONCURRENCY, len(to_process))
+            stop_after_node = False
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                # Drain futures as they COMPLETE (not input order) so a caller
+                # that can stop early -- e.g. connect_people once a route exists
+                # -- observes the first enriched node that creates the route.
+                # _merge_disc still runs only on this controlling thread, so
+                # `disc` and on_step counters need no lock.
+                futures = [ex.submit(_process_one, name, hop) for name in to_process]
+                done = 0
+                for future in as_completed(futures):
+                    if future.cancelled():
+                        continue
+                    local_disc = future.result()
+                    _merge_disc(disc, local_disc)
+                    done += 1
+                    if on_step:
+                        on_step({"phase": "node_done", "hop": hop,
+                                 "max_depth": max_depth, "done": done,
+                                 "total": len(to_process)})
+                    if stop_requested(db):
+                        for pending in futures:
+                            pending.cancel()
+                        stop_after_node = True
+                        if progress:
+                            progress("  ✓ stop condition met; stopping expansion early")
+                        break
+            if stop_after_node:
+                per_depth.append(done)
+                break
+        else:
+            stop_after_node = False
+            done = 0
+            for i, name in enumerate(to_process, 1):
+                _merge_disc(disc, _process_one(name, hop))
+                done = i
+                if on_step:
+                    on_step({"phase": "node_done", "hop": hop,
+                             "max_depth": max_depth, "done": i,
+                             "total": len(to_process)})
+                if stop_requested(db):
+                    stop_after_node = True
+                    if progress:
+                        progress("  ✓ stop condition met; stopping expansion early")
+                    break
+            if stop_after_node:
+                per_depth.append(done)
+                break
+        per_depth.append(len(to_process))
 
         if hop == max_depth - 1:
             break
@@ -481,7 +718,9 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 progress(f"  → node cap ({config.MAX_TOTAL_NODES}) reached; stopping expansion")
             break
 
-        frontier = _ranked_expandable(disc, visited, progress=progress)
+        check_cancel()
+        frontier = _ranked_expandable(disc, visited, progress=progress,
+                                      prefer_reachable=prefer_reachable)
         if progress and frontier:
             progress(f"  → expanding top {len(frontier)} strong nodes to hop {hop + 1}: "
                      + ", ".join(frontier[:5]) + (" …" if len(frontier) > 5 else ""))
@@ -490,13 +729,16 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 progress("  → no strong nodes to expand; stopping")
             break
 
-    _prune_invalid_nodes(db, person_norm_key(target_name), progress=progress)
+    protected = {person_norm_key(target_name)} | (protected_norms or set())
+    check_cancel()
+    _prune_invalid_nodes(db, protected, progress=progress)
+    check_cancel()
     _retype_unknown_edges(db, progress=progress)
     return _stats(db, per_depth)
 
 
 def _retype_unknown_edges(db: Session, progress=None) -> int:
-    """Re-type 'unknown' edges via the Ollama relationship classifier, using each
+    """Re-type 'unknown' edges via the Claude relationship classifier, using each
     edge's evidence sentence. Turns 'unknown 0.40' into e.g. 'coworker 0.8'."""
     from ..extraction import relation_classifier
     if not relation_classifier.is_active():
@@ -529,37 +771,48 @@ def _retype_unknown_edges(db: Session, progress=None) -> int:
     updated = 0
     for e, v in zip(eligible, verdicts):
         rtype, conf = v.get("type", "unknown"), v.get("confidence", 0.0)
-        if rtype != "unknown" and conf >= config.OLLAMA_CLASSIFY_MIN_CONF:
+        if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
             new_conf = round(min(conf, config.RELATION_CONF_CEILING), 3)
             e.relationship_type = rtype
             e.confidence_raw = max(e.confidence_raw or 0.0, new_conf)
             e.status = builder.derive_status(rtype, e.confidence_raw)
             sig = dict(e.signals or {})
-            sig["relationship_classified_by"] = "ollama"
+            sig["relationship_classified_by"] = "claude"
             e.signals = sig
             updated += 1
     db.commit()
     if progress and (updated or skipped_mismatch):
-        progress(f"  ✎ Ollama typed {updated} edges "
+        progress(f"  ✎ Claude typed {updated} edges "
                  f"(skipped {skipped_mismatch} with mismatched evidence)")
     return updated
 
 
-def _prune_invalid_nodes(db: Session, seed_norm: str, progress=None) -> int:
+def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) -> int:
     """Final pass: remove nodes that aren't real named people/orgs (with edges).
 
-    PEOPLE are pruned by the DETERMINISTIC name-shape filter, NOT Ollama. The LLM
+    PEOPLE are pruned by the DETERMINISTIC name-shape filter, NOT Claude. The LLM
     entity filter proved unreliable on names: it false-DELETED real connections
     (named co-founders) while false-KEEPING page-title junk like "Drew Glover -
     LinkedIn" — which carries strong explicit edges indistinguishable from a real
     node's. In a relationship graph a false-delete loses the answer while a
     false-keep is cheap noise, so a well-formed personal name is authoritative and
     the LLM never gets to delete a plausible person. This also means people get
-    cleaned even where Ollama is absent (e.g. the hosted instance).
+    cleaned even where no Claude key is configured.
 
-    ORGS still use the Ollama filter when active — org names are far messier and a
+    ORGS still use the Claude filter when active — org names are far messier and a
     wrong drop is much less costly than losing a person. Nodes reached via a
-    TRUSTED structured source are clean by construction and never pruned."""
+    TRUSTED structured source are clean by construction and never pruned.
+
+    `protected_norms` may hold more than this call's own seed (see expand_graph)
+    — every one of them is exempt.
+
+    Flushes first: this runs after edges were added to `db` in the same
+    transaction, and the bulk deletes below are raw SQL against
+    `RelationshipEdge` — with autoflush off, they're blind to any edge still
+    only pending in the session, and that edge's endpoint can vanish here while
+    the edge itself survives the commit, an orphaned reference to a person that
+    no longer exists."""
+    db.flush()
     trusted_pids, trusted_oids = set(), set()
     for e in db.execute(select(RelationshipEdge)).scalars():
         if (e.signals or {}).get("trusted"):
@@ -570,29 +823,38 @@ def _prune_invalid_nodes(db: Session, seed_norm: str, progress=None) -> int:
 
     removed = 0
     # --- people: deterministic shape filter (LLM-independent, safe) ---------
-    for p in db.execute(select(Person)).scalars():
-        if p.norm_name == seed_norm or p.id in trusted_pids:
-            continue
-        if is_noise_name(p.canonical_name) or not looks_like_person_name(p.canonical_name):
-            db.query(RelationshipEdge).filter(
-                (RelationshipEdge.person_a_id == p.id)
-                | (RelationshipEdge.person_b_id == p.id)
-            ).delete(synchronize_session=False)
+    junk_people = [
+        p for p in db.execute(select(Person)).scalars()
+        if p.norm_name not in protected_norms and p.id not in trusted_pids
+        and (is_noise_name(p.canonical_name) or not looks_like_person_name(p.canonical_name))
+    ]
+    if junk_people:
+        pids = [p.id for p in junk_people]
+        # One batched delete instead of one DELETE per node -- edges are the
+        # only thing that needs a manual cascade (RelationshipEdge has no FK
+        # cascade), and IN(...) does it in a single round trip either way.
+        db.query(RelationshipEdge).filter(
+            (RelationshipEdge.person_a_id.in_(pids))
+            | (RelationshipEdge.person_b_id.in_(pids))
+        ).delete(synchronize_session=False)
+        for p in junk_people:
             db.delete(p)
-            removed += 1
+        removed += len(junk_people)
 
-    # --- orgs: Ollama entity filter (only when reachable) ------------------
+    # --- orgs: Claude entity filter (only when configured) -----------------
     if is_filtering_active():
         orgs = [o for o in db.execute(select(Organization)).scalars()
                 if o.id not in trusted_oids]
         valid_orgs = filter_entities([o.name for o in orgs], "organization")
-        for o in orgs:
-            if o.name not in valid_orgs:
-                db.query(RelationshipEdge).filter(
-                    RelationshipEdge.organization_id == o.id
-                ).delete(synchronize_session=False)
+        junk_orgs = [o for o in orgs if o.name not in valid_orgs]
+        if junk_orgs:
+            oids = [o.id for o in junk_orgs]
+            db.query(RelationshipEdge).filter(
+                RelationshipEdge.organization_id.in_(oids)
+            ).delete(synchronize_session=False)
+            for o in junk_orgs:
                 db.delete(o)
-                removed += 1
+            removed += len(junk_orgs)
 
     db.commit()
     if progress and removed:
