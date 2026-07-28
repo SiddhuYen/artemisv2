@@ -190,6 +190,8 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             person = person_by_id.get(pid)
             label = person.canonical_name if person else pid
             node = {"label": label, "node_type": "public_person"}
+            if person and person.meta and person.meta.get("homonym_rejected"):
+                node["homonym_flag"] = person.meta["homonym_rejected"]
             if edge is not None:
                 edges_used.append(edge)
                 src = src_by_id.get(edge.source_id)

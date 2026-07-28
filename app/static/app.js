@@ -1774,10 +1774,14 @@ function renderRoutePath(path) {
       ? `${step.role}${step.role && step.company?' · ':''}${step.company}`
       : '';
     const sym = step.kind === 'you' ? '●' : step.kind === 'target' ? '◆' : '○';
+    const flagTitle = step.homonymFlag?.identity_text
+      ? `Kept separate from a same-named public figure — evidence didn't match: ${step.homonymFlag.identity_text}`
+      : '';
+    const flag = flagTitle ? `<span class="rt-homonym-flag" title="${esc(flagTitle)}">⚠</span>` : '';
     return `<div class="rt-pnode k-${step.kind}">
       <div class="pip">${sym}</div>
       <div class="pinfo">
-        <div class="n">${esc(step.name)}</div>
+        <div class="n">${esc(step.name)}${flag}</div>
         ${label?`<div class="r">${esc(label)}</div>`:''}
       </div>
     </div>`;
@@ -1791,6 +1795,7 @@ function candidatePathToSteps(cp) {
     role: n.reason || '',
     company: '',
     kind: n.node_type === 'you' ? 'you' : (i === nodes.length - 1 ? 'target' : 'node'),
+    homonymFlag: n.homonym_flag || null,
   }));
 }
 
@@ -1877,6 +1882,7 @@ async function execBoardRoute() {
       const steps = (route.path||[]).map((n,idx,arr) => ({
         name: n.label, role: n.relationship_from_previous||'', company: '',
         kind: idx===0 ? 'you' : (idx===arr.length-1 ? 'target' : 'node'),
+        homonymFlag: n.homonym_flag || null,
       }));
       return `<div style="margin-bottom:16px"><div class="bvr-flbl">ROUTE ${i+1} · ${route.hops} HOPS · SCORE ${route.score}</div>${renderRoutePath(steps)}</div>`;
     }).join('');
