@@ -322,6 +322,48 @@ body {
 .hv-boot-line { opacity: 0; animation: hvBootIn .3s ease forwards; }
 @keyframes hvBootIn { from{opacity:0;transform:translateX(-5px)} to{opacity:1;transform:none} }
 
+/* ── NETWORK GATE ──
+   Shown once after boot when the operator has no contacts loaded. Artemis
+   routes THROUGH your own network: with zero contacts every path it finds
+   terminates at a stranger, so this is a correctness warning, not an upsell.
+   z-index sits above #hvBoot (200) so it can never appear behind the splash. */
+#hvGate { position:fixed;inset:0;z-index:210;display:none;place-items:center;
+  background:oklch(0.06 0.02 22/0.82);backdrop-filter:blur(3px);padding:20px;
+  font-family:"Share Tech Mono","JetBrains Mono",monospace; }
+#hvGate.open { display:grid; }
+#hvGatePanel {
+  width:660px;max-width:100%;position:relative;
+  max-height:calc(100vh - 40px);overflow-y:auto;scrollbar-width:thin;
+  background:linear-gradient(180deg,oklch(0.185 0.016 22),oklch(0.13 0.012 22));
+  border:1px solid oklch(0.635 0.205 22);
+  box-shadow:0 30px 80px oklch(0 0 0/0.6),inset 0 0 40px oklch(0.635 0.205 22/0.06);
+  padding:28px;
+}
+#hvGate .hg-lbl { font-size:10px;letter-spacing:0.3em;color:var(--ink-mute);margin-bottom:4px; }
+#hvGate h3 { font-family:"Rajdhani","Share Tech Mono",sans-serif;font-weight:700;
+  font-size:22px;letter-spacing:0.06em;margin:0 0 14px;color:var(--accent-bright);
+  text-shadow:0 0 14px var(--accent-glow); }
+.hg-warn { border-left:2px solid var(--accent);background:var(--accent-wash);
+  padding:12px 14px;margin-bottom:18px;font-size:12px;line-height:1.65;color:var(--ink-dim); }
+.hg-warn b { color:var(--accent-bright); }
+.hg-grid { display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px; }
+@media (max-width:640px) { .hg-grid { grid-template-columns:1fr; } }
+.hg-box { border:1px dashed var(--accent-line);padding:22px 16px;text-align:center;
+  background:oklch(0.12 0.012 22/0.5);cursor:pointer;transition:all .18s; }
+.hg-box:hover,.hg-box.dragover { border-color:var(--accent);background:var(--accent-wash);
+  box-shadow:inset 0 0 20px var(--accent-wash); }
+.hg-box .hg-icon { font-size:26px;margin-bottom:8px;opacity:0.75; }
+.hg-box .hg-name { font-size:12px;letter-spacing:0.16em;color:var(--accent-bright);margin-bottom:6px; }
+.hg-box .hg-hint { font-size:10px;letter-spacing:0.1em;color:var(--ink-mute);line-height:1.6; }
+.hg-box .hg-hint b { color:var(--ink-dim); }
+.hg-box.done { border-style:solid;border-color:var(--accent); }
+.hg-foot { display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap; }
+.hg-foot .hg-note { font-size:10px;letter-spacing:0.12em;color:var(--ink-faint);flex:1;min-width:200px; }
+#hvGate .hg-btn { display:inline-flex;align-items:center;justify-content:center;height:38px;
+  padding:0 18px;border:1px solid var(--accent-line);background:transparent;color:var(--ink-dim);
+  font-family:inherit;font-size:11px;letter-spacing:0.16em;cursor:pointer;transition:all .16s; }
+#hvGate .hg-btn:hover { border-color:var(--accent);color:var(--accent-bright);background:var(--accent-wash); }
+
 /* ── DETAIL RAIL ── */
 #hvRailScrim { position: fixed; inset: 0; z-index: 140; background: oklch(0.06 0.02 22 / 0.55); backdrop-filter: blur(1.5px); display: none; }
 #hvRail {
@@ -1776,6 +1818,58 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
     <div class="hv-boot-line" style="animation-delay:0.35s;color:oklch(0.58 0.045 22)">&gt; LOADING BOARDS ........... OK</div>
     <div class="hv-boot-line" style="animation-delay:0.65s;color:oklch(0.58 0.045 22)">&gt; SYNCING NETWORK .......... OK</div>
     <div class="hv-boot-line" style="animation-delay:0.95s;color:oklch(0.58 0.045 22)">&gt; RESOLVING PATHS ......... <span style="color:oklch(0.72 0.205 22)">READY</span></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ NETWORK GATE ═══════════════════ -->
+<div id="hvGate">
+  <div id="hvGatePanel">
+    <span class="art-br tl"></span><span class="art-br tr"></span>
+    <span class="art-br bl"></span><span class="art-br br2"></span>
+    <div class="hg-lbl">// NO NETWORK LOADED</div>
+    <h3>UPLOAD YOUR NETWORK FIRST</h3>
+
+    <div class="hg-warn">
+      Artemis finds routes <b>through people you already know</b>. Without your
+      connections loaded it can still map a target's public network — but it has
+      no idea where <i>you</i> sit in it, so every route it returns ends at a
+      stranger with no warm intro. <b>Results will be severely worse.</b>
+      <br><br>
+      Upload either file below (or both — they merge and de-duplicate).
+    </div>
+
+    <div class="hg-grid">
+      <div class="hg-box" id="hgBoxCsv"
+        ondragover="event.preventDefault();this.classList.add('dragover')"
+        ondragleave="this.classList.remove('dragover')"
+        ondrop="gateDropCsv(event)"
+        onclick="document.getElementById('hgCsvIn').click()">
+        <input type="file" id="hgCsvIn" accept=".csv,text/csv" style="display:none"
+               onchange="gateCsvChange(event)">
+        <div class="hg-icon">📎</div>
+        <div class="hg-name">LINKEDIN CONNECTIONS</div>
+        <div class="hg-hint">Drop <b>Connections.csv</b> here<br>or click to browse</div>
+      </div>
+
+      <div class="hg-box" id="hgBoxVcf"
+        ondragover="event.preventDefault();this.classList.add('dragover')"
+        ondragleave="this.classList.remove('dragover')"
+        ondrop="gateDropVcf(event)"
+        onclick="document.getElementById('hgVcfIn').click()">
+        <input type="file" id="hgVcfIn" accept=".vcf,text/vcard,text/x-vcard" multiple
+               style="display:none" onchange="gateVcfChange(event)">
+        <div class="hg-icon">👤</div>
+        <div class="hg-name">PHONE CONTACTS</div>
+        <div class="hg-hint">Drop a <b>.vcf</b> export here<br>or click to browse</div>
+      </div>
+    </div>
+
+    <div class="hg-foot">
+      <div class="hg-note">
+        Don't have a file yet? Both boxes open step-by-step export instructions.
+      </div>
+      <button class="hg-btn" onclick="dismissNetworkGate()">CONTINUE WITHOUT ▸</button>
+    </div>
   </div>
 </div>
 
