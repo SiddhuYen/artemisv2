@@ -19,10 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
+from ..extraction import extract
 from ..models import Person, RelationshipEdge, Source
+from ..silos import SILOS
+from ..utils.htmltext import html_to_text
 from ..utils.names import person_norm_key
 from . import builder
-from .expansion import expand_graph
+from .expansion import ORCH, expand_graph
 
 # relationship strength multiplier (shared with candidate-path scoring)
 REL_STRENGTH = {
@@ -232,6 +235,64 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
             f.result()
 
 
+def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = "",
+                        context_b: str = "",
+                        cancel_checker: Optional[Callable[[], None]] = None) -> bool:
+    """Cheap first-pass: search for the two people TOGETHER and extract any
+    edge found directly between them, before paying for a full bidirectional
+    neighborhood walk.
+
+    Generic per-person silo expansion (_expand_both_concurrently) rarely
+    reaches a specific pair organically — a famous person's neighborhood is
+    far too large to exhaustively walk within any reasonable depth/node
+    budget, so a real, well-documented, easily-searchable fact (e.g. a
+    government appointment) can go undiscovered even though it's one search
+    away. This checks that directly: a single query naming both people,
+    extracted the same way expand_graph extracts everything else, kept only
+    if it actually links to person_b specifically (not some other entity
+    that happened to co-occur on the same page).
+    """
+    query = f'"{name_a}" "{name_b}" {context_a} {context_b}'.strip()
+    try:
+        results = ORCH.search(query, is_person=True)
+    except Exception:
+        return False
+    if not results:
+        return False
+
+    b_norm = person_norm_key(name_b)
+    found = False
+    for res in results[: config.SCRAPE_TOP_N]:
+        if cancel_checker:
+            cancel_checker()
+        if res.provider == "wikipedia":
+            text = ORCH.wikipedia.summary(res.title) or f"{res.title}. {res.snippet}"
+        else:
+            try:
+                page = ORCH.fetch(res.url)
+                text = html_to_text(page.content) if page.content else res.snippet
+            except Exception:
+                text = res.snippet
+        if not text:
+            continue
+
+        source = builder.save_source(db, res, query, text)
+        for silo in SILOS:
+            out = extract(name_a, text, silo, res.snippet, res.url)
+            for edge in out.edges:
+                if edge.other_kind != "person" or person_norm_key(edge.person_b) != b_norm:
+                    continue
+                subject = builder.get_or_create_person(db, name_a)
+                counterpart = builder.get_or_create_person(db, name_b)
+                if subject is None or counterpart is None:
+                    continue
+                builder.add_edge_from_extraction(db, subject, edge, 0, source, counterpart)
+                found = True
+    if found:
+        db.commit()
+    return found
+
+
 def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                    progress=None, context_a: str = "", context_b: str = "",
                    on_step: Optional[Callable[[dict], None]] = None,
@@ -266,6 +327,16 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             route_found.set()
             return True
         return False
+
+    if cancel_checker:
+        cancel_checker()
+    if progress:
+        progress("\n[direct] checking whether the two are ever mentioned together…")
+    if _direct_pair_search(db, name_a, name_b, context_a, context_b,
+                          cancel_checker=cancel_checker):
+        route_found.set()
+        if progress:
+            progress("[direct] found a direct mention — skipping full neighborhood expansion")
 
     if cancel_checker:
         cancel_checker()

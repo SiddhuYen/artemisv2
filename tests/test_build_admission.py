@@ -33,6 +33,7 @@ def test_connect_no_longer_mutates_the_expansion_global(monkeypatch):
     monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", True)
     monkeypatch.setattr(C, "_expand_both_concurrently", fake_expand_both)
     monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_direct_pair_search", lambda *a, **k: False)
 
     class _Db:
         def execute(self, *_a, **_k):
