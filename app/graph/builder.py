@@ -13,10 +13,12 @@ signals + status tier. No relationship is ever auto-set to 'accepted'
 """
 from __future__ import annotations
 
+import random
+import time
 from typing import Optional
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -191,8 +193,37 @@ def _new_person(db: Session, name: str, norm: str, qid: Optional[str]) -> Person
     return person
 
 
+def _is_deadlock(exc: OperationalError) -> bool:
+    """Postgres SQLSTATE 40P01 (deadlock_detected). Two concurrent inserts can
+    deadlock fighting over the same b-tree index page even when their VALUES
+    don't conflict at all (see ix_people_norm_name/ix_organizations_norm_name)
+    -- unlike a duplicate-key IntegrityError, this means Postgres itself
+    aborted the transaction to break the cycle, so there's no row to look up:
+    the whole transaction has to be rolled back and retried from here, not
+    just re-selected. SQLite has no equivalent (its writer/writer contention
+    is handled at the connection layer in db.py, as a retry-in-place, because
+    SQLite's busy-timeout failure doesn't poison the transaction the way a
+    real deadlock does)."""
+    return getattr(getattr(exc, "orig", None), "pgcode", None) == "40P01"
+
+
+# Same shape as the HTTP retry backoff (config.HTTP_BACKOFF_BASE/JITTER,
+# see providers/base.py) but kept local: this waits out a DB transaction,
+# not a network call, and an immediate retry mostly just re-collides -- the
+# other side of a deadlock is often mid-way through several more seconds of
+# its own research before it commits (observed directly: two real co-hosts,
+# each repeatedly discovering the other as a counterpart, kept deadlocking on
+# the SAME norm_name for multiple retries in a row with no delay).
+_DEADLOCK_BACKOFF_BASE = 0.3   # seconds
+_DEADLOCK_BACKOFF_JITTER = 0.4
+
+
+def _deadlock_backoff(attempt: int) -> None:
+    time.sleep(_DEADLOCK_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, _DEADLOCK_BACKOFF_JITTER))
+
+
 def _new_person_or_existing(db: Session, name: str, norm: str,
-                            qid: Optional[str]) -> Person:
+                            qid: Optional[str], _retries: int = 5) -> Person:
     """_new_person, tolerant of a concurrent insert of the same norm_name
     racing in from another worker's own Session -- nodes within a hop, and the
     two connect_people sides, now run on separate threads/sessions (see
@@ -202,11 +233,28 @@ def _new_person_or_existing(db: Session, name: str, norm: str,
     in models.py), so the loser's flush raises IntegrityError instead of
     silently duplicating the person. Recovering by re-selecting is correct,
     not just safe: the winner's committed row IS the person both callers
-    wanted."""
+    wanted.
+
+    Also tolerant of a genuine Postgres deadlock (see _is_deadlock) between
+    two DIFFERENT norm_names landing on the same index page -- there, a
+    re-select can legitimately still come back empty (neither side "won" the
+    row we wanted), so this retries the whole insert attempt itself, bounded,
+    rather than assuming an IntegrityError-shaped resolution.
+
+    Wrapped in a SAVEPOINT (db.begin_nested), not a plain db.rollback(): this
+    is called mid-way through _process_person, AFTER the subject person has
+    already been resolved and flushed (uncommitted) in this SAME session/
+    transaction -- a plain rollback() here reverts the WHOLE transaction, not
+    just this insert, silently wiping out that already-flushed subject too.
+    That's not hypothetical: it's exactly what caused a downstream
+    ForeignKeyViolation ("person_a_id ... is not present in table people")
+    the first time this was tried with a bare rollback() -- the subject's own
+    row had been rolled back out from under it by ITS COUNTERPART's recovery
+    path. A SAVEPOINT scopes the rollback to just this insert."""
     try:
-        return _new_person(db, name, norm, qid)
+        with db.begin_nested():
+            return _new_person(db, name, norm, qid)
     except IntegrityError:
-        db.rollback()
         existing = db.execute(
             select(Person).where(Person.norm_name == norm)
         ).scalar_one_or_none()
@@ -214,6 +262,11 @@ def _new_person_or_existing(db: Session, name: str, norm: str,
             raise  # the constraint fired on something else -- don't swallow that
         _merge_aliases(existing, name)
         return existing
+    except OperationalError as exc:
+        if not _is_deadlock(exc) or _retries <= 0:
+            raise
+        _deadlock_backoff(5 - _retries)
+        return _new_person_or_existing(db, name, norm, qid, _retries - 1)
 
 
 def _merge_aliases(person: Person, surface: str) -> None:
@@ -237,7 +290,8 @@ def _merge_aliases(person: Person, surface: str) -> None:
 
 
 def get_or_create_org(
-    db: Session, name: str, org_type: str = "unknown", allow_create: bool = True
+    db: Session, name: str, org_type: str = "unknown", allow_create: bool = True,
+    _retries: int = 5,
 ) -> Optional[Organization]:
     norm = org_norm_key(name)
     if not norm:
@@ -254,11 +308,16 @@ def get_or_create_org(
     org = Organization(name=name.strip(), norm_name=norm, type=org_type, meta={})
     db.add(org)
     try:
-        db.flush()
+        # SAVEPOINT, not a plain flush()+rollback(): this can run mid-way
+        # through _process_person, after the subject person was already
+        # flushed (uncommitted) in this same session -- see the matching
+        # comment on _new_person_or_existing for why a bare rollback() here
+        # would silently wipe that out from under its own caller.
+        with db.begin_nested():
+            db.flush()
     except IntegrityError:
         # same race as _new_person_or_existing: another worker's session won
         # the insert for this norm_name first.
-        db.rollback()
         existing = db.execute(
             select(Organization).where(Organization.norm_name == norm)
         ).scalar_one_or_none()
@@ -267,24 +326,46 @@ def get_or_create_org(
         if existing.type == "unknown" and org_type != "unknown":
             existing.type = org_type
         return existing
+    except OperationalError as exc:
+        # see _new_person_or_existing / _is_deadlock: a Postgres deadlock
+        # between two DIFFERENT norm_names on the same index page, not a
+        # duplicate-key race -- a re-select can legitimately still miss, so
+        # retry the whole attempt, bounded.
+        if not _is_deadlock(exc) or _retries <= 0:
+            raise
+        _deadlock_backoff(5 - _retries)
+        return get_or_create_org(db, name, org_type, allow_create, _retries - 1)
     return org
 
 
 def save_source(
     db: Session, result: SearchResult, query_used: str, full_text: Optional[str] = None
 ) -> Source:
+    # `url` has no DB-level uniqueness constraint (it's just indexed), so this
+    # check-then-insert isn't atomic. A handful of enrichment sources reuse one
+    # fixed URL across every person (e.g. openalex.org for coauthors_enrichment),
+    # so under real concurrent writers (Postgres; SQLite's single-writer lock
+    # happened to serialize this away) two people's threads can both miss each
+    # other's uncommitted insert and each create a row. `.first()` rather than
+    # `.scalar_one_or_none()` tolerates that instead of crashing on it — these
+    # are just cached source snippets, a rare duplicate is harmless.
     existing = db.execute(
         select(Source).where(Source.url == result.url)
-    ).scalar_one_or_none()
+    ).scalars().first()
     if existing:
         if full_text and not existing.full_text:
             existing.full_text = full_text
         return existing
+    # Scraped page text occasionally carries a stray NUL byte (encoding noise,
+    # binary content leaking through). SQLite stores it without complaint —
+    # Postgres's text type flat-out rejects embedded NULs, raising ValueError
+    # at flush time. Strip rather than reject: a lost null byte costs nothing,
+    # a failed source save costs the whole node's research.
     source = Source(
         url=result.url,
-        title=result.title,
-        snippet=result.snippet,
-        full_text=full_text,
+        title=(result.title or "").replace("\x00", ""),
+        snippet=(result.snippet or "").replace("\x00", ""),
+        full_text=full_text.replace("\x00", "") if full_text else full_text,
         provider=result.provider,
         query_used=query_used,
     )

@@ -1,6 +1,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 SQLAlchemy>=2.0
+psycopg2-binary>=2.9  # Postgres driver (local dev only — deployed envs still use SQLite)
 httpx>=0.27
 beautifulsoup4>=4.12
 pydantic>=2.6
