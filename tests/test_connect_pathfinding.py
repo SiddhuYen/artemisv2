@@ -163,23 +163,23 @@ def test_rejected_status_edge_is_still_hard_excluded(db):
     assert adj.get(a.id, []) == []
 
 
-def test_connect_people_forwards_route_exists_stop_predicate(db, monkeypatch):
+def test_connect_people_skips_search_when_a_route_already_exists(db, monkeypatch):
+    """'Go through what's already known first': a route already sitting in
+    the graph (e.g. a bridged linkedin_1st edge, or leftover data from an
+    earlier /connect or /discover run) must resolve via the zero-cost
+    _route_exists check alone -- neither the live direct-pair search nor the
+    full neighborhood expansion should run at all."""
     a = _person(db, "Alpha Person")
     b = _person(db, "Beta Person")
     _edge(db, a, b, rel="coworker", status="candidate", conf=0.8)
     db.commit()
 
-    observed = []
+    def _boom(*args, **kwargs):
+        raise AssertionError("must not search when a route already exists in the graph")
 
-    def fake_expand_both(db_arg, name_a, name_b, depth, protected, progress,
-                         context_a, context_b, on_step=None,
-                         cancel_checker=None, should_stop=None):
-        assert should_stop is not None
-        observed.append(should_stop(db_arg))
-
-    monkeypatch.setattr(C, "_expand_both_concurrently", fake_expand_both)
+    monkeypatch.setattr(C, "_expand_both_concurrently", _boom)
+    monkeypatch.setattr(C, "_direct_pair_search", _boom)
 
     result = C.connect_people(db, "Alpha Person", "Beta Person", depth=2)
 
-    assert observed == [True]
     assert result["connected"] is True

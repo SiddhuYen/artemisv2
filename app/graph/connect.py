@@ -331,19 +331,30 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
     if cancel_checker:
         cancel_checker()
     if progress:
-        progress("\n[direct] checking whether the two are ever mentioned together…")
-    if _direct_pair_search(db, name_a, name_b, context_a, context_b,
-                          cancel_checker=cancel_checker):
+        progress("\n[known] checking what's already in the graph…")
+    if _route_exists(db, name_a, name_b, max_hops):
+        # Zero-cost first check: no search, no fetch, no extraction — just
+        # whatever's already persisted, which now includes linkedin_1st edges
+        # bridged in from uploaded contacts (see network/ingest.py) and
+        # anything a prior /connect or /discover run already found (the graph
+        # is shared and additive, never reset). A known first-degree
+        # connection should never cost a live search to rediscover.
+        route_found.set()
+        if progress:
+            progress("[known] already connected in the existing graph — skipping search entirely")
+    elif _direct_pair_search(db, name_a, name_b, context_a, context_b,
+                            cancel_checker=cancel_checker):
         route_found.set()
         if progress:
             progress("[direct] found a direct mention — skipping full neighborhood expansion")
 
-    if cancel_checker:
-        cancel_checker()
-    _expand_both_concurrently(db, name_a, name_b, depth, both, progress,
-                              context_a, context_b, on_step=on_step,
-                              cancel_checker=cancel_checker,
-                              should_stop=should_stop)
+    if not route_found.is_set():
+        if cancel_checker:
+            cancel_checker()
+        _expand_both_concurrently(db, name_a, name_b, depth, both, progress,
+                                  context_a, context_b, on_step=on_step,
+                                  cancel_checker=cancel_checker,
+                                  should_stop=should_stop)
 
     if cancel_checker:
         cancel_checker()

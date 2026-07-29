@@ -140,6 +140,37 @@ def _strip_preamble(text: str) -> str:
     return text
 
 
+def backfill_graph_edges(db: Session, owner_name: str) -> int:
+    """Retroactively bridge already-imported LocalProfiles into the shared
+    public graph as linkedin_1st edges, for profiles imported before
+    `owner_name` was passed on upload (or before that parameter existed at
+    all -- every profile imported through the UI prior to this fix has no
+    graph edge, since the frontend never sent it).
+
+    Idempotent: _linkedin_edge's stable synthetic source_url plus
+    add_edge_from_extraction's upsert-by-(a, b, type, source) dedup mean
+    re-running this for the same owner is always safe -- it converges rather
+    than piling up duplicate edges."""
+    from ..graph import builder
+
+    owner_name = (owner_name or "").strip()
+    if not owner_name:
+        return 0
+    owner = builder.get_or_create_person(db, owner_name)
+    if owner is None:
+        return 0
+
+    count = 0
+    for profile in db.execute(select(LocalProfile)).scalars():
+        contact = builder.get_or_create_person(db, profile.canonical_name)
+        if contact is None:
+            continue
+        _linkedin_edge(db, owner, contact, profile.linkedin_url or "")
+        count += 1
+    db.commit()
+    return count
+
+
 def ingest_csv(db: Session, content: str, owner_name: str = "") -> dict:
     """Parse + persist a CSV. Returns {created, updated, edges, skipped,
     graph_edges}. `graph_edges` (only non-zero when `owner_name` is given)
