@@ -41,7 +41,14 @@ _STOPWORDS = {
     "big", "tech", "higher", "vision", "audio", "music", "shopping", "store",
     # role/title fragments that scraped rosters glue onto names ("Partner Jason
     # Calacanis", "Abhay Mavalankar SVP") — never part of a real personal name.
+    # "board"/"member" specifically: structured "roles" enrichment text reads
+    # like "Investor at Career Karma, Board Member at Helm" -- the role sits
+    # right next to an org name with no marker distinguishing it from a person,
+    # so "Board Member" alone clears the 2-word-capitalised shape check clean
+    # (seen live: a fake "Board Member" node attached to Garry Tan, sourced
+    # from exactly this kind of officer/board-role text).
     "partner", "gp", "vp", "svp", "evp", "coo", "managing", "principal", "head",
+    "board", "member",
     # legal/court-filing role words ("Defendant Elon Musk", "Plaintiff Jane Doe")
     "defendant", "plaintiff", "petitioner", "respondent", "appellant",
     "appellee", "witness", "juror",
@@ -133,6 +140,16 @@ _NOISE_TOKENS = {
     "newsletter", "subscribe", "unsubscribe", "settings", "preferences",
     "notifications", "sitemap", "homepage", "password", "username",
     "advertisement", "sponsored", "checkout", "wishlist", "captcha",
+    # LinkedIn reaction-count UI text ("1 Reaction", "2 Reactions") butts
+    # directly against the NEXT real commenter's name in scraped comment
+    # threads, with no punctuation boundary the extractor's capitalised-run
+    # regex can see -- it grabs "Reactions <real name>" as one candidate.
+    # A token-level match here (not a whole-phrase entry in _NOISE_PHRASES)
+    # is required since the attached name is different every time (seen
+    # live: 58 distinct fake nodes, one per real commenter this glued onto).
+    # The real name is lost along with it -- an acceptable trade: these are
+    # incidental commenters on public posts, not the subject being researched.
+    "reaction", "reactions",
 }
 
 _NOISE_PHRASES = {
