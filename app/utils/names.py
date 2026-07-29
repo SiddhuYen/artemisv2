@@ -143,6 +143,16 @@ _NOISE_PHRASES = {
     "all rights reserved", "learn more", "read more", "show more", "see more",
     "sign in", "sign up", "log in", "create account", "join now", "get started",
     "contact us", "about us", "follow us", "skip to content", "personal information",
+    # LinkedIn (and similar) comment-thread UI chrome, scraped alongside real
+    # commenter names in post/comment text. "Like Reply" in particular reads
+    # as a plausible 2-word capitalised name to looks_like_person_name(), so
+    # without an exact-phrase block it slips straight through as a fake
+    # person node (seen live: 9 separate LinkedIn posts, always this exact
+    # button-label text, never an actual person).
+    "like reply", "like comment", "love reply", "celebrate reply",
+    "support reply", "insightful reply", "curious reply",
+    "report this comment", "report this post", "report this",
+    "to view or add a comment sign in", "more relevant posts",
 }
 
 
