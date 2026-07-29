@@ -102,6 +102,47 @@ docker run -p 8080:8080 \
 # open http://localhost:8080
 ```
 
+## Local Postgres (optional — local dev only, never for deployment)
+
+The app defaults to SQLite everywhere, including local dev (`ARTEMIS_DB_URL`
+unset → `sqlite:///./artemis.db`). SQLite only allows one database writer at
+a time; `/connect` and `/targets/search` research multiple people
+concurrently, so heavy local testing of those endpoints can occasionally hit
+a SQLite write-lock timeout that silently drops one side of a search (a real,
+still-open bug — see the concurrency-fix PRs for the full writeup). Switching
+your **local** database to Postgres sidesteps that failure mode entirely,
+since Postgres supports true concurrent writers. This is purely a local
+convenience for whoever wants it — it changes nothing about how the app is
+deployed, and nobody else's setup is affected by your choice here.
+
+```bash
+# once: install + start Postgres, create a database
+brew install postgresql@16
+brew services start postgresql@16
+createdb artemis
+
+# psycopg2-binary is already in requirements.txt, so this covers it:
+pip install -r requirements.txt
+```
+
+Add to your local `.env` (gitignored, never committed):
+
+```
+ARTEMIS_DB_URL=postgresql://localhost/artemis
+```
+
+Leave `ARTEMIS_BOARDS_DB_URL` and `ARTEMIS_CACHE_DB` unset — both
+intentionally stay on SQLite regardless (see [app/db.py](app/db.py) and
+[app/providers/cache.py](app/providers/cache.py) for why: boards autosave is
+isolated on its own file specifically so it never contends with the main
+graph DB, and the provider-response cache is a small raw-`sqlite3` key/value
+store, not part of this at all).
+
+Restart the server — `Base.metadata.create_all` builds the schema on
+Postgres automatically on first connect, no manual migration step. To switch
+back to SQLite, just remove the `ARTEMIS_DB_URL` line from `.env` and
+restart; nothing else changes.
+
 ## Access control
 
 Set `ARTEMIS_ACCESS_TOKEN` and the entire surface — UI and API — requires it.
