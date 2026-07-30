@@ -67,6 +67,22 @@ def spacy_available() -> bool:
     return _nlp is not None
 
 
+def sentence_split(text: str) -> Optional[list]:
+    """Abbreviation-aware sentence segmentation, when spaCy is available.
+
+    Returns None (not an empty list) when spaCy isn't available, so callers
+    can distinguish "no sentences" from "fall back to a cruder splitter" --
+    a naive regex splitter (splitting on '. ') breaks on abbreviations like
+    "U.S." or "Dr.", turning one real sentence into two fragments and
+    silently pushing two co-mentioned names further apart than they really
+    are in the text.
+    """
+    if not text or not spacy_available():
+        return None
+    doc = _nlp(text[: config.MAX_PAGE_CHARS])
+    return [s.text.strip() for s in doc.sents if s.text.strip()]
+
+
 def _clean(text: str) -> str:
     t = text.strip()
     for lead in _LEADING:

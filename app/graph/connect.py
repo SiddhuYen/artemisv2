@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import heapq
 import math
+import re
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
-from ..extraction import extract
+from ..extraction import extract, relation_classifier, spacy_extractor
+from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Person, RelationshipEdge, Source
 from ..silos import SILOS
 from ..utils.htmltext import html_to_text
@@ -294,9 +297,130 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
             f.result()
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+_WIKIPEDIA_TITLE_RE = re.compile(r"wikipedia\.org/wiki/([^?#]+)")
+
+
+def _split_sentences(text: str) -> List[str]:
+    """Abbreviation-aware via spaCy when available (a naive '. '-based
+    regex splitter breaks on "U.S."/"Dr."/etc, turning one real sentence
+    into two fragments and silently pushing two co-mentioned names further
+    apart than they really are in the text -- this is what originally hid
+    the Redfield/Trump appointment sentence from even a 2-sentence window).
+    Falls back to the regex splitter only when spaCy isn't installed."""
+    spacy_sentences = spacy_extractor.sentence_split(text)
+    if spacy_sentences is not None:
+        return spacy_sentences
+    return [s.strip() for s in _SENTENCE_SPLIT.split(text) if s.strip()]
+
+
+def _sentence_windows(sentences: List[str], window: int = 2) -> List[str]:
+    """Consecutive-sentence windows, joined into one string each.
+
+    A relationship is often stated across a sentence boundary via a pronoun
+    -- "Redfield became Director... He was appointed to the post by
+    President Donald Trump..." -- which a single-sentence-only check misses
+    entirely, since that second sentence never says "Redfield" by name.
+    Requiring both names within a small window instead of one sentence
+    catches this without needing real coreference resolution.
+    """
+    return [" ".join(sentences[i:i + window]) for i in range(len(sentences))]
+
+
+# Titles/honorifics that commonly stand in for a first name right before a
+# surname ("President Trump", "Dr. Redfield") -- these must NOT trip the
+# same-surname conflict check in _name_mention_pattern, since they still
+# refer to the one person being searched for, not a different same-surname
+# relative. Deliberately common/generic, not exhaustive.
+_TITLE_WORDS = {
+    "President", "Vice", "Senator", "Governor", "Mayor", "Secretary",
+    "Director", "Chairman", "Chairwoman", "Chair", "Judge", "Justice",
+    "General", "Admiral", "Colonel", "Captain", "Sergeant", "Officer",
+    "Doctor", "Dr", "Professor", "Prof", "Mr", "Mrs", "Ms", "Miss",
+    "Representative", "Congressman", "Congresswoman", "Ambassador",
+    "Minister", "Prime", "King", "Queen", "Prince", "Princess", "Sir",
+    "Dame", "Lord", "Lady", "Reverend", "Rev", "Father", "Sister", "Pastor",
+    "Bishop", "Rabbi", "Imam", "CEO", "CFO", "COO", "Coach", "Agent",
+    "Detective", "Lieutenant", "Commissioner", "Superintendent",
+}
+
+
+def _name_mention_pattern(name: str) -> Tuple[re.Pattern, Optional[re.Pattern]]:
+    """Returns (mention_pattern, conflict_pattern).
+
+    mention_pattern matches either the full name or just its last token
+    (surname) -- real prose re-mentions someone by surname alone after the
+    first full mention ("Redfield" / "Trump", never "Robert R Redfield"
+    again), and requiring the exact full name every time would miss almost
+    every real sentence, including the one that actually states the
+    relationship (see module docs: the Wikipedia ARTICLE BODY has "He was
+    appointed to the post by President Donald Trump...", using surnames
+    throughout).
+
+    But a bare surname is genuinely ambiguous for anyone who shares it with
+    someone else notable -- scanning a WHOLE article for "Trump" also
+    matches "Ivanka Trump", "Trump Tower", "Fred Trump", none of which are
+    Donald Trump. conflict_pattern matches a DIFFERENT full name sharing the
+    same surname (a capitalized word immediately before it that isn't this
+    person's own first name AND isn't a title/honorific like "President" --
+    "President Trump" is the same Donald Trump, not a different person);
+    a window matching that should be treated as probably about someone
+    else, not silently trusted as a mention of this person. None when the
+    name has no first name to compare against (a mononym), since there's
+    nothing to distinguish it from in that case.
+    """
+    tokens = name.split()
+    surname = tokens[-1] if tokens else name
+    firstname = tokens[0] if len(tokens) > 1 else None
+    alts = sorted({re.escape(name), re.escape(surname)}, key=len, reverse=True)
+    mention = re.compile(r"\b(" + "|".join(alts) + r")\b", re.IGNORECASE)
+    conflict = None
+    if firstname:
+        excluded = "|".join([re.escape(firstname)] + list(_TITLE_WORDS))
+        conflict = re.compile(
+            r"\b(?!(?:" + excluded + r")\b)[A-Z][a-zA-Z'-]+\s+" + re.escape(surname) + r"\b")
+    return mention, conflict
+
+
+def _wikipedia_title_from_url(url: str) -> Optional[str]:
+    m = _WIKIPEDIA_TITLE_RE.search(url)
+    if not m:
+        return None
+    return unquote(m.group(1)).replace("_", " ")
+
+
+def _fetch_result_text(res) -> str:
+    """Full plain-text content for one search result.
+
+    Detecting Wikipedia by URL, not `res.provider` -- a Wikipedia page that
+    Serper (or Brave/DuckDuckGo) surfaces as an ordinary organic hit carries
+    that provider's name, not "wikipedia" (`res.provider == "wikipedia"`
+    only fires when the dedicated Wikipedia provider itself was queried
+    directly, which never happens in this flow). Missing that meant every
+    Wikipedia URL here got raw HTML-scraped instead, mangling the infobox
+    into unparseable pseudo-sentences ("In office March 26, 2018 ... Deputy
+    Anne Schuchat Preceded by...").
+
+    Uses the full article body (wikipedia.article_text), not just the lead
+    summary (wikipedia.summary) -- the summary is often too short to mention
+    a secondary figure at all (Redfield's summary never says "Trump"), while
+    the full article's body does, in plain, real sentences.
+    """
+    title = _wikipedia_title_from_url(res.url)
+    if title:
+        text = ORCH.wikipedia.article_text(title)
+        if text:
+            return text
+    try:
+        page = ORCH.fetch(res.url)
+        return html_to_text(page.content) if page.content else res.snippet
+    except Exception:
+        return res.snippet
+
+
 def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = "",
                         context_b: str = "",
-                        cancel_checker: Optional[Callable[[], None]] = None) -> bool:
+                        cancel_checker: Optional[Callable[[], None]] = None) -> Tuple[bool, bool]:
     """Cheap first-pass: search for the two people TOGETHER and extract any
     edge found directly between them, before paying for a full bidirectional
     neighborhood walk.
@@ -306,63 +430,179 @@ def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = 
     far too large to exhaustively walk within any reasonable depth/node
     budget, so a real, well-documented, easily-searchable fact (e.g. a
     government appointment) can go undiscovered even though it's one search
-    away. This checks that directly: a single query naming both people,
-    extracted the same way expand_graph extracts everything else, kept only
-    if it actually links to person_b specifically (not some other entity
-    that happened to co-occur on the same page).
+    away. This checks that directly: a single query naming both people.
+
+    Returns (found, confident). `confident` is True only if at least one
+    persisted edge reached better than 'weak' status.
+
+    When Claude is configured, this scans every sentence (across every
+    fetched result, not just one guess per page) that mentions BOTH people
+    by name, and hands ALL of them to the Claude relationship classifier
+    (extraction.relation_classifier) in one combined batched call -- real
+    language understanding of the evidence, not a keyword-table guess that
+    can confidently mislabel evidence it doesn't recognize (this is what
+    produced the wrong 'interview' label on Redfield/Trump: a keyword table
+    matched nothing, so a silo's intent_default guessed wrong -- and that
+    would have mislabeled a tenth *result* exactly like it mislabeled the
+    first, since more results doesn't fix a classification gap). Scanning
+    every co-mentioning sentence (not just the first spaCy happened to
+    associate with the entity) is what actually surfaces the sentence that
+    states the relationship outright, wherever in the article it sits.
+
+    Claude's own "unknown" verdict for a sentence is trusted as-is (not
+    treated as a non-answer to fall back from) -- an honest "the evidence
+    doesn't say" is strictly better than keeping a keyword-guessed label
+    Claude explicitly declined to support.
+
+    Falls back to the original single-extraction-per-page keyword guess
+    (spaCy/heuristic + a silo's signal table) when Claude isn't configured
+    at all, mirroring _retype_unknown_edges's own is_active() guard, so
+    behavior degrades gracefully rather than losing edges outright.
     """
     query = f'"{name_a}" "{name_b}" {context_a} {context_b}'.strip()
     try:
         results = ORCH.search(query, is_person=True)
     except Exception:
-        return False
+        return False, False
     if not results:
-        return False
+        return False, False
 
-    b_norm = person_norm_key(name_b)
-    found = False
-    successes = 0
-    # Target SCRAPE_TOP_N *successful* pages, not just the first N results --
-    # a fixed top-N slice stops even when an earlier result turned out to be a
-    # dud (fetch failed, or the page just didn't name person_b), silently
-    # settling for fewer successes instead of trying the next result. Bounded
-    # naturally by len(results) (RESULTS_PER_QUERY, a handful by default), so
-    # this is a small, fixed worst-case increase, not unbounded fetching.
+    if relation_classifier.is_active():
+        return _direct_pair_search_via_claude(db, name_a, name_b, query, results, cancel_checker)
+    return _direct_pair_search_via_keywords(db, name_a, name_b, query, results, cancel_checker)
+
+
+def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query: str,
+                                   results, cancel_checker) -> Tuple[bool, bool]:
+    a_pat, a_conflict = _name_mention_pattern(name_a)
+    b_pat, b_conflict = _name_mention_pattern(name_b)
+
+    # (Source, window) for every 2-sentence window, in every fetched result,
+    # naming BOTH people -- not just spaCy's single nearest-sentence-per-
+    # mention guess, which can land on an unrelated or garbled sentence
+    # while the real, explicit one sits a paragraph away. Windows (not just
+    # single sentences) catch a relationship stated across a sentence
+    # boundary via a pronoun (see _sentence_windows). A window is skipped
+    # if it contains a DIFFERENT full name sharing either person's surname
+    # (e.g. "Ivanka Trump" when name_b is "Donald Trump") -- it's more
+    # likely about that other person, not evidence naming the actual target.
+    seen_windows = set()
+    candidates: List[Tuple[Source, str]] = []
     for res in results:
-        if successes >= config.SCRAPE_TOP_N:
-            break
         if cancel_checker:
             cancel_checker()
-        if res.provider == "wikipedia":
-            text = ORCH.wikipedia.summary(res.title) or f"{res.title}. {res.snippet}"
-        else:
-            try:
-                page = ORCH.fetch(res.url)
-                text = html_to_text(page.content) if page.content else res.snippet
-            except Exception:
-                text = res.snippet
+        text = _fetch_result_text(res)
         if not text:
             continue
-
         source = builder.save_source(db, res, query, text)
-        page_succeeded = False
-        for silo in SILOS:
-            out = extract(name_a, text, silo, res.snippet, res.url)
-            for edge in out.edges:
-                if edge.other_kind != "person" or person_norm_key(edge.person_b) != b_norm:
-                    continue
-                subject = builder.get_or_create_person(db, name_a)
-                counterpart = builder.get_or_create_person(db, name_b)
-                if subject is None or counterpart is None:
-                    continue
-                builder.add_edge_from_extraction(db, subject, edge, 0, source, counterpart)
-                found = True
-                page_succeeded = True
-        if page_succeeded:
-            successes += 1
+        for window in _sentence_windows(_split_sentences(text)):
+            if window in seen_windows:
+                continue
+            if a_conflict and a_conflict.search(window):
+                continue
+            if b_conflict and b_conflict.search(window):
+                continue
+            if a_pat.search(window) and b_pat.search(window):
+                seen_windows.add(window)
+                candidates.append((source, window[:700]))
+
+    if not candidates:
+        return False, False
+
+    # One combined call classifying EVERY candidate sentence -- batching is
+    # relation_classifier.classify's own concern (config.CLAUDE_CLASSIFY_BATCH),
+    # so this stays one logical call regardless of how many sentences matched.
+    items = [{"a": name_a, "b": name_b, "evidence": sentence} for _src, sentence in candidates]
+    verdicts = relation_classifier.classify(items)
+
+    subject = builder.get_or_create_person(db, name_a)
+    counterpart = builder.get_or_create_person(db, name_b)
+    if subject is None or counterpart is None:
+        return False, False
+
+    found = False
+    confident = False
+    for (source, sentence), verdict in zip(candidates, verdicts):
+        rtype = verdict.get("type", "unknown")
+        conf = verdict.get("confidence", 0.0)
+        if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
+            final_type = rtype
+            final_conf = round(min(conf, config.RELATION_CONF_CEILING), 3)
+        else:
+            # Claude looked at THIS sentence and couldn't confidently
+            # support a specific type -- trust that verdict as-is rather
+            # than inventing a keyword-guessed label it explicitly declined.
+            final_type = "unknown"
+            final_conf = round(conf, 3)
+        edge = ExtractedEdge(
+            person_a=name_a, person_b=name_b, other_kind="person",
+            relationship_type=final_type,
+            method="Claude relationship classification",
+            evidence_snippet=sentence, source_url="",
+            confidence_base=final_conf, confidence_adjusted=final_conf,
+            signals=EdgeSignals(explicit_keyword_match=(final_type != "unknown")),
+        )
+        persisted = builder.add_edge_from_extraction(db, subject, edge, 0, source, counterpart)
+        found = True
+        # relationship_type != "unknown" is required, not just a status
+        # check: nothing guarantees Claude pairs "unknown" with confidence
+        # 0.0 (every real call this session happened to, but the schema
+        # only says confidence is "how clearly the evidence supports the
+        # type you picked" -- for type="unknown" that's not well-defined,
+        # and a non-zero value would otherwise land above WEAK_MAX and get
+        # reported as a confident match for a relationship we don't
+        # actually know the type of).
+        if (persisted is not None and persisted.relationship_type != "unknown"
+                and persisted.status != "weak"):
+            confident = True
     if found:
         db.commit()
-    return found
+    return found, confident
+
+
+def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, query: str,
+                                     results, cancel_checker) -> Tuple[bool, bool]:
+    """Degraded-mode fallback when Claude isn't configured: one
+    spaCy/heuristic extraction pass per result (any single silo -- entity
+    detection doesn't depend on which one is passed in), typed by that
+    silo's own keyword-signal table instead of real reasoning."""
+    b_norm = person_norm_key(name_b)
+    candidates: List[Tuple[ExtractedEdge, Source]] = []
+    for res in results:
+        if cancel_checker:
+            cancel_checker()
+        text = _fetch_result_text(res)
+        if not text:
+            continue
+        source = builder.save_source(db, res, query, text)
+        out = extract(name_a, text, SILOS[0], res.snippet, res.url)
+        for edge in out.edges:
+            if edge.other_kind != "person" or person_norm_key(edge.person_b) != b_norm:
+                continue
+            candidates.append((edge, source))
+
+    if not candidates:
+        return False, False
+
+    found = False
+    confident = False
+    for edge, source in candidates:
+        subject = builder.get_or_create_person(db, name_a)
+        counterpart = builder.get_or_create_person(db, name_b)
+        if subject is None or counterpart is None:
+            continue
+        persisted = builder.add_edge_from_extraction(db, subject, edge, 0, source, counterpart)
+        found = True
+        # Same reasoning as the Claude path: an "unknown"-typed edge must
+        # never count as confident, regardless of its confidence_raw --
+        # cooccurrence-driven confidence can land above WEAK_MAX even when
+        # no keyword actually matched a relationship type.
+        if (persisted is not None and persisted.relationship_type != "unknown"
+                and persisted.status != "weak"):
+            confident = True
+    if found:
+        db.commit()
+    return found, confident
 
 
 def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
@@ -414,11 +654,19 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         route_found.set()
         if progress:
             progress("[known] already connected in the existing graph — skipping search entirely")
-    elif _direct_pair_search(db, name_a, name_b, context_a, context_b,
-                            cancel_checker=cancel_checker):
-        route_found.set()
-        if progress:
-            progress("[direct] found a direct mention — skipping full neighborhood expansion")
+    else:
+        # _direct_pair_search already tries every returned result (not just
+        # the first few) whenever what it's found so far is only weak, so by
+        # the time it returns there's nothing more to gain from searching
+        # further here -- `confident` is purely informational (for logging),
+        # not a signal to do additional work.
+        found, confident = _direct_pair_search(db, name_a, name_b, context_a, context_b,
+                                              cancel_checker=cancel_checker)
+        if found:
+            route_found.set()
+            if progress:
+                progress(f"[direct] found a {'confident' if confident else 'weak'} "
+                         "direct mention — skipping full neighborhood expansion")
 
     if not route_found.is_set():
         if cancel_checker:
