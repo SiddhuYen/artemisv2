@@ -75,6 +75,20 @@ def test_name_mention_pattern_no_conflict_pattern_for_a_mononym():
     assert conflict is None
 
 
+def test_name_mention_pattern_other_name_excludes_the_counterpart_from_conflict():
+    """When the two people being searched for share a surname (spouses,
+    siblings, parent/child -- the family_social case), the counterpart's own
+    full-name mention must NOT trip the conflict check as if it were some
+    unrelated third person sharing the surname."""
+    _pat, a_conflict = C._name_mention_pattern("John Smith", other_name="Jane Smith")
+    _pat, b_conflict = C._name_mention_pattern("Jane Smith", other_name="John Smith")
+    window = "John Smith married Jane Smith in 2010."
+    assert not a_conflict.search(window)
+    assert not b_conflict.search(window)
+    # a genuinely different same-surname person is still caught
+    assert a_conflict.search("Fred Smith attended the wedding.")
+
+
 def test_split_sentences_handles_basic_prose():
     text = "He was appointed by Trump. Later, he resigned. A third sentence here."
     sentences = C._split_sentences(text)
@@ -252,6 +266,26 @@ def test_claude_path_excludes_a_window_naming_a_different_same_surname_person(db
     assert confident is False
 
 
+def test_claude_path_finds_a_relationship_between_two_people_sharing_a_surname(db, monkeypatch):
+    """Spouses/siblings/parent-child sharing a surname is exactly what
+    family_social exists for -- the surname-conflict guard must not treat
+    each person's own full-name mention of the OTHER as a conflicting third
+    Smith and drop the window outright."""
+    results = [_FakeResult("A", "https://example.com/a", "...")]
+    _stub_search(monkeypatch, results)
+    monkeypatch.setattr(
+        C, "_fetch_result_text",
+        lambda res: "John Smith married Jane Smith in a small ceremony in 2010.")
+    monkeypatch.setattr(C.relation_classifier, "is_active", lambda: True)
+    monkeypatch.setattr(C.relation_classifier, "classify",
+                        lambda items: [{"type": "family_social", "confidence": 0.9} for _ in items])
+
+    found, confident = C._direct_pair_search(db, "John Smith", "Jane Smith")
+
+    assert found is True
+    assert confident is True
+
+
 def test_claude_path_finds_nothing_when_no_sentence_mentions_both(db, monkeypatch):
     results = [_FakeResult("A", "https://example.com/a", "...")]
     _stub_search(monkeypatch, results)
@@ -271,6 +305,36 @@ def test_claude_path_finds_nothing_when_no_sentence_mentions_both(db, monkeypatc
 
 
 # ── the keyword fallback (Claude not configured) ────────────────────────
+
+def test_keyword_fallback_uses_a_broad_signal_silo_not_the_news_silo(db, monkeypatch):
+    """Regression: this used to pass SILOS[0] ("news") to extract(). That
+    silo has intent_default=True / default_relationship="interview", so any
+    co-occurrence text lacking one of its 6 specific keywords would get
+    confidently labeled "interview" regardless of what the text actually
+    says -- reproducing, in this degraded fallback, the exact wrong-default
+    bug this module exists to fix for the Claude path. COLLEAGUE_SILO has
+    intent_default=False and broad signal coverage, so a real keyword still
+    types correctly and absent one it honestly falls through to "unknown"."""
+    assert C.COLLEAGUE_SILO.intent_default is False
+    assert C.COLLEAGUE_SILO.default_relationship == "unknown"
+
+    results = [_FakeResult("A", "https://a.example/", "...")]
+    _stub_search(monkeypatch, results)
+    monkeypatch.setattr(C, "_fetch_result_text", lambda res: "some text")
+    monkeypatch.setattr(C.relation_classifier, "is_active", lambda: False)
+
+    calls = []
+
+    def fake_extract(name_a, text, silo, evidence, source_url):
+        calls.append(silo)
+        return _edge_to(name_a, "Beta Person")
+
+    monkeypatch.setattr(C, "extract", fake_extract)
+
+    C._direct_pair_search(db, "Alpha Person", "Beta Person")
+
+    assert calls == [C.COLLEAGUE_SILO]
+
 
 def test_dispatches_to_keyword_fallback_when_claude_inactive(db, monkeypatch):
     results = [_FakeResult("A", "https://a.example/", "...")]

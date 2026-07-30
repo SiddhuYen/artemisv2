@@ -24,7 +24,7 @@ from .. import config
 from ..extraction import extract, relation_classifier, spacy_extractor
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Person, RelationshipEdge, Source
-from ..silos import SILOS
+from ..silos import COLLEAGUE_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import person_norm_key
 from . import builder
@@ -345,7 +345,7 @@ _TITLE_WORDS = {
 }
 
 
-def _name_mention_pattern(name: str) -> Tuple[re.Pattern, Optional[re.Pattern]]:
+def _name_mention_pattern(name: str, other_name: str = "") -> Tuple[re.Pattern, Optional[re.Pattern]]:
     """Returns (mention_pattern, conflict_pattern).
 
     mention_pattern matches either the full name or just its last token
@@ -368,15 +368,30 @@ def _name_mention_pattern(name: str) -> Tuple[re.Pattern, Optional[re.Pattern]]:
     else, not silently trusted as a mention of this person. None when the
     name has no first name to compare against (a mononym), since there's
     nothing to distinguish it from in that case.
+
+    other_name is the counterpart being searched for in the SAME pair search
+    (e.g. name_b, when this is name_a's pattern). Its first name is excluded
+    from the conflict check too -- otherwise, whenever the two people being
+    searched for share a surname (spouses, siblings, parent/child -- exactly
+    the family_social case this exists to support), the counterpart's own
+    full-name mention ("Jane Smith" while building John Smith's pattern)
+    would misfire the conflict check as if it named some unrelated third
+    Smith, dropping every window that states the very relationship being
+    searched for.
     """
     tokens = name.split()
     surname = tokens[-1] if tokens else name
     firstname = tokens[0] if len(tokens) > 1 else None
+    other_tokens = other_name.split()
+    other_firstname = other_tokens[0] if len(other_tokens) > 1 else None
     alts = sorted({re.escape(name), re.escape(surname)}, key=len, reverse=True)
     mention = re.compile(r"\b(" + "|".join(alts) + r")\b", re.IGNORECASE)
     conflict = None
     if firstname:
-        excluded = "|".join([re.escape(firstname)] + list(_TITLE_WORDS))
+        excluded_words = [firstname] + list(_TITLE_WORDS)
+        if other_firstname:
+            excluded_words.append(other_firstname)
+        excluded = "|".join(re.escape(w) for w in excluded_words)
         conflict = re.compile(
             r"\b(?!(?:" + excluded + r")\b)[A-Z][a-zA-Z'-]+\s+" + re.escape(surname) + r"\b")
     return mention, conflict
@@ -474,8 +489,8 @@ def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = 
 
 def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query: str,
                                    results, cancel_checker) -> Tuple[bool, bool]:
-    a_pat, a_conflict = _name_mention_pattern(name_a)
-    b_pat, b_conflict = _name_mention_pattern(name_b)
+    a_pat, a_conflict = _name_mention_pattern(name_a, other_name=name_b)
+    b_pat, b_conflict = _name_mention_pattern(name_b, other_name=name_a)
 
     # (Source, window) for every 2-sentence window, in every fetched result,
     # naming BOTH people -- not just spaCy's single nearest-sentence-per-
@@ -563,9 +578,20 @@ def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query:
 def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, query: str,
                                      results, cancel_checker) -> Tuple[bool, bool]:
     """Degraded-mode fallback when Claude isn't configured: one
-    spaCy/heuristic extraction pass per result (any single silo -- entity
-    detection doesn't depend on which one is passed in), typed by that
-    silo's own keyword-signal table instead of real reasoning."""
+    spaCy/heuristic extraction pass per result, typed by a keyword-signal
+    table instead of real reasoning.
+
+    Uses COLLEAGUE_SILO, not SILOS[0] -- SILOS[0] ("news") has
+    intent_default=True with default_relationship="interview", so any
+    co-occurrence text that doesn't happen to contain one of its 6 keywords
+    ("interview"/"podcast"/"named"/"joins board"/"board"/"appointed") would
+    get confidently typed "interview" regardless of what the text actually
+    says -- reproducing, in this fallback, the exact wrong-default bug this
+    module exists to fix for the Claude path. COLLEAGUE_SILO carries broad
+    signal coverage across most relationship types (same table as
+    STRUCTURED_SILO) with intent_default=False, so a real keyword still gets
+    typed correctly, and absent one it honestly falls through to "unknown"
+    instead of guessing."""
     b_norm = person_norm_key(name_b)
     candidates: List[Tuple[ExtractedEdge, Source]] = []
     for res in results:
@@ -575,7 +601,7 @@ def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, quer
         if not text:
             continue
         source = builder.save_source(db, res, query, text)
-        out = extract(name_a, text, SILOS[0], res.snippet, res.url)
+        out = extract(name_a, text, COLLEAGUE_SILO, res.snippet, res.url)
         for edge in out.edges:
             if edge.other_kind != "person" or person_norm_key(edge.person_b) != b_norm:
                 continue
