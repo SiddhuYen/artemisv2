@@ -622,7 +622,12 @@ def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query:
                 and persisted.status != "weak"):
             confident = True
     if found:
-        db.commit()
+        # commit_with_retry, not a bare db.commit(): every edge above was
+        # already durably persisted via add_edge_from_extraction's own
+        # SAVEPOINT retry, so nothing new needs reapplying here -- this just
+        # covers the rare case where this commit is itself this
+        # transaction's first write (see builder.commit_with_retry).
+        builder.commit_with_retry(db)
     return found, confident
 
 
@@ -667,7 +672,12 @@ def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, quer
                 and persisted.status != "weak"):
             confident = True
     if found:
-        db.commit()
+        # commit_with_retry, not a bare db.commit(): every edge above was
+        # already durably persisted via add_edge_from_extraction's own
+        # SAVEPOINT retry, so nothing new needs reapplying here -- this just
+        # covers the rare case where this commit is itself this
+        # transaction's first write (see builder.commit_with_retry).
+        builder.commit_with_retry(db)
     return found, confident
 
 

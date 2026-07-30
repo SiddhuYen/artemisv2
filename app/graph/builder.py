@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -250,12 +250,65 @@ def _is_locked(exc: OperationalError) -> bool:
     return "database is locked" in msg.lower()
 
 
+def _is_transient(exc: OperationalError) -> bool:
+    """Either flavor of "retry me": a SQLite lock timeout (_is_locked) or a
+    Postgres deadlock (_is_deadlock). Every retry site below should check
+    this, not _is_deadlock alone -- _is_deadlock's own docstring is explicit
+    that it only recognizes Postgres's SQLSTATE, so on SQLite it is always
+    False and a caller checking only it re-raises a lock immediately, with
+    zero retries. That gap was real, not hypothetical: _new_person_or_existing
+    and get_or_create_org (below) shipped with exactly that gap -- their
+    SAVEPOINT/backoff scaffolding only ever fired for a deadlock, never for
+    the SQLite lock this whole file is otherwise built to survive -- until
+    this function unified the two checks."""
+    return _is_locked(exc) or _is_deadlock(exc)
+
+
+_T = TypeVar("_T")
+
+
+def commit_with_retry(db: Session, apply: Optional[Callable[[], _T]] = None,
+                      _retries: int = 5) -> Optional[_T]:
+    """Commit, retrying with backoff on a transient SQLite lock or Postgres
+    deadlock (see _is_transient).
+
+    This is NOT a bare `db.commit()` retry. Confirmed empirically (see
+    tests/test_commit_retry.py): after a failed flush/commit, the Session's
+    DBAPI transaction is aborted and unusable until db.rollback() runs -- and
+    rollback() reverts any already-persistent object's pending attribute
+    change back to its last-committed value, and expunges any brand-new
+    object that was never successfully flushed. So a second db.commit() with
+    no rollback() in between either raises again or (if there was nothing
+    left pending) silently "succeeds" having committed nothing. `apply`
+    exists to make the retry actually correct: it's called again before every
+    attempt -- including the first -- to (re)establish whatever this commit
+    is meant to persist, so attempt 2 redoes the same work attempt 1 lost to
+    rollback() instead of committing an empty transaction.
+
+    `apply` must therefore be safe to call more than once (idempotent
+    mutation, or re-add()-ing already-constructed objects -- both are true of
+    every call site this is used from). Its return value (if any) is returned
+    once the commit that followed it actually succeeds.
+    """
+    for attempt in range(_retries + 1):
+        try:
+            result = apply() if apply is not None else None
+            db.commit()
+            return result
+        except OperationalError as exc:
+            db.rollback()
+            if not _is_transient(exc) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
+    return None  # unreachable (loop either returns or raises)
+
+
 def delete_relationship_edges_with_retry(db: Session, condition, _retries: int = 5) -> int:
     """Bulk-delete RelationshipEdge rows matching `condition`, retrying with
-    backoff on a SQLite lock timeout (see _is_locked) instead of letting a
-    slow prune delete surface as a hard job failure.
+    backoff on a transient SQLite lock or Postgres deadlock (see _is_transient)
+    instead of letting a slow prune delete surface as a hard job failure.
 
-    Wrapped in a SAVEPOINT (db.begin_nested), not a bare retry: this runs
+    Wrapped in a SAVEPOINT (db.begin_nested), not a plain retry: this runs
     mid-transaction, after edges earlier in the same node's processing were
     already added to the session (see expansion._prune_invalid_nodes's own
     docstring on why it flushes first before this delete) -- a plain retry
@@ -272,7 +325,7 @@ def delete_relationship_edges_with_retry(db: Session, condition, _retries: int =
                     synchronize_session=False)
             return result
         except OperationalError as exc:
-            if not _is_locked(exc) or attempt >= _retries:
+            if not _is_transient(exc) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     return 0  # unreachable (loop either returns or raises), keeps type checkers happy
@@ -319,7 +372,7 @@ def _new_person_or_existing(db: Session, name: str, norm: str,
         _merge_aliases(existing, name)
         return existing
     except OperationalError as exc:
-        if not _is_deadlock(exc) or _retries <= 0:
+        if not _is_transient(exc) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
         return _new_person_or_existing(db, name, norm, qid, _retries - 1)
@@ -363,14 +416,25 @@ def get_or_create_org(
     if not allow_create:
         return None
     org = Organization(name=name.strip(), norm_name=norm, type=org_type, meta={})
-    db.add(org)
     try:
         # SAVEPOINT, not a plain flush()+rollback(): this can run mid-way
         # through _process_person, after the subject person was already
         # flushed (uncommitted) in this same session -- see the matching
         # comment on _new_person_or_existing for why a bare rollback() here
         # would silently wipe that out from under its own caller.
+        #
+        # db.add(org) belongs INSIDE this block, not before it -- confirmed
+        # by a failing test (tests/test_commit_retry.py) written to exercise
+        # the retry path: with add() outside the savepoint, a failed attempt
+        # leaves `org` added-but-unflushed at the OUTER transaction scope
+        # (rollback-to-savepoint only undoes what happened INSIDE the
+        # savepoint), and the recursive retry below constructs and adds a
+        # SECOND org with the same norm_name on top of it. Both then land in
+        # the same flush once one attempt finally succeeds, and the real
+        # norm_name UNIQUE constraint fires -- not a deadlock/lock retry at
+        # all, an IntegrityError this function was never meant to hit here.
         with db.begin_nested():
+            db.add(org)
             db.flush()
     except IntegrityError:
         # same race as _new_person_or_existing: another worker's session won
@@ -384,11 +448,11 @@ def get_or_create_org(
             existing.type = org_type
         return existing
     except OperationalError as exc:
-        # see _new_person_or_existing / _is_deadlock: a Postgres deadlock
-        # between two DIFFERENT norm_names on the same index page, not a
-        # duplicate-key race -- a re-select can legitimately still miss, so
-        # retry the whole attempt, bounded.
-        if not _is_deadlock(exc) or _retries <= 0:
+        # see _new_person_or_existing / _is_transient: either a Postgres
+        # deadlock between two DIFFERENT norm_names on the same index page
+        # (a re-select can legitimately still miss, so retry the whole
+        # attempt) or a SQLite lock timeout -- bounded either way.
+        if not _is_transient(exc) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
         return get_or_create_org(db, name, org_type, allow_create, _retries - 1)
@@ -396,7 +460,8 @@ def get_or_create_org(
 
 
 def save_source(
-    db: Session, result: SearchResult, query_used: str, full_text: Optional[str] = None
+    db: Session, result: SearchResult, query_used: str, full_text: Optional[str] = None,
+    _retries: int = 5,
 ) -> Source:
     # Scraped page text (and, rarely, the query string that produced it, or
     # even the URL) occasionally carries a stray NUL byte (encoding noise,
@@ -423,17 +488,39 @@ def save_source(
         if full_text and not existing.full_text:
             existing.full_text = _strip_nul(full_text)
         return existing
-    source = Source(
-        url=url,
-        title=_strip_nul(result.title) or "",
-        snippet=_strip_nul(result.snippet) or "",
-        full_text=_strip_nul(full_text),
-        provider=result.provider,
-        query_used=query_used,
-    )
-    db.add(source)
-    db.flush()
-    return source
+
+    title = _strip_nul(result.title) or ""
+    snippet = _strip_nul(result.snippet) or ""
+    full_text_clean = _strip_nul(full_text)
+    provider = result.provider
+
+    # SAVEPOINT + retry, not a bare add()+flush(): this is the single most
+    # frequently executed write in the whole app (one call per fetched search
+    # result) and it runs mid-transaction, before the per-node's own final
+    # commit -- confirmed live, this exact statement is what first surfaced
+    # "database is locked" with zero retry protection (see PR history). A
+    # fresh Source is constructed on every attempt rather than reusing the
+    # same instance: a failed flush() expunges a never-persisted object from
+    # the session (confirmed empirically, see tests/test_commit_retry.py),
+    # so retrying with the SAME instance would just re-add a still-transient
+    # object -- reconstructing is simpler than reasoning about whether that's
+    # safe, and it's what _new_person_or_existing already does for the same
+    # reason.
+    for attempt in range(_retries + 1):
+        try:
+            source = Source(
+                url=url, title=title, snippet=snippet, full_text=full_text_clean,
+                provider=provider, query_used=query_used,
+            )
+            with db.begin_nested():
+                db.add(source)
+                db.flush()
+            return source
+        except OperationalError as exc:
+            if not _is_transient(exc) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
+    raise AssertionError("unreachable")  # loop either returns or raises
 
 
 # --- org<->org facts (never bridged into the person graph) -----------------
@@ -490,6 +577,7 @@ def add_edge_from_extraction(
     depth: int,
     source: Optional[Source],
     counterpart,  # Person | Organization
+    _retries: int = 5,
 ) -> Optional[RelationshipEdge]:
     """Persist one ExtractedEdge, applying the (a,b,type,source_url) dedup rule."""
     is_person = edge.other_kind == "person"
@@ -516,20 +604,41 @@ def add_edge_from_extraction(
             existing.signals = edge.signals.model_dump()
         return existing
 
-    row = RelationshipEdge(
-        person_a_id=subject.id,
-        person_b_id=other_id,
-        organization_id=org_id,
-        relationship_type=edge.relationship_type,
-        method=_strip_nul(edge.method),
-        evidence_snippet=_strip_nul(edge.evidence_snippet),
-        source_id=source_id,
-        confidence_base=round(edge.confidence_base, 3),
-        confidence_raw=round(conf, 3),
-        signals=edge.signals.model_dump(),
-        depth=depth,
-        status=derive_status(edge.relationship_type, conf),
-    )
-    db.add(row)
-    db.flush()
-    return row
+    method = _strip_nul(edge.method)
+    evidence_snippet = _strip_nul(edge.evidence_snippet)
+    confidence_base = round(edge.confidence_base, 3)
+    confidence_raw = round(conf, 3)
+    signals = edge.signals.model_dump()
+    status = derive_status(edge.relationship_type, conf)
+
+    # SAVEPOINT + retry: same reasoning as save_source, and just as hot a
+    # path -- one call per persisted relationship, mid-transaction, before
+    # the per-node's own final commit. A fresh RelationshipEdge is built on
+    # every attempt for the same reason save_source rebuilds its object: a
+    # failed flush() expunges a never-persisted instance from the session
+    # (confirmed empirically), so reusing it on retry wouldn't reattach it.
+    for attempt in range(_retries + 1):
+        try:
+            row = RelationshipEdge(
+                person_a_id=subject.id,
+                person_b_id=other_id,
+                organization_id=org_id,
+                relationship_type=edge.relationship_type,
+                method=method,
+                evidence_snippet=evidence_snippet,
+                source_id=source_id,
+                confidence_base=confidence_base,
+                confidence_raw=confidence_raw,
+                signals=signals,
+                depth=depth,
+                status=status,
+            )
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+            return row
+        except OperationalError as exc:
+            if not _is_transient(exc) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
+    raise AssertionError("unreachable")  # loop either returns or raises

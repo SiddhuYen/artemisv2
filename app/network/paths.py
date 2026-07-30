@@ -157,39 +157,46 @@ def _build_path_json(pe, profile, match, target_id, hop_pairs) -> dict:
 
 def generate_paths_for_target(db: Session, target_id: str) -> List[CandidatePath]:
     """Recompute candidate paths from local matches to one target person."""
-    db.query(CandidatePath).filter(CandidatePath.target_person_id == target_id).delete()
-    db.flush()
+    from ..graph import builder  # local import: avoids a network<->graph cycle
 
-    pe = _PublicEdges(db)
-    if target_id not in pe.person_by_id:
-        return []
+    # Same reasoning as network.matching.run_matching: wrap delete+rebuild as
+    # one retryable unit, not just the final commit, since both the delete
+    # and every new CandidatePath below are exactly what a forced rollback()
+    # would undo/expunge. No external calls in here, so redoing it on retry
+    # is cheap.
+    def _apply() -> List[CandidatePath]:
+        db.query(CandidatePath).filter(CandidatePath.target_person_id == target_id).delete()
+        pe = _PublicEdges(db)
+        if target_id not in pe.person_by_id:
+            return []
 
-    # only person-level matches yield paths (org_overlap is a near-miss bridge)
-    matches = list(db.execute(
-        select(GraphMatch).where(GraphMatch.public_person_id.isnot(None))
-    ).scalars())
-    profiles = {p.id: p for p in db.execute(select(LocalProfile)).scalars()}
+        # only person-level matches yield paths (org_overlap is a near-miss bridge)
+        matches = list(db.execute(
+            select(GraphMatch).where(GraphMatch.public_person_id.isnot(None))
+        ).scalars())
+        profiles = {p.id: p for p in db.execute(select(LocalProfile)).scalars()}
 
-    created: List[CandidatePath] = []
-    for match in matches:
-        profile = profiles.get(match.local_profile_id)
-        if profile is None:
-            continue
-        hop_pairs = _best_path(pe, match.public_person_id, target_id)
-        if hop_pairs is None:
-            continue  # matched person not connected to target within hop limit
-        path_json, edges_used = _build_path_json(pe, profile, match, target_id, hop_pairs)
-        cp = CandidatePath(
-            target_person_id=target_id,
-            local_profile_id=profile.id,
-            public_person_id=match.public_person_id,
-            path_json=path_json,
-            score=path_json["score"],
-            status="unverified",
-        )
-        db.add(cp)
-        created.append(cp)
+        created: List[CandidatePath] = []
+        for match in matches:
+            profile = profiles.get(match.local_profile_id)
+            if profile is None:
+                continue
+            hop_pairs = _best_path(pe, match.public_person_id, target_id)
+            if hop_pairs is None:
+                continue  # matched person not connected to target within hop limit
+            path_json, edges_used = _build_path_json(pe, profile, match, target_id, hop_pairs)
+            cp = CandidatePath(
+                target_person_id=target_id,
+                local_profile_id=profile.id,
+                public_person_id=match.public_person_id,
+                path_json=path_json,
+                score=path_json["score"],
+                status="unverified",
+            )
+            db.add(cp)
+            created.append(cp)
+        return created
 
-    db.commit()
+    created = builder.commit_with_retry(db, _apply) or []
     created.sort(key=lambda c: c.score, reverse=True)
     return created
