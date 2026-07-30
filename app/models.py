@@ -182,6 +182,130 @@ class CandidatePath(Base):
 
 
 # ===========================================================================
+# Initial enrichment — building the operator's own 2-layer network.
+#
+# L1 (your contacts) is asserted for free by the export. L2 (who they know) is
+# the only layer that costs searches, and at ~35 queries/person a 1,000-contact
+# export is tens of thousands of provider calls and hours of wall clock. So the
+# work is ranked, budgeted, and executed in waves.
+#
+# This lives in the DB rather than in main.py's in-memory _JOBS because a run
+# outlives the process: it takes hours, and a deploy or restart mid-run must
+# resume rather than start over. Person.processed already records "this node
+# was expanded", but it cannot express "probed, no web footprint, don't retry"
+# or scope progress to a particular run — hence a real task table.
+# ===========================================================================
+
+class OwnerProfile(Base):
+    """Who the operator is — persisted server-side rather than in localStorage.
+
+    Everything before this took `owner_name` as a per-request parameter that
+    the browser had to remember to send, which is why contacts imported before
+    the frontend was wired up have no graph edges at all (see
+    ingest.backfill_graph_edges). It also meant the operator's OWN employer and
+    school were unavailable to ranking, so the shared-affiliation boost in
+    ranking.score_contacts could never fire in practice.
+
+    Scoped by `owner_id` (the X-Graph-Id header, same as Boards) rather than
+    assumed singleton, so a second operator on one deployment does not silently
+    overwrite the first. The discovery graph itself is still shared.
+
+    Note this does NOT help disambiguate the operator's own Person node: the
+    homonym guard only engages when a Wikidata QID is supplied, and an ordinary
+    operator has none.
+    """
+    __tablename__ = "owner_profiles"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    owner_id = Column(String, index=True, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    company = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    school = Column(String, nullable=True)
+    linkedin_url = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: _now().isoformat())
+    updated_at = Column(String, default=lambda: _now().isoformat())
+
+
+ENRICHMENT_RUN_STATES = ("planned", "running", "paused", "done", "cancelled", "failed")
+
+ENRICHMENT_TASK_STATES = (
+    "pending",       # ranked, not yet attempted
+    "enriching",     # expand_graph in flight
+    "done",          # expanded (or already processed by an earlier run/teammate)
+    "probed_empty",  # cheap probe found no web footprint — full sweep skipped
+    "skipped",       # never eligible (see EnrichmentTask.skip_reason)
+    "failed",        # attempted and errored; retryable
+)
+
+# Why a contact was excluded from enrichment before spending anything on it.
+SKIP_REASONS = (
+    "no_context",    # bare name, no company/title/school — see ranking.py
+    "generic_only",  # only a generic employer ("Self-Employed") to go on
+)
+
+
+class EnrichmentRun(Base):
+    __tablename__ = "enrichment_runs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    owner_name = Column(String, nullable=False)
+    # The operator's own affiliations, used only to boost contacts who share
+    # them (see ranking.score_contacts). Free-text, optional.
+    owner_company = Column(String, nullable=True)
+    owner_school = Column(String, nullable=True)
+    state = Column(String, default="planned")  # one of ENRICHMENT_RUN_STATES
+    depth = Column(Integer, default=1)         # hops to expand each contact
+    budget_s = Column(Float, default=0.0)      # 0 = unbounded
+    counters = Column(JSON, default=dict)      # per-state task tallies, cached
+    error = Column(Text, nullable=True)
+    started_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: _now().isoformat())
+
+
+# A task is usually one CONTACT to expand. Wave 2 adds ORG tasks: expanding an
+# employer several contacts share, once, reaches that organization's public
+# neighbourhood for one contact's worth of queries. Same table so org sweeps
+# inherit the ranking, resume, budget and cancel machinery unchanged.
+TASK_KINDS = ("contact", "org")
+
+
+class EnrichmentTask(Base):
+    __tablename__ = "enrichment_tasks"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    run_id = Column(String, ForeignKey("enrichment_runs.id"), nullable=False, index=True)
+    kind = Column(String, default="contact", nullable=False)  # one of TASK_KINDS
+    local_profile_id = Column(String, ForeignKey("local_profiles.id"), nullable=True)
+    # Resolved lazily: the Person may not exist yet when the run is planned
+    # (contacts imported without owner_name have no graph node). norm_name is
+    # the stable key; person_id is a convenience filled in at execution time.
+    person_id = Column(String, ForeignKey("people.id"), nullable=True)
+    display_name = Column(String, nullable=False)
+    norm_name = Column(String, index=True, nullable=False)
+    # Disambiguating context passed to expand_graph as seed_context — usually
+    # the employer. Enriching a bare "John Smith" with no context is worse than
+    # skipping it: it grafts some unrelated notable namesake's network onto the
+    # operator's graph.
+    context = Column(String, nullable=True)
+    score = Column(Float, default=0.0)
+    # Silo key -> weight, computed from this contact's export row when the run
+    # is planned (network/silo_weights.initial_weights). Decides which silos
+    # run for them and how many queries each gets. Stored rather than recomputed
+    # so a plan is inspectable, reproducible, and later tunable.
+    silo_weights = Column(JSON, default=dict)
+    rank = Column(Integer, default=0, index=True)  # 1-based execution order
+    state = Column(String, default="pending", index=True)  # ENRICHMENT_TASK_STATES
+    skip_reason = Column(String, nullable=True)    # one of SKIP_REASONS
+    attempts = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(String, default=lambda: _now().isoformat())
+    created_at = Column(String, default=lambda: _now().isoformat())
+
+
+# ===========================================================================
 # Boards — a user's manually-built canvas workspace (UI-only concept; never
 # mutates the canonical discovery data above). Scoped by owner_id, the same
 # per-browser id the frontend already sends as X-Graph-Id. Each board can hold

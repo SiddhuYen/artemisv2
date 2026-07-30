@@ -387,6 +387,65 @@ MAX_UPLOAD_BYTES = int(os.environ.get("ARTEMIS_MAX_UPLOAD_BYTES", str(10 * 1024 
 # ceiling — a phone address book is a few thousand cards at the very top end.
 MAX_IMPORT_CONTACTS = int(os.environ.get("ARTEMIS_MAX_IMPORT_CONTACTS", "10000"))
 
+# --- wave 0: structural edges derived from the contact export alone ----------
+# Contacts sharing an employer become coworkers, but only when the group is
+# small enough to plausibly BE a team. Deliberately tighter than the YC roster
+# cap (MAX_CLIQUE_MEMBERS=60 in scripts/build_yc_cache.py): a curated team page
+# asserts "these people work together", whereas a CSV's company column is a
+# self-reported free-text field, so 200 contacts listing "Google" are a
+# directory artifact, not colleagues. Above the cap we keep org membership and
+# skip the clique — see network/cliques.py.
+CONTACT_CLIQUE_MAX = int(os.environ.get("ARTEMIS_CONTACT_CLIQUE_MAX", "25"))
+
+# --- enrichment runs (waves 1+) ---------------------------------------------
+# Build slots an enrichment run may never occupy, so an hours-long run cannot
+# starve interactive /connect and /targets/search. With the default capacity of
+# 2 and 1 reserved, a background task runs only while nothing else is, and
+# leaves a free slot the moment it does — see buildqueue.BuildQueue.
+ENRICH_RESERVED_BUILD_SLOTS = int(
+    os.environ.get("ARTEMIS_ENRICH_RESERVED_BUILD_SLOTS", "1"))
+# Wave 1: how many top-ranked contacts a start with no explicit limit covers.
+# Sized to finish in a few minutes at ~2 min/contact so onboarding shows real
+# progress; the long tail is a later, budgeted run over the same plan.
+ENRICH_WAVE1_SIZE = int(os.environ.get("ARTEMIS_ENRICH_WAVE1_SIZE", "30"))
+# How long a background task waits for a build slot before re-checking whether
+# its run was cancelled. Short: this is a poll interval, not a timeout.
+ENRICH_SLOT_POLL_S = float(os.environ.get("ARTEMIS_ENRICH_SLOT_POLL_S", "2.0"))
+
+# The probe: one query to decide whether a contact's full ~35-query sweep is
+# worth paying for at all (see network/probe.py). Most contacts in a real
+# export have no web footprint, so this is the largest available saving on a
+# long-tail run. Disable to force the full sweep on every contact.
+ENRICH_PROBE_ENABLED = _env_bool("ARTEMIS_ENRICH_PROBE_ENABLED", "1")
+# Search results that actually mention the contact before the sweep is funded.
+ENRICH_PROBE_MIN_HITS = int(os.environ.get("ARTEMIS_ENRICH_PROBE_MIN_HITS", "1"))
+# How long a "no footprint" verdict stands before a later run re-probes. People
+# do acquire a web presence — a new job, a funding round — just not weekly.
+ENRICH_PROBE_TTL_DAYS = int(os.environ.get("ARTEMIS_ENRICH_PROBE_TTL_DAYS", "30"))
+
+# --- wave 2: org sweeps ------------------------------------------------------
+# Expanding an employer several contacts share, once, reaches that org's public
+# neighbourhood for ONE contact's worth of queries. Only worth it above a few
+# contacts: below that, sweeping the contacts themselves is both cheaper and
+# more specific to the operator's actual network.
+ENRICH_ORG_SWEEPS_ENABLED = _env_bool("ARTEMIS_ENRICH_ORG_SWEEPS_ENABLED", "1")
+ENRICH_ORG_MIN_CONTACTS = int(os.environ.get("ARTEMIS_ENRICH_ORG_MIN_CONTACTS", "3"))
+# Hard ceiling on org sweeps per run: they run FIRST (highest coverage per
+# query), so an unbounded number would spend the whole wave-1 budget before
+# reaching a single real contact.
+ENRICH_ORG_MAX_SWEEPS = int(os.environ.get("ARTEMIS_ENRICH_ORG_MAX_SWEEPS", "10"))
+
+# --- per-connection silo weights ---------------------------------------------
+# Expansion runs the same 9 silos over everyone (36 queries) regardless of who
+# the subject is. Weights computed from the contact's own export row decide
+# which silos run and how many of their queries — see network/silo_weights.py.
+ENRICH_SILO_WEIGHTS_ENABLED = _env_bool("ARTEMIS_ENRICH_SILO_WEIGHTS_ENABLED", "1")
+# A silo weighted below this is skipped entirely for that contact. Raising it
+# spends less and risks missing a real relationship; 0 runs every silo for
+# everyone, i.e. the unweighted behavior.
+ENRICH_SILO_MIN_WEIGHT = float(
+    os.environ.get("ARTEMIS_ENRICH_SILO_MIN_WEIGHT", "0.25"))
+
 # tier thresholds: < WEAK_MAX = weak, [WEAK_MAX, STRONG_MIN] = candidate,
 # > STRONG_MIN = strong (eligible for expansion priority)
 WEAK_MAX = 0.3

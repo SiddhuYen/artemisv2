@@ -111,6 +111,18 @@ class SerperProvider(SearchProvider):
             self._exhausted = True  # rate/quota/credit exhausted
             _mark_state("exhausted")
             return []
+        # Serper reports an empty balance as 400 {"message": "Not enough
+        # credits"}, NOT the 402/429 above. Falling through to the generic
+        # non-200 branch returns [] without marking the provider exhausted, so
+        # every subsequent query re-calls Serper, gets the same 400, and falls
+        # through to Brave -- measured live as 282 wasted calls in a 282-query
+        # run, doubling latency and rate-limiter pressure for zero results.
+        # Matched on the message rather than the bare status because a
+        # malformed query is also a 400 and must stay retryable.
+        if resp.status_code == 400 and "credit" in (resp.text or "").lower():
+            self._exhausted = True
+            _mark_state("exhausted")
+            return []
         if resp.status_code != 200:
             return []
         _mark_state("ok")  # clear any prior degraded state now that a call succeeded
