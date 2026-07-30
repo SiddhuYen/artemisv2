@@ -2359,6 +2359,12 @@ async function confirmLinkedInImport() {
   btn.disabled = true; const orig = btn.textContent; btn.textContent = 'IMPORTING…';
   try {
     const fd = new FormData(); fd.append('file', _liFile);
+    // Sending owner_name bridges each contact into the shared public graph as
+    // a real linkedin_1st edge (see POST /network/upload), so /connect and
+    // /discover can route through it. Skipped for the default placeholder
+    // name so an operator who never renamed themselves doesn't create a
+    // garbage "OPERATOR" node in the shared graph.
+    if (operatorName() !== 'OPERATOR') fd.append('owner_name', operatorName());
     const res = await fetch('/network/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -2805,6 +2811,25 @@ function gateVcfChange(e) {
   readVcfFiles(files);
 }
 
+// One-time bridge for contacts imported before owner_name was wired into the
+// upload flow (or before this endpoint existed at all) -- otherwise they sit
+// in LocalProfile forever, invisible to /connect and /discover. Gated on a
+// per-operator-name localStorage flag so it runs once per identity, not on
+// every page load (the backend call itself is idempotent either way).
+async function backfillOwnerGraphEdgesOnce() {
+  const name = operatorName();
+  if (name === 'OPERATOR') return;
+  const flagKey = 'artemis_owner_backfill_done:' + name;
+  if (localStorage.getItem(flagKey)) return;
+  try {
+    await fetch('/network/profiles/backfill-graph-edges', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner_name: name }),
+    });
+    localStorage.setItem(flagKey, '1');
+  } catch (e) { /* best-effort; try again next boot */ }
+}
+
 // ══════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════
@@ -2814,6 +2839,7 @@ function gateVcfChange(e) {
   await Promise.all([loadBoardsFromBackend(), loadContactsFromBackend()]);
   showHome();
   checkProviderStatus();
+  backfillOwnerGraphEdgesOnce();
   // Wait out whatever is left of the splash. Loading usually finishes first,
   // and showing the gate early would stack it on top of the boot animation.
   setTimeout(maybeShowNetworkGate, Math.max(0, BOOT_SPLASH_MS - (Date.now() - started)));

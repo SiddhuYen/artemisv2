@@ -50,7 +50,7 @@ from .models import (
     Person,
     Source,
 )
-from .network.ingest import ingest_csv, ingest_rows
+from .network.ingest import backfill_graph_edges, ingest_csv, ingest_rows
 from .network.matching import run_matching
 from .network.paths import generate_paths_for_target
 from .schemas import GraphResponse, GraphStats, TargetSearchRequest
@@ -753,6 +753,20 @@ async def network_upload(file: UploadFile = File(...), owner_name: str = Form(""
     # a large CSV import doesn't stall every other concurrent request (incl. /health).
     stats = await run_in_threadpool(ingest_csv, db, content, owner_name=owner_name)
     return {"ingested": stats, "profiles_total": db.query(LocalProfile).count()}
+
+
+@app.post("/network/profiles/backfill-graph-edges")
+async def network_profiles_backfill(req: dict, db: Session = Depends(get_db)) -> dict:
+    """Retroactively create linkedin_1st edges for every already-imported
+    LocalProfile, for accounts that uploaded before `owner_name` was wired
+    up on the frontend (or before this bridge existed at all) -- otherwise
+    those contacts sit in LocalProfile forever, invisible to /connect and
+    /discover. Idempotent; safe to call repeatedly (e.g. once per session)."""
+    owner_name = (req.get("owner_name") or "").strip()
+    if not owner_name:
+        raise HTTPException(status_code=400, detail="owner_name required")
+    count = await run_in_threadpool(backfill_graph_edges, db, owner_name)
+    return {"graph_edges": count}
 
 
 @app.post("/network/contacts/import")
