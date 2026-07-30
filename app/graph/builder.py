@@ -235,6 +235,49 @@ def _deadlock_backoff(attempt: int) -> None:
     time.sleep(_DEADLOCK_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, _DEADLOCK_BACKOFF_JITTER))
 
 
+def _is_locked(exc: OperationalError) -> bool:
+    """SQLite 'database is locked' -- surfaces once busy_timeout's own
+    in-driver wait (5s, see db.py's _tune_sqlite) is exhausted while a write
+    is still contending for the file lock. The module docstring on
+    _is_deadlock claims SQLite's writer/writer contention is "handled at the
+    connection layer... as a retry-in-place" -- true only up to that 5s
+    ceiling. A slow bulk write (e.g. expansion._prune_invalid_nodes deleting
+    hundreds of Claude-flagged junk-organization edges after researching a
+    very public figure) can genuinely still be contending past it, and nothing
+    retries beyond busy_timeout's own wait -- confirmed live, repeatedly,
+    against this exact code path."""
+    msg = str(getattr(exc, "orig", exc) or "")
+    return "database is locked" in msg.lower()
+
+
+def delete_relationship_edges_with_retry(db: Session, condition, _retries: int = 5) -> int:
+    """Bulk-delete RelationshipEdge rows matching `condition`, retrying with
+    backoff on a SQLite lock timeout (see _is_locked) instead of letting a
+    slow prune delete surface as a hard job failure.
+
+    Wrapped in a SAVEPOINT (db.begin_nested), not a bare retry: this runs
+    mid-transaction, after edges earlier in the same node's processing were
+    already added to the session (see expansion._prune_invalid_nodes's own
+    docstring on why it flushes first before this delete) -- a plain retry
+    would need a rollback() that reverts that already-accumulated work too,
+    not just this delete. Mirrors _new_person_or_existing's SAVEPOINT
+    reasoning for the exact same "don't lose a sibling's pending work" hazard.
+
+    Returns the number of rows deleted.
+    """
+    for attempt in range(_retries + 1):
+        try:
+            with db.begin_nested():
+                result = db.query(RelationshipEdge).filter(condition).delete(
+                    synchronize_session=False)
+            return result
+        except OperationalError as exc:
+            if not _is_locked(exc) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
+    return 0  # unreachable (loop either returns or raises), keeps type checkers happy
+
+
 def _new_person_or_existing(db: Session, name: str, norm: str,
                             qid: Optional[str], _retries: int = 5) -> Person:
     """_new_person, tolerant of a concurrent insert of the same norm_name

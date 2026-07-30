@@ -833,10 +833,14 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
         # One batched delete instead of one DELETE per node -- edges are the
         # only thing that needs a manual cascade (RelationshipEdge has no FK
         # cascade), and IN(...) does it in a single round trip either way.
-        db.query(RelationshipEdge).filter(
-            (RelationshipEdge.person_a_id.in_(pids))
-            | (RelationshipEdge.person_b_id.in_(pids))
-        ).delete(synchronize_session=False)
+        # Retries on a SQLite lock timeout instead of failing the whole job
+        # outright -- a large batch (hundreds of ids, e.g. after researching
+        # a very public figure) is exactly the kind of slow write likely to
+        # still be contending with the OTHER concurrent /connect side when
+        # busy_timeout's own wait runs out (see builder._is_locked).
+        builder.delete_relationship_edges_with_retry(
+            db, (RelationshipEdge.person_a_id.in_(pids))
+                | (RelationshipEdge.person_b_id.in_(pids)))
         for p in junk_people:
             db.delete(p)
         removed += len(junk_people)
@@ -849,9 +853,8 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
         junk_orgs = [o for o in orgs if o.name not in valid_orgs]
         if junk_orgs:
             oids = [o.id for o in junk_orgs]
-            db.query(RelationshipEdge).filter(
-                RelationshipEdge.organization_id.in_(oids)
-            ).delete(synchronize_session=False)
+            builder.delete_relationship_edges_with_retry(
+                db, RelationshipEdge.organization_id.in_(oids))
             for o in junk_orgs:
                 db.delete(o)
             removed += len(junk_orgs)
