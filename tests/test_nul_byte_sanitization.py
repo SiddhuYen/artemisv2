@@ -48,6 +48,23 @@ def test_save_source_strips_nul_from_every_field(db):
     assert again.id == source.id
 
 
+def test_save_source_strips_nul_when_backfilling_existing_row(db):
+    """Regression: the update branch (an already-saved Source whose full_text
+    was empty gets backfilled on a later call) is a SEPARATE code path from
+    the insert branch above and was missed in the first pass of this fix --
+    it hit the exact same Postgres ValueError via an UPDATE instead of an
+    INSERT."""
+    bare = SearchResult(title="Someone", url="https://example.com/x",
+                        snippet="A snippet", provider="serper")
+    first = builder.save_source(db, bare, query_used="q")
+    assert first.full_text is None
+
+    backfilled = builder.save_source(
+        db, bare, query_used="q", full_text=f"late-arriving text{NUL} with junk")
+    assert backfilled.id == first.id
+    assert NUL not in backfilled.full_text
+
+
 def test_add_edge_from_extraction_strips_nul_from_evidence(db):
     subject = builder.get_or_create_person(db, "Subject Person")
     counterpart = builder.get_or_create_person(db, "Counterpart Person")

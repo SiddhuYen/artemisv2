@@ -378,7 +378,7 @@ def save_source(
     ).scalars().first()
     if existing:
         if full_text and not existing.full_text:
-            existing.full_text = full_text
+            existing.full_text = _strip_nul(full_text)
         return existing
     source = Source(
         url=url,
