@@ -257,6 +257,22 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
 # to which of the two starting people gets the full expansion.
 SHALLOW_FAMOUS_DEPTH = 1
 
+# A trailing "of X" / "at X" / ", X" clause some names carry baked into one
+# field instead of a separate context_a/context_b (e.g. "Larry Ellison of
+# Oracle" typed as a single board-node name -- the frontend's Route panel has
+# no separate company/context field at all, see _direct_pair_search's own
+# context_a/context_b for the field that DOES exist server-side but isn't
+# wired up from there). A raw Wikipedia title lookup on the combined string
+# fails to match ("Larry Ellison of Oracle" isn't close enough to "Larry
+# Ellison" for the notability check), silently disabling the asymmetric-depth
+# mitigation below for exactly the famous-person case it exists for.
+_TRAILING_CONTEXT_RE = re.compile(r",.*$|\s+(?:of|at|from|with)\s+.+$", re.IGNORECASE)
+
+
+def _strip_trailing_context(name: str) -> str:
+    stripped = _TRAILING_CONTEXT_RE.sub("", name).strip()
+    return stripped or name
+
 
 def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int, int]:
     """(depth_a, depth_b) for _expand_both_concurrently.
@@ -266,13 +282,19 @@ def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int
     exploit, so today's behavior stands. Notability check failing (e.g. a
     transient Wikipedia lookup error) degrades to symmetric too, same as
     any other best-effort signal in this codebase.
+
+    Checks both the raw name and its context-stripped form (see
+    _strip_trailing_context) in one batched lookup -- a person counts as
+    notable if either resolves, so "Larry Ellison of Oracle" still gets
+    caught even though the exact string never has its own Wikipedia page.
     """
+    stripped_a, stripped_b = _strip_trailing_context(name_a), _strip_trailing_context(name_b)
     try:
-        notable = ORCH.notable_set([name_a, name_b])
+        notable = ORCH.notable_set(list({name_a, stripped_a, name_b, stripped_b}))
     except Exception:
         return depth, depth
-    a_notable = name_a in notable
-    b_notable = name_b in notable
+    a_notable = name_a in notable or stripped_a in notable
+    b_notable = name_b in notable or stripped_b in notable
     if a_notable == b_notable:
         return depth, depth
     shallow = min(SHALLOW_FAMOUS_DEPTH, depth)
