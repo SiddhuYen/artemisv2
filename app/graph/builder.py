@@ -43,6 +43,18 @@ from ..utils.names import (
 from . import disambiguate
 
 
+def _strip_nul(s: Optional[str]) -> Optional[str]:
+    """Drop embedded NUL bytes (0x00) from scrape/extraction-derived text.
+
+    SQLite stores them without complaint; Postgres's text type rejects them
+    outright, raising ValueError at flush time. A NUL can enter any string
+    that traces back to a scraped page or an LLM-extracted name/snippet, not
+    just Source.full_text — so every write site that persists such a string
+    needs this, not just the search-result save path.
+    """
+    return s.replace("\x00", "") if s else s
+
+
 def reset_public_graph(db: Session) -> None:
     """Clear the PUBLIC graph + derived matches/paths, preserving the uploaded
     local network (local_profiles / local_edges). Children first for FK safety."""
@@ -87,6 +99,7 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
     extraction, which never passes a qid at all) get the guard's old,
     unconditional-adopt behavior; there is nothing to check the name against.
     """
+    name = _strip_nul(name)
     norm = person_norm_key(name)
     if not norm:
         return None
@@ -293,6 +306,7 @@ def get_or_create_org(
     db: Session, name: str, org_type: str = "unknown", allow_create: bool = True,
     _retries: int = 5,
 ) -> Optional[Organization]:
+    name = _strip_nul(name)
     norm = org_norm_key(name)
     if not norm:
         return None
@@ -341,6 +355,16 @@ def get_or_create_org(
 def save_source(
     db: Session, result: SearchResult, query_used: str, full_text: Optional[str] = None
 ) -> Source:
+    # Scraped page text (and, rarely, the query string that produced it, or
+    # even the URL) occasionally carries a stray NUL byte (encoding noise,
+    # binary content leaking through, or a NUL-codepoint escape in an
+    # upstream API's JSON). SQLite stores it without complaint — Postgres's text type
+    # flat-out rejects embedded NULs, raising ValueError at flush time. Strip
+    # rather than reject: a lost null byte costs nothing, a failed source
+    # save costs the whole node's research. Stripped BEFORE the dedup lookup
+    # below so a NUL-bearing and NUL-free copy of the same URL match.
+    url = _strip_nul(result.url)
+    query_used = _strip_nul(query_used)
     # `url` has no DB-level uniqueness constraint (it's just indexed), so this
     # check-then-insert isn't atomic. A handful of enrichment sources reuse one
     # fixed URL across every person (e.g. openalex.org for coauthors_enrichment),
@@ -350,22 +374,17 @@ def save_source(
     # `.scalar_one_or_none()` tolerates that instead of crashing on it — these
     # are just cached source snippets, a rare duplicate is harmless.
     existing = db.execute(
-        select(Source).where(Source.url == result.url)
+        select(Source).where(Source.url == url)
     ).scalars().first()
     if existing:
         if full_text and not existing.full_text:
             existing.full_text = full_text
         return existing
-    # Scraped page text occasionally carries a stray NUL byte (encoding noise,
-    # binary content leaking through). SQLite stores it without complaint —
-    # Postgres's text type flat-out rejects embedded NULs, raising ValueError
-    # at flush time. Strip rather than reject: a lost null byte costs nothing,
-    # a failed source save costs the whole node's research.
     source = Source(
-        url=result.url,
-        title=(result.title or "").replace("\x00", ""),
-        snippet=(result.snippet or "").replace("\x00", ""),
-        full_text=full_text.replace("\x00", "") if full_text else full_text,
+        url=url,
+        title=_strip_nul(result.title) or "",
+        snippet=_strip_nul(result.snippet) or "",
+        full_text=_strip_nul(full_text),
         provider=result.provider,
         query_used=query_used,
     )
@@ -459,8 +478,8 @@ def add_edge_from_extraction(
         person_b_id=other_id,
         organization_id=org_id,
         relationship_type=edge.relationship_type,
-        method=edge.method,
-        evidence_snippet=edge.evidence_snippet,
+        method=_strip_nul(edge.method),
+        evidence_snippet=_strip_nul(edge.evidence_snippet),
         source_id=source_id,
         confidence_base=round(edge.confidence_base, 3),
         confidence_raw=round(conf, 3),
