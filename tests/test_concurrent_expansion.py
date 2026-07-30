@@ -272,7 +272,7 @@ def test_expand_both_concurrently_runs_both_sides_on_separate_threads(tmp_path, 
 
     s = Session()
     try:
-        C._expand_both_concurrently(s, "Alpha", "Beta", 2, {"alpha", "beta"},
+        C._expand_both_concurrently(s, "Alpha", "Beta", 2, 2, {"alpha", "beta"},
                                     None, "", "")
     finally:
         s.close()
@@ -298,7 +298,7 @@ def test_expand_both_concurrently_propagates_a_side_failure(tmp_path, monkeypatc
     s = Session()
     try:
         with pytest.raises(RuntimeError, match="simulated crawl failure"):
-            C._expand_both_concurrently(s, "Alpha", "Beta", 2, {"alpha", "beta"},
+            C._expand_both_concurrently(s, "Alpha", "Beta", 2, 2, {"alpha", "beta"},
                                         None, "", "")
     finally:
         s.close()
