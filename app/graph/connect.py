@@ -164,20 +164,79 @@ def _score(edges: List[RelationshipEdge]) -> float:
     return round(avg_conf * avg_strength, 3)
 
 
+_PROBE_ID_CHUNK = 500  # bound-parameter safety margin as the graph grows
+
+
 def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
-    """Cheap post-node probe used during connect expansion."""
+    """Does ANY traversable route within max_hops already exist? Bounded,
+    indexed, hop-by-hop walk out of A, stopping the moment B is reached.
+
+    Was: _adjacency() + _diverse_paths(k=1) -- an unfiltered SELECT across
+    Person, Source, and RelationshipEdge, rebuilding the WHOLE graph's
+    adjacency map from scratch, to answer a yes/no question this is called
+    on every /connect request (once upfront, then again after every node
+    expand_graph processes -- see should_stop). The graph is shared and
+    additive, never reset, so that price only grew with every run the app
+    had ever done -- including for two people who turn out not to be
+    connected at all. Cost now scales with the neighborhood actually
+    walked, not total graph size.
+
+    Traversability is deliberately the same single rule _path_worthy applies
+    ('rejected' is out, everything else -- weak-status and unknown-typed
+    edges, and a NULL status -- is walkable) and nothing more: no edge cost,
+    no fame/hub penalty, no route diversity. Ranking is the final scoring
+    pass's job; a plain existence check doesn't need it. Matched in Python,
+    not SQL: a NULL status is traversable to _path_worthy but would be
+    silently dropped by `status NOT IN (...)`.
+
+    Each far endpoint is joined back to `people`, exactly like _adjacency's
+    person_by_id requirement -- without it, a pair of dangling edges could
+    bridge a "route" through a person who no longer exists, and since a True
+    here skips the live search entirely, that would report "already
+    connected" and then have the final scoring pass return no path at all
+    (same shape as the bug test_adjacency_skips_edges_with_a_missing_endpoint
+    guards against, just reachable through this function instead)."""
     if db.in_transaction():
         db.rollback()
-    a = db.execute(
-        select(Person).where(Person.norm_name == person_norm_key(name_a))
+    a_id = db.execute(
+        select(Person.id).where(Person.norm_name == person_norm_key(name_a))
     ).scalar_one_or_none()
-    b = db.execute(
-        select(Person).where(Person.norm_name == person_norm_key(name_b))
+    b_id = db.execute(
+        select(Person.id).where(Person.norm_name == person_norm_key(name_b))
     ).scalar_one_or_none()
-    if a is None or b is None:
+    if a_id is None or b_id is None:
         return False
-    adj, person_by_id, _src_by_id, degree = _adjacency(db)
-    return bool(_diverse_paths(adj, a.id, b.id, max_hops, 1, person_by_id, degree))
+    if a_id == b_id:
+        return True
+
+    frontier = {a_id}
+    visited = {a_id}
+    for _ in range(max_hops):
+        if not frontier:
+            return False
+        next_frontier = set()
+        ids = list(frontier)
+        for i in range(0, len(ids), _PROBE_ID_CHUNK):
+            chunk = ids[i:i + _PROBE_ID_CHUNK]
+            rows = db.execute(
+                select(RelationshipEdge.person_b_id, RelationshipEdge.status)
+                .join(Person, Person.id == RelationshipEdge.person_b_id)
+                .where(RelationshipEdge.person_a_id.in_(chunk))
+            ).all() + db.execute(
+                select(RelationshipEdge.person_a_id, RelationshipEdge.status)
+                .join(Person, Person.id == RelationshipEdge.person_a_id)
+                .where(RelationshipEdge.person_b_id.in_(chunk))
+            ).all()
+            for far_id, status in rows:
+                if status in _UNTRAVERSABLE_STATUS:
+                    continue
+                if far_id == b_id:
+                    return True
+                if far_id not in visited:
+                    next_frontier.add(far_id)
+        visited |= next_frontier
+        frontier = next_frontier
+    return False
 
 
 def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,

@@ -163,6 +163,111 @@ def test_rejected_status_edge_is_still_hard_excluded(db):
     assert adj.get(a.id, []) == []
 
 
+# --- _route_exists: bounded hop-by-hop walk, not a full-graph rebuild ------
+def test_route_exists_finds_a_route_within_max_hops(db):
+    a = _person(db, "A Person")
+    mid = _person(db, "Mid Person")
+    b = _person(db, "B Person")
+    _edge(db, a, mid)
+    _edge(db, mid, b)
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 2) is True
+    # an edge is undirected here, so which endpoint it was stored under
+    # must not decide whether the route is found
+    assert C._route_exists(db, "B Person", "A Person", 2) is True
+
+
+def test_route_exists_stops_at_max_hops(db):
+    a = _person(db, "A Person")
+    m1 = _person(db, "Mid One")
+    m2 = _person(db, "Mid Two")
+    b = _person(db, "B Person")
+    _edge(db, a, m1)
+    _edge(db, m1, m2)
+    _edge(db, m2, b)
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 2) is False
+    assert C._route_exists(db, "A Person", "B Person", 3) is True
+
+
+def test_route_exists_hard_excludes_a_rejected_edge(db):
+    """Same single rule as _path_worthy: 'rejected' is the only status a route
+    may not run through, and the cheap probe applies exactly that rule."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="coworker", status="rejected", conf=0.9)
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is False
+
+
+def test_route_exists_still_walks_a_weak_untyped_edge(db):
+    """The other half of that rule (bug 4): everything short of 'rejected' is
+    traversable -- priced by the scoring pass, never excluded -- so the probe
+    must not quietly reintroduce a status/type floor of its own."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="unknown", status="weak", conf=0.3)
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is True
+
+
+def test_route_exists_is_true_for_one_and_the_same_person(db):
+    _person(db, "Alpha Person")
+    db.commit()
+
+    # both surfaces normalise to a single node, so there is nothing to search
+    assert C._route_exists(db, "Alpha Person", "alpha  person", 3) is True
+
+
+def test_route_exists_is_false_when_an_endpoint_is_not_in_the_graph(db):
+    _person(db, "A Person")
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "Nobody Known", 3) is False
+
+
+def test_route_exists_ignores_a_route_through_a_pruned_person(db):
+    """Bug 3's fallout, now on the probe: a pair of dangling edges must not
+    bridge a route _adjacency would refuse to produce. connect_people skips
+    the live search entirely when this returns True, so a probe that walks
+    further than the scoring pass would report "already connected" and then
+    return no path at all."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    db.commit()
+    ghost_id = "not-a-real-person-id"
+    db.add(RelationshipEdge(person_a_id=a.id, person_b_id=ghost_id,
+                            relationship_type="coworker", status="candidate",
+                            confidence_raw=0.5))
+    db.add(RelationshipEdge(person_a_id=ghost_id, person_b_id=b.id,
+                            relationship_type="coworker", status="candidate",
+                            confidence_raw=0.5))
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is False
+
+
+def test_route_exists_never_rebuilds_the_whole_adjacency_map(db, monkeypatch):
+    """The point of the probe: it answers from the neighborhood it actually
+    walks, hop by hop over an index -- never by loading every person, source
+    and edge in the graph the way the once-per-request scoring pass does."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b)
+    db.commit()
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("_route_exists must not rebuild the full adjacency map")
+
+    monkeypatch.setattr(C, "_adjacency", _boom)
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is True
+
+
 def test_connect_people_skips_search_when_a_route_already_exists(db, monkeypatch):
     """'Go through what's already known first': a route already sitting in
     the graph (e.g. a bridged linkedin_1st edge, or leftover data from an
