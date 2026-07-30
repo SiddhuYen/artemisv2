@@ -321,7 +321,16 @@ def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = 
 
     b_norm = person_norm_key(name_b)
     found = False
-    for res in results[: config.SCRAPE_TOP_N]:
+    successes = 0
+    # Target SCRAPE_TOP_N *successful* pages, not just the first N results --
+    # a fixed top-N slice stops even when an earlier result turned out to be a
+    # dud (fetch failed, or the page just didn't name person_b), silently
+    # settling for fewer successes instead of trying the next result. Bounded
+    # naturally by len(results) (RESULTS_PER_QUERY, a handful by default), so
+    # this is a small, fixed worst-case increase, not unbounded fetching.
+    for res in results:
+        if successes >= config.SCRAPE_TOP_N:
+            break
         if cancel_checker:
             cancel_checker()
         if res.provider == "wikipedia":
@@ -336,6 +345,7 @@ def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = 
             continue
 
         source = builder.save_source(db, res, query, text)
+        page_succeeded = False
         for silo in SILOS:
             out = extract(name_a, text, silo, res.snippet, res.url)
             for edge in out.edges:
@@ -347,6 +357,9 @@ def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = 
                     continue
                 builder.add_edge_from_extraction(db, subject, edge, 0, source, counterpart)
                 found = True
+                page_succeeded = True
+        if page_succeeded:
+            successes += 1
     if found:
         db.commit()
     return found
