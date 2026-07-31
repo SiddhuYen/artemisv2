@@ -62,6 +62,20 @@ _DOMAINS = {
                  "cleric", "theologian"},
     "arts": {"author", "novelist", "poet", "painter", "sculptor", "journalist",
              "cartoonist", "playwright"},
+    # Corporate/sales/consulting track -- deliberately compound phrases, not
+    # bare "director"/"manager"/"executive" (too generic, collides with
+    # nonprofit board roles, film production titles, academic administration).
+    # Added because this bucket's absence was a real, live gap: a Trinamix
+    # "Vice President Sales & Strategy" and an ISRO "researcher"/"engineer"
+    # share a name with nothing here to tell them apart -- domains_of() on
+    # the business evidence returned empty, so domain_conflict silently
+    # never fired even though the two evidently don't overlap.
+    "business": {"vice president", "chief executive", "chief financial officer",
+                 "chief operating officer", "chief revenue officer",
+                 "managing director", "business development",
+                 "management consulting", "account executive",
+                 "corporate strategy", "sales strategy", "vp sales",
+                 "executive vice president"},
 }
 
 # Compile one boundary-anchored pattern per domain. `\b` bounds even the short
