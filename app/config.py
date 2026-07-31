@@ -381,6 +381,31 @@ NODE_PROFILE_QUERIES = [
 NODE_PROFILE_MAX_SNIPPETS = int(os.environ.get("ARTEMIS_NODE_PROFILE_MAX_SNIPPETS", "3"))
 NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CHARS", "600"))
 
+# --- Alpha step 6: search strategy (which angle of the professional network
+# to search) -----------------------------------------------------------------
+# See extraction/search_strategy.py: the model picks a FIXED angle, never
+# writes query text itself -- STRATEGY_ANGLE_QUERIES below is the actual,
+# fully deterministic and inspectable query surface. "generic" intentionally
+# maps to no extra queries: the existing broad silo search already runs
+# regardless, this only ever ADDS a couple of targeted queries on top.
+STRATEGY_ENABLED = _env_bool("ARTEMIS_STRATEGY", "1")
+STRATEGY_MODEL = os.environ.get("ARTEMIS_STRATEGY_MODEL", CLAUDE_BATCH_MODEL)
+STRATEGY_ANGLE_QUERIES = {
+    "current_employer_leadership": [
+        '"{org}" leadership team OR executives',
+    ],
+    "past_employers": [
+        '"{subject}" "previously at" OR "formerly at" OR "prior to {org}"',
+    ],
+    "industry_peers": [
+        '"{industry}" industry leaders network',
+    ],
+    "board_or_advisory": [
+        '"{subject}" board member OR advisor OR advisory',
+    ],
+    "generic": [],
+}
+
 # --- OpenCorporates (company officer networks) -----------------------------
 # Free-tier token from https://opencorporates.com/api_accounts/new ; absent => skipped.
 OPENCORPORATES_API_TOKEN = os.environ.get("OPENCORPORATES_API_TOKEN", "").strip()

@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
-from ..extraction import node_profiler
+from ..extraction import node_profiler, search_strategy
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
@@ -319,7 +319,9 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                     cancel_checker: Optional[Callable[[], None]] = None,
                     silo_weights: Optional[Dict[str, float]] = None,
                     enhanced_professional_search: bool = False,
-                    professional_only: bool = False) -> None:
+                    professional_only: bool = False,
+                    target_person_name: str = "",
+                    target_context: str = "") -> None:
     def check_cancel() -> None:
         if cancel_checker:
             cancel_checker()
@@ -700,6 +702,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # than generic "about us" copy, which almost never states real numbers
     # and just invites node_profiler's model to infer instead of read.
     check_cancel()
+    org_row = None
+    org_name = None
     if enhanced_professional_search and is_person and node_profiler.is_active():
         org_edge = _best_org_affiliation_edge(candidate_edges)
         org_name = org_edge.organization if org_edge else None
@@ -735,6 +739,54 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                     if progress:
                         progress(f"  ⓘ profiled {org_name}: size={profile['size_tier']} "
                                  f"industry={profile['industry']} (grounded={profile['grounded']})")
+
+    # --- phase 4e: search strategy (Alpha step 6 -- "run reasoning to
+    # identify best type of search"). Only runs with a GROUNDED org profile
+    # in hand (fresh from 4d just above, or already cached from an earlier
+    # hop/run on the same org) and a known target -- deciding a strategy from
+    # an ungrounded profile would just be reasoning on top of a guess, and
+    # with no target there's nothing to reason TOWARD. The chosen angle maps
+    # to a small, FIXED set of extra queries (config.STRATEGY_ANGLE_QUERIES)
+    # -- the model picks which angle applies, it never writes query text
+    # itself, so a wrong pick costs a couple of irrelevant queries, not an
+    # ungrounded search direction.
+    check_cancel()
+    if (enhanced_professional_search and is_person and org_row is not None
+            and target_person_name and search_strategy.is_active()):
+        profile = (org_row.meta or {}).get("profile")
+        if profile and profile.get("grounded"):
+            decision = search_strategy.decide_angle(
+                subject_name, org_name, profile, target_person_name, target_context)
+            if decision is not None:
+                meta = dict(subject.meta or {})
+                meta["strategy"] = decision
+                subject.meta = meta
+                if progress:
+                    progress(f"  ➤ strategy: {decision['angle']} — {decision['why']}")
+                templates = config.STRATEGY_ANGLE_QUERIES.get(decision["angle"], [])
+                if templates:
+                    industry = profile.get("industry", "")
+                    seen_urls = {s for s in source_by_url}
+                    for template in templates:
+                        check_cancel()
+                        query = template.format(subject=subject_name, org=org_name,
+                                                industry=industry, target=target_person_name)
+                        try:
+                            results = ORCH.search(query, is_person=True)
+                        except Exception:
+                            continue
+                        for res in results[:config.SCRAPE_TOP_N]:
+                            check_cancel()
+                            if res.url in seen_urls:
+                                continue
+                            seen_urls.add(res.url)
+                            page = ORCH.fetch(res.url)
+                            text = html_to_text(page.content) if page.content else ""
+                            text = text or f"{res.title}. {res.snippet}"
+                            source = builder.save_source(db, res, query, text)
+                            source_by_url[res.url] = source
+                            out = extract(subject_name, text, COLLEAGUE_SILO, res.snippet, res.url)
+                            candidate_edges.extend(out.edges)
 
     # --- phase 5: dedup + per-node cap, then persist ----------------------
     check_cancel()
@@ -865,7 +917,9 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  should_stop: Optional[Callable[[Session], bool]] = None,
                  prefer_reachable: Optional[bool] = None,
                  silo_weights: Optional[Dict[str, float]] = None,
-                 enhanced_professional_search: bool = False, professional_only: bool = False) -> dict:
+                 enhanced_professional_search: bool = False,
+                 professional_only: bool = False, target_person_name: str = "",
+                 target_context: str = "") -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -903,7 +957,18 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     triggered the asymmetric depth in the first place): the family/friends
     silos are dropped from every query this call renders, so a public
     figure's limited 1-hop budget goes toward colleagues and board seats,
-    not a wasted hop on their spouse or close friends."""
+    not a wasted hop on their spouse or close friends.
+
+    `target_person_name`/`target_context` (Alpha step 6): who this walk is
+    ultimately trying to reach, and any context on them -- NOT this call's
+    own seed (`target_name` above is this expansion's own starting person,
+    an unfortunately-overlapping name kept for backward compat with every
+    other caller). connect._expand_both_concurrently passes the OTHER
+    endpoint's name/context here, so _process_person's search-strategy phase
+    can reason about who it's actually walking toward instead of picking a
+    query angle with no destination in mind. Empty for every non-/connect
+    caller (CLI, /expand, org_discovery) -- the strategy phase itself no-ops
+    without a target name, so this is inert unless explicitly supplied."""
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
@@ -956,6 +1021,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     "silo_weights": (silo_weights if hop == 0 else None),
                     "enhanced_professional_search": enhanced_professional_search,
                     "professional_only": professional_only,
+                    "target_person_name": target_person_name,
+                    "target_context": target_context,
                 }
                 if cancel_checker:
                     kwargs["cancel_checker"] = cancel_checker

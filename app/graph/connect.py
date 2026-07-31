@@ -360,7 +360,8 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     professional_only_b = depth_b < depth_a
 
     def _run(name: str, context: str, label: str, side_depth: int,
-             enhanced: bool, professional_only: bool) -> None:
+             enhanced: bool, professional_only: bool,
+             target_name: str, target_context: str) -> None:
         worker_db = WorkerSession()
         try:
             if cancel_checker:
@@ -379,6 +380,12 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                 "prefer_reachable": False,
                 "enhanced_professional_search": enhanced,
                 "professional_only": professional_only,
+                # Alpha step 6 (search_strategy): the OTHER endpoint's name/
+                # context, so the non-famous side's strategy decision can
+                # reason about who it's actually walking toward instead of
+                # picking an angle in the abstract.
+                "target_person_name": target_name,
+                "target_context": target_context,
             }
             if cancel_checker:
                 kwargs["cancel_checker"] = cancel_checker
@@ -390,8 +397,10 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         futures = [
-            ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a, professional_only_a),
-            ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b, professional_only_b),
+            ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a, professional_only_a,
+                      name_b, context_b),
+            ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b, professional_only_b,
+                      name_a, context_a),
         ]
         for f in futures:
             f.result()
