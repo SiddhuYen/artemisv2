@@ -101,6 +101,29 @@ def spacy_extract(
     doc = _nlp(text[: config.MAX_PAGE_CHARS])
     subj_norm = person_norm_key(subject_person)
 
+    # Proximity gate (see config.ENTITY_PROXIMITY_WINDOW's comment for the
+    # live failure this closes): without it, EVERY entity anywhere on the
+    # page becomes a "subject -> entity" edge using that entity's OWN nearby
+    # sentence as evidence, with no check that the subject is mentioned
+    # anywhere near it -- on a large multi-person page, that wires the
+    # subject to everyone else's unrelated context. Sentences are indexed by
+    # start_char (stable, hashable, cheap) rather than the Span object
+    # itself. No mention of the subject's own name anywhere in this text ->
+    # no proximity signal to check against -> every sentence counts as
+    # "near", i.e. today's unrestricted behavior, unchanged.
+    sent_list = list(doc.sents)
+    sent_index = {s.start_char: i for i, s in enumerate(sent_list)}
+    subject_lower = subject_person.lower()
+    subject_sent_idx = {i for i, s in enumerate(sent_list) if subject_lower in s.text.lower()}
+
+    def _near_subject(sent) -> bool:
+        if not subject_sent_idx:
+            return True
+        idx = sent_index.get(sent.start_char)
+        if idx is None:
+            return True
+        return any(abs(idx - si) <= config.ENTITY_PROXIMITY_WINDOW for si in subject_sent_idx)
+
     people: Counter = Counter()
     orgs: Counter = Counter()
     display: dict = {}
@@ -109,6 +132,8 @@ def spacy_extract(
     for ent in doc.ents:
         name = _clean(ent.text)
         if not name or is_noise_name(name):
+            continue
+        if not _near_subject(ent.sent):
             continue
         if ent.label_ == "PERSON":
             norm = person_norm_key(name)

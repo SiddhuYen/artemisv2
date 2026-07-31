@@ -158,6 +158,21 @@ CACHE_TTL_WIKI = int(os.environ.get("ARTEMIS_CACHE_TTL_WIKI", str(30 * 86400)))
 RESULTS_PER_QUERY = int(os.environ.get("ARTEMIS_RESULTS_PER_QUERY", "5"))
 SCRAPE_TOP_N = int(os.environ.get("ARTEMIS_SCRAPE_TOP_N", "3"))
 MAX_PAGE_CHARS = int(os.environ.get("ARTEMIS_MAX_PAGE_CHARS", "20000"))
+# How many sentences away from an actual mention of the SUBJECT's own name an
+# extracted entity's sentence may be and still count as evidence about the
+# subject. Confirmed live as a real gap, not a hypothetical: on a large
+# multi-person page (e.g. a conference "Featured Speakers" roster), spaCy/
+# heuristic extraction found every person entity on the WHOLE page and
+# attributed each one's own nearby sentence as "evidence" with no check that
+# the subject was mentioned anywhere near it -- producing edges like "Eric
+# Domski, board_member, Larry Ellison" from a sentence that was actually
+# about a different speaker (Thomas Kurian) entirely, found via Eric
+# Domski's OWN unrelated mention elsewhere on the same long page. A subject
+# whose name never appears in the text at all (a synthetic enrichment
+# string, or a pronoun-heavy paragraph) has no proximity signal to check
+# against and falls back to the old, unrestricted behavior -- this narrows
+# what already-working cases accept, it doesn't add a new failure mode.
+ENTITY_PROXIMITY_WINDOW = int(os.environ.get("ARTEMIS_ENTITY_PROXIMITY_WINDOW", "2"))
 # cap queries run per silo (keeps a single target snappy)
 MAX_QUERIES_PER_SILO = int(os.environ.get("ARTEMIS_MAX_QUERIES_PER_SILO", "4"))
 # concurrency for the network phase (searches + page fetches)

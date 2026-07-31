@@ -87,7 +87,23 @@ def heuristic_extract(
     display: dict = {}  # norm -> original display form
     sentences = _SENT_SPLIT.split(text)
 
-    for sentence in sentences:
+    # Proximity gate -- same fix, same reasoning, as spacy_extractor.py's
+    # (see config.ENTITY_PROXIMITY_WINDOW): without it, a candidate found
+    # ANYWHERE on a large multi-person page gets wired to the subject
+    # regardless of whether the subject is mentioned anywhere near it. No
+    # mention of the subject's own name anywhere in the text -> no proximity
+    # signal -> every sentence counts as "near" (today's behavior).
+    subject_lower = subject_person.lower()
+    subject_sent_idx = {i for i, s in enumerate(sentences) if subject_lower in s.lower()}
+
+    def _near_subject(idx: int) -> bool:
+        if not subject_sent_idx:
+            return True
+        return any(abs(idx - si) <= config.ENTITY_PROXIMITY_WINDOW for si in subject_sent_idx)
+
+    for sent_idx, sentence in enumerate(sentences):
+        if not _near_subject(sent_idx):
+            continue
         for match in _CANDIDATE.finditer(sentence):
             raw_phrase = match.group(0).strip(" .,-&")
             if is_noise_name(raw_phrase):
@@ -111,12 +127,19 @@ def heuristic_extract(
                     # plausible-but-rejected: violates the named-person entity rule
                     out.add_rejected("failed named-person entity rule", phrase)
 
+    # _evidence_for scans this list, not the full page, for the same reason
+    # candidate discovery is restricted above -- otherwise a candidate found
+    # near the subject could still end up "evidenced" by a same-named but
+    # unrelated mention elsewhere on the page, if that mention happens to
+    # come first in the text.
+    near_sentences = [s for i, s in enumerate(sentences) if _near_subject(i)]
+
     for norm, count in person_counts.most_common(MAX_ENTITIES_PER_TEXT):
         name = display[norm]
         out.entities.people.append(name)
         out.edges.append(
             _build_edge(subject_person, name, "person", "unknown",
-                        sentences, evidence, source_url, silo, count)
+                        near_sentences, evidence, source_url, silo, count)
         )
 
     for norm, count in org_counts.most_common(MAX_ENTITIES_PER_TEXT):
@@ -125,7 +148,7 @@ def heuristic_extract(
         out.entities.organizations.append(name)
         out.edges.append(
             _build_edge(subject_person, name, "organization", otype,
-                        sentences, evidence, source_url, silo, count)
+                        near_sentences, evidence, source_url, silo, count)
         )
 
     return out
