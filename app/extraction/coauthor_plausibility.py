@@ -30,18 +30,25 @@ from .claude_client import call_json, claude_available
 _PROMPT = """Based ONLY on the evidence below, is it plausible this person has \
 published academic research with named coauthors?
 
-Consider: some professions routinely produce peer-reviewed, co-authored \
-publications (research scientists, professors, clinician-researchers, PhD \
-students). Most don't (sales/business executives, engineers at tech \
-companies, athletes, politicians, artists) -- though a mid-career \
-professional occasionally publishing outside their main role isn't rare \
-either, so don't rule someone out just because their day job isn't research.
+Some professions routinely produce peer-reviewed, co-authored publications: \
+research scientists, professors, clinician-researchers, PhD students, lab \
+directors. Most don't: sales/business executives, corporate managers, \
+engineers at tech companies (not research labs), athletes, politicians, \
+artists.
 
-If the evidence is too thin, vague, or gives no real signal either way, \
-answer plausible=true -- only say false when the evidence clearly points \
-away from academic authorship. A missed check here just means the existing \
-identity check downstream still has to catch a bad match; a wrongly-skipped \
-search loses real data outright.
+If the evidence CLEARLY establishes the subject's role as one of these non-\
+research professions -- e.g. a specific job title like "Vice President \
+Sales", "Senior Software Engineer", "Account Executive" -- with nothing \
+suggesting research or academic affiliation, answer plausible=false. A \
+clearly-established non-research profession IS the signal; don't require \
+the evidence to additionally rule out publishing on top of that.
+
+Only default to plausible=true when the evidence is genuinely too thin or \
+ambiguous to place the person in either category -- e.g. just a bare name \
+with no role/profession information at all. Don't guess false on ambiguous \
+evidence, only on a clearly-established non-research profession. A missed \
+check here just means the existing identity check downstream still has to \
+catch a bad match; a wrongly-skipped search loses real data outright.
 
 Subject: {subject}
 Known context: {context}
