@@ -98,6 +98,14 @@ def spacy_extract(
     if not text or not spacy_available():
         return out
 
+    # A page's html_to_text() result (or this function's own slice below) may
+    # already be cut to exactly config.MAX_PAGE_CHARS -- confirmed live: a
+    # real fetched page had the subject's OWN bio section past that cutoff
+    # while an unrelated person's sentence, earlier in the page, survived
+    # it. `>=` (not `>`) because by the time this function sees `text`, an
+    # upstream truncation to exactly the cap is indistinguishable from a
+    # text that just happens to be exactly that length.
+    was_truncated = len(text) >= config.MAX_PAGE_CHARS
     doc = _nlp(text[: config.MAX_PAGE_CHARS])
     subj_norm = person_norm_key(subject_person)
 
@@ -108,9 +116,7 @@ def spacy_extract(
     # anywhere near it -- on a large multi-person page, that wires the
     # subject to everyone else's unrelated context. Sentences are indexed by
     # start_char (stable, hashable, cheap) rather than the Span object
-    # itself. No mention of the subject's own name anywhere in this text ->
-    # no proximity signal to check against -> every sentence counts as
-    # "near", i.e. today's unrestricted behavior, unchanged.
+    # itself.
     sent_list = list(doc.sents)
     sent_index = {s.start_char: i for i, s in enumerate(sent_list)}
     subject_lower = subject_person.lower()
@@ -118,7 +124,16 @@ def spacy_extract(
 
     def _near_subject(sent) -> bool:
         if not subject_sent_idx:
-            return True
+            # No mention of the subject anywhere in the (possibly truncated)
+            # text -- no proximity signal to check against. Falling back to
+            # "accept everything" is only safe when nothing was actually cut
+            # off: a short, genuinely subject-free text (a synthetic
+            # enrichment string, a pronoun-heavy paragraph) still plausibly
+            # concerns the subject. A TRUNCATED text with no subject mention
+            # is exactly the live failure case -- their own section may have
+            # simply been cut, and accepting everything here would silently
+            # reintroduce the bug this whole gate exists to close.
+            return not was_truncated
         idx = sent_index.get(sent.start_char)
         if idx is None:
             return True

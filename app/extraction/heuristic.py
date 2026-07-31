@@ -87,18 +87,25 @@ def heuristic_extract(
     display: dict = {}  # norm -> original display form
     sentences = _SENT_SPLIT.split(text)
 
+    # `text` reaching this function has typically already been through
+    # html_to_text(), which itself truncates to config.MAX_PAGE_CHARS -- so
+    # even though heuristic_extract does no truncation of its own, the INPUT
+    # can already be cut off before it gets here (see the matching comment
+    # in spacy_extractor.py for the live failure this specifically closes).
+    was_truncated = len(text) >= config.MAX_PAGE_CHARS
+
     # Proximity gate -- same fix, same reasoning, as spacy_extractor.py's
     # (see config.ENTITY_PROXIMITY_WINDOW): without it, a candidate found
     # ANYWHERE on a large multi-person page gets wired to the subject
-    # regardless of whether the subject is mentioned anywhere near it. No
-    # mention of the subject's own name anywhere in the text -> no proximity
-    # signal -> every sentence counts as "near" (today's behavior).
+    # regardless of whether the subject is mentioned anywhere near it.
     subject_lower = subject_person.lower()
     subject_sent_idx = {i for i, s in enumerate(sentences) if subject_lower in s.lower()}
 
     def _near_subject(idx: int) -> bool:
         if not subject_sent_idx:
-            return True
+            # See spacy_extractor.py's identical fallback: only safe to
+            # accept everything when nothing was actually truncated away.
+            return not was_truncated
         return any(abs(idx - si) <= config.ENTITY_PROXIMITY_WINDOW for si in subject_sent_idx)
 
     for sent_idx, sentence in enumerate(sentences):

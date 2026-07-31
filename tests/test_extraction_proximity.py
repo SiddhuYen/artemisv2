@@ -12,11 +12,20 @@ Ellison" edge at live, real confidence.
 The fix restricts entity discovery (and the evidence sentence chosen for
 it) to sentences within ENTITY_PROXIMITY_WINDOW of an actual occurrence of
 the SUBJECT's own name -- unless the subject's name never appears in the
-text at all, in which case there's no proximity signal to restrict by and
-behavior is unchanged from before this fix (a synthetic enrichment string
-or heavily-pronomial paragraph shouldn't lose everything just because the
-literal name string isn't repeated).
+text at all, in which case there's no proximity signal to restrict by.
+
+That fallback itself had a second live gap, found re-verifying this exact
+fix against the real page: html_to_text() truncates to
+config.MAX_PAGE_CHARS BEFORE either extractor ever sees the text, and on
+the actual live page, Eric Domski's own bio section sat past that cutoff
+while the unrelated Ellison sentence survived it -- so "no subject
+mention -> accept everything" fired anyway, on a text that LOOKED
+subject-free only because it had been cut off, not because it never
+mentioned him. Fixed by only falling back to "accept everything" when the
+text wasn't actually truncated; a truncated text with no subject mention
+now rejects everything from that page instead.
 """
+from app import config
 from app.extraction.heuristic import heuristic_extract
 from app.extraction.spacy_extractor import spacy_available, spacy_extract
 from app.silos import SILO_BY_KEY
@@ -112,3 +121,54 @@ def test_heuristic_extract_keeps_an_entity_within_the_window():
 def test_heuristic_extract_falls_back_to_unrestricted_when_subject_never_named():
     out = heuristic_extract("Eric Domski", _NO_SUBJECT_MENTION_TEXT, _COMPANY_SILO)
     assert "Larry Ellison" in _names(out)
+
+
+# ---------------------------------------------------------------------------
+# Truncation edge case: a page cut to MAX_PAGE_CHARS where the subject's own
+# mention didn't survive the cut, but an unrelated entity's did.
+# ---------------------------------------------------------------------------
+def _truncated_text_missing_subject() -> str:
+    """Builds text that is exactly config.MAX_PAGE_CHARS long, containing
+    the Kurian/Ellison sentence but NOT "Eric Domski" anywhere -- simulating
+    a real fetched page where the subject's own section fell past the
+    truncation point."""
+    ellison_sentence = (
+        "Thomas Kurian is President of Oracle Product Development and "
+        "reports to Oracle Executive Chairman of the Board and Chief "
+        "Technology Officer Larry Ellison. "
+    )
+    filler = "The venue offers modern facilities for all attendees. "
+    text = ellison_sentence
+    while len(text) < config.MAX_PAGE_CHARS:
+        text += filler
+    return text[: config.MAX_PAGE_CHARS]
+
+
+def test_spacy_extract_rejects_everything_when_truncated_with_no_subject_mention():
+    if not spacy_available():
+        import pytest
+        pytest.skip("spaCy model not installed in this environment")
+    text = _truncated_text_missing_subject()
+    assert "eric domski" not in text.lower()  # sanity: subject really isn't in this text
+    out = spacy_extract("Eric Domski", text, _COMPANY_SILO)
+    assert "Larry Ellison" not in _names(out), (
+        "a truncated page with no subject mention must NOT fall back to "
+        "accepting everything -- that's the exact live failure this closes")
+
+
+def test_spacy_extract_still_falls_back_when_short_text_has_no_subject_mention():
+    """The original fallback still has to work for the case it was actually
+    designed for: a short text (nowhere near the truncation cap) that
+    genuinely never repeats the subject's literal name."""
+    if not spacy_available():
+        import pytest
+        pytest.skip("spaCy model not installed in this environment")
+    assert len(_NO_SUBJECT_MENTION_TEXT) < config.MAX_PAGE_CHARS
+    out = spacy_extract("Eric Domski", _NO_SUBJECT_MENTION_TEXT, _COMPANY_SILO)
+    assert "Larry Ellison" in _names(out)
+
+
+def test_heuristic_extract_rejects_everything_when_truncated_with_no_subject_mention():
+    text = _truncated_text_missing_subject()
+    out = heuristic_extract("Eric Domski", text, _COMPANY_SILO)
+    assert "Larry Ellison" not in _names(out)
