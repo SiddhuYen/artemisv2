@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
+from ..extraction import node_profiler
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
@@ -678,6 +679,55 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                         e.signals.explicit_keyword_match = True
 
             candidate_edges.extend(found_edges)
+
+    # --- phase 4d: node profiling (Alpha step 4/5 -- "understand current
+    # node"): how big is the subject's own org, what industry is it in. Same
+    # gating as phase 4c (non-famous side of an asymmetric walk only) -- the
+    # famous side's own notability already came from the Wikidata check in
+    # connect._resolve_expansion_depths, nothing to profile there. Cached on
+    # the Organization row's own meta (no TTL, same convention as
+    # openalex_rejected above): an org already profiled by one colleague
+    # isn't re-profiled by the next, in this run or a future one.
+    #
+    # Deliberately fewer, more targeted queries than phase 1's silo search --
+    # see config.NODE_PROFILE_QUERIES's comment: structured-source-first
+    # (LinkedIn's employee-count badge, Crunchbase's headcount field) rather
+    # than generic "about us" copy, which almost never states real numbers
+    # and just invites node_profiler's model to infer instead of read.
+    check_cancel()
+    if enhanced_professional_search and is_person and node_profiler.is_active():
+        org_name = _best_known_org(candidate_edges)
+        if org_name:
+            org_row = builder.get_or_create_org(db, org_name)
+            if org_row is not None and not (org_row.meta or {}).get("profile"):
+                snippets: List[str] = []
+                seen_urls: Set[str] = set()
+                for template in config.NODE_PROFILE_QUERIES:
+                    check_cancel()
+                    query = template.format(org=org_name)
+                    try:
+                        results = ORCH.search(query, is_person=False)
+                    except Exception:
+                        continue
+                    for res in results[:2]:
+                        check_cancel()
+                        if res.url in seen_urls:
+                            continue
+                        seen_urls.add(res.url)
+                        page = ORCH.fetch(res.url)
+                        text = html_to_text(page.content) if page.content else ""
+                        text = text or f"{res.title}. {res.snippet}"
+                        source = builder.save_source(db, res, query, text)
+                        source_by_url[res.url] = source
+                        snippets.append(text)
+                profile = node_profiler.profile_org(org_name, snippets)
+                if profile is not None:
+                    meta = dict(org_row.meta or {})
+                    meta["profile"] = profile
+                    org_row.meta = meta
+                    if progress:
+                        progress(f"  ⓘ profiled {org_name}: size={profile['size_tier']} "
+                                 f"industry={profile['industry']} (grounded={profile['grounded']})")
 
     # --- phase 5: dedup + per-node cap, then persist ----------------------
     check_cancel()

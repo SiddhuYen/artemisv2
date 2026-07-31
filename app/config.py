@@ -364,6 +364,23 @@ ENHANCED_SEARCH_MAX_CANDIDATES = int(
 ENHANCED_SEARCH_MIN_MENTIONS = int(
     os.environ.get("ARTEMIS_ENHANCED_SEARCH_MIN_MENTIONS", "2"))
 
+# --- Alpha step 4/5: node profiling (org size/industry) --------------------
+# See extraction/node_profiler.py for the hallucination guard this feeds --
+# the model must ground every field in the fetched snippets or the whole
+# verdict collapses to "unknown" rather than a plausible-sounding guess.
+NODE_PROFILE_ENABLED = _env_bool("ARTEMIS_NODE_PROFILE", "1")
+NODE_PROFILE_MODEL = os.environ.get("ARTEMIS_NODE_PROFILE_MODEL", CLAUDE_BATCH_MODEL)
+# Structured-source-first queries (LinkedIn's employee-count badge, Crunchbase's
+# headcount field) are strongly preferred over generic "about us" marketing
+# copy, which almost never states real numbers and just invites the model to
+# infer instead of read.
+NODE_PROFILE_QUERIES = [
+    '"{org}" employees size linkedin',
+    '"{org}" crunchbase OR overview company',
+]
+NODE_PROFILE_MAX_SNIPPETS = int(os.environ.get("ARTEMIS_NODE_PROFILE_MAX_SNIPPETS", "3"))
+NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CHARS", "600"))
+
 # --- OpenCorporates (company officer networks) -----------------------------
 # Free-tier token from https://opencorporates.com/api_accounts/new ; absent => skipped.
 OPENCORPORATES_API_TOKEN = os.environ.get("OPENCORPORATES_API_TOKEN", "").strip()
