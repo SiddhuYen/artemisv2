@@ -57,6 +57,33 @@ def _mark_trusted(edges, trusted: bool) -> None:
             e.signals.trusted = True
 
 
+def _identity_signal(context: str, candidate_edges: List[ExtractedEdge]) -> str:
+    """User-given `context` plus a SMALL, confidence-ranked sample of this
+    node's own already-discovered evidence -- the signal an enrichment
+    match (see phase 4b in _process_person) gets checked against before
+    it's trusted.
+
+    Deliberately NOT every candidate edge found so far: confirmed live that
+    concatenating everything breaks this. A well-searched node can rack up
+    1000+ raw candidate edges before this runs, and a text blob that large
+    touches nearly every professional-domain bucket by sheer volume (a
+    stray "engineer"/"researcher" surfacing ANYWHERE in a thousand
+    snippets) -- domains_of(signal) becomes a near-superset that overlaps
+    with almost any candidate identity, so domain_conflict silently never
+    fires. Not because the identity check is wrong -- because "signal"
+    stopped meaning anything once it was everything. Same fix
+    builder._existing_evidence_signal already applies to the identical
+    problem, for the identical reason: a small, confidence-ranked sample,
+    not the whole pile.
+    """
+    top_evidence = [
+        e.evidence_snippet for e in
+        sorted(candidate_edges, key=lambda e: e.confidence_adjusted, reverse=True)
+        if e.evidence_snippet
+    ][:config.IDENTITY_SIGNAL_MAX_SNIPPETS]
+    return " ".join(filter(None, [context, " ".join(top_evidence)]))
+
+
 @dataclass
 class _Candidate:
     """Accumulated evidence about a discovered person, for expansion ranking."""
@@ -476,10 +503,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
         oa = ORCH.coauthors_enrichment(subject_name)
         oa_text = oa["coauthors_text"]
         if oa_text:
-            signal = " ".join(filter(None, [
-                context,
-                " ".join(e.evidence_snippet for e in candidate_edges if e.evidence_snippet),
-            ]))
+            signal = _identity_signal(context, candidate_edges)
             if disambiguate.domain_conflict(signal, oa["identity_text"]):
                 # Advisory record only (mirrors builder._homonym_conflict's
                 # homonym_rejected note) -- doesn't block a later, better-

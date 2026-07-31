@@ -12,6 +12,7 @@ name, because OpenAlex's bare-name search resolved to the wrong author and
 nothing checked whether that author's own affiliation had anything to do
 with the actual subject.
 """
+from app.extraction.schemas import EdgeSignals, ExtractedEdge
 from app.graph import builder, disambiguate, expansion
 from app.models import RelationshipEdge
 from app.providers import openalex as openalex_module
@@ -113,6 +114,46 @@ def test_identity_text_empty_when_name_does_not_resolve(monkeypatch):
     monkeypatch.setattr(openalex_module, "request_with_retry",
                         lambda *a, **k: _FakeResponse({"results": []}))
     assert provider.identity_text("Nobody") == ""
+
+
+# ---------------------------------------------------------------------------
+# graph/expansion._identity_signal -- must stay selective at real-world volume
+# ---------------------------------------------------------------------------
+def _edge(confidence: float, evidence: str) -> ExtractedEdge:
+    return ExtractedEdge(
+        person_a="Prantik Chakraborty", person_b="Someone", other_kind="person",
+        relationship_type="unknown", confidence_base=confidence,
+        confidence_adjusted=confidence, evidence_snippet=evidence,
+        signals=EdgeSignals(),
+    )
+
+
+def test_identity_signal_stays_selective_at_high_edge_volume():
+    """The actual live regression: with ~1500 raw candidate edges (a
+    realistic count for a well-searched node before dedup/cap), naively
+    joining every evidence_snippet produces a blob broad enough to touch
+    almost every domain bucket -- confirmed live for this exact case, where
+    it silently defeated the conflict check entirely. Restricting to the
+    top confidence-ranked few (mirrors builder._existing_evidence_signal)
+    keeps the signal meaning something."""
+    noisy = [_edge(0.3, f"random filler mentioning topic {i} vaguely")
+             for i in range(200)]
+    # scatter a couple of low-confidence, cross-domain words into the noise
+    # -- exactly what tanked this live, at real volume
+    noisy[10].evidence_snippet = "an engineer and researcher spoke at the event"
+    noisy[50].evidence_snippet = "a senator and a judge attended the ceremony"
+    real_signal = [_edge(0.85, "works at Trinamix Inc as Vice President Sales & Strategy")]
+
+    signal = expansion._identity_signal("", noisy + real_signal)
+
+    assert disambiguate.domains_of(signal) == {"business"}, (
+        "the high-confidence business evidence should dominate; noise from "
+        "hundreds of low-confidence edges must not leak in")
+
+
+def test_identity_signal_includes_user_given_context():
+    signal = expansion._identity_signal("Vice President Sales at Trinamix", [])
+    assert "business" in disambiguate.domains_of(signal)
 
 
 # ---------------------------------------------------------------------------
