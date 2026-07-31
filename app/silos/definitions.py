@@ -301,6 +301,17 @@ SILOS: List[Silo] = [
 
 SILO_BY_KEY = {s.key: s for s in SILOS}
 
+# Personal-tie silos, excluded when a caller wants professional connections
+# only (see graph.expansion's `professional_only` -- used for the famous/
+# shallow side of an asymmetric /connect walk, where the reasoning already
+# concluded a professional bridge is the likeliest path: searching a public
+# figure's spouse/siblings/close-friends is a wasted hop toward that goal,
+# not just noise). Kept as an explicit set here, next to the silo
+# definitions themselves, so a new personal-tie silo added later has an
+# obvious place to be added to this exclusion too.
+PERSONAL_SILO_KEYS = {"family", "friends"}
+PROFESSIONAL_SILOS = [s for s in SILOS if s.key not in PERSONAL_SILO_KEYS]
+
 
 # Extraction-only silo (NOT searched) for structured Wikipedia/Wikidata facts.
 # Broad signal coverage so a single pass classifies any relationship type, with

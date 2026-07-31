@@ -34,7 +34,7 @@ from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
 from ..network.silo_weights import query_budget as silo_query_budget
-from ..silos import COLLEAGUE_SILO, SILO_BY_KEY, SILOS, STRUCTURED_SILO
+from ..silos import COLLEAGUE_SILO, PROFESSIONAL_SILOS, SILO_BY_KEY, SILOS, STRUCTURED_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import (
     is_noise_name,
@@ -312,7 +312,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                     progress=None, is_person: bool = True, context: str = "",
                     cancel_checker: Optional[Callable[[], None]] = None,
                     silo_weights: Optional[Dict[str, float]] = None,
-                    enhanced_professional_search: bool = False) -> None:
+                    enhanced_professional_search: bool = False,
+                    professional_only: bool = False) -> None:
     def check_cancel() -> None:
         if cancel_checker:
             cancel_checker()
@@ -463,14 +464,21 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 candidate_edges.append(edge)
 
     # --- phase 1: build (silo, query) pairs, then DEDUP across silos -------
+    # `professional_only` drops the personal-tie silos (family/friends) --
+    # used for the shallow/famous side of an asymmetric /connect walk, where
+    # _resolve_expansion_depths already concluded the OTHER side's best path
+    # runs through a professional bridge: spending part of a 1-hop budget on
+    # a public figure's spouse or close friends is a wasted hop toward that
+    # specific goal, not just noise to filter out afterward.
     check_cancel()
     # Per-silo query allowance. Without weights every silo gets the full
     # MAX_QUERIES_PER_SILO, i.e. unchanged behavior; with them, silos that
     # cannot pay off for this particular subject are dropped and the rest are
     # scaled — see network/silo_weights.query_budget.
     budget = silo_query_budget(silo_weights)
+    silo_set = PROFESSIONAL_SILOS if professional_only else SILOS
     pairs = []
-    for silo in SILOS:
+    for silo in silo_set:
         allowance = budget.get(silo.key, 0)
         if allowance <= 0:
             continue
@@ -800,7 +808,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  should_stop: Optional[Callable[[Session], bool]] = None,
                  prefer_reachable: Optional[bool] = None,
                  silo_weights: Optional[Dict[str, float]] = None,
-                 enhanced_professional_search: bool = False) -> dict:
+                 enhanced_professional_search: bool = False, professional_only: bool = False) -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -830,7 +838,15 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     side's frontier walks outward hop by hop, each new node gets the same
     targeted-recheck treatment the seed did, which is what turns a single
     node's fix into the recursive "top candidates, searched properly, at
-    every hop" behavior this was designed for."""
+    every hop" behavior this was designed for.
+
+    `professional_only`, the mirror image, goes to the OTHER side -- the
+    shallow, famous one. connect_people sets it when the other side already
+    concluded a professional bridge is the likeliest path (that's what
+    triggered the asymmetric depth in the first place): the family/friends
+    silos are dropped from every query this call renders, so a public
+    figure's limited 1-hop budget goes toward colleagues and board seats,
+    not a wasted hop on their spouse or close friends."""
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
@@ -882,6 +898,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     # unfounded prior this feature exists to remove.
                     "silo_weights": (silo_weights if hop == 0 else None),
                     "enhanced_professional_search": enhanced_professional_search,
+                    "professional_only": professional_only,
                 }
                 if cancel_checker:
                     kwargs["cancel_checker"] = cancel_checker

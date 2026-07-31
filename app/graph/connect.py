@@ -336,8 +336,17 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     # toward -> neither side gets it, same as today.
     enhanced_a = depth_a > depth_b
     enhanced_b = depth_b > depth_a
+    # Mirror image, to the OTHER side: once the full-depth side's targeted
+    # search has effectively concluded "the bridge is professional" (that's
+    # what triggered the asymmetric depth to begin with), the famous side's
+    # own limited 1-hop budget should spend itself on colleagues and board
+    # seats, not family/friends silos -- see expansion.expand_graph's
+    # `professional_only` and PROFESSIONAL_SILOS.
+    professional_only_a = depth_a < depth_b
+    professional_only_b = depth_b < depth_a
 
-    def _run(name: str, context: str, label: str, side_depth: int, enhanced: bool) -> None:
+    def _run(name: str, context: str, label: str, side_depth: int,
+             enhanced: bool, professional_only: bool) -> None:
         worker_db = WorkerSession()
         try:
             if cancel_checker:
@@ -355,6 +364,7 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                 # per call so a concurrent /discover build keeps its own mode.
                 "prefer_reachable": False,
                 "enhanced_professional_search": enhanced,
+                "professional_only": professional_only,
             }
             if cancel_checker:
                 kwargs["cancel_checker"] = cancel_checker
@@ -366,8 +376,8 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         futures = [
-            ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a),
-            ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b),
+            ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a, professional_only_a),
+            ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b, professional_only_b),
         ]
         for f in futures:
             f.result()
