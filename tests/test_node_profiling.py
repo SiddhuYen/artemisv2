@@ -14,9 +14,18 @@ a fact.
 """
 from app import config
 from app.extraction import node_profiler
+from app.extraction.schemas import EdgeSignals, ExtractedEdge
 from app.graph import builder, expansion
 from app.models import Organization
 from app.providers.base import SearchResult
+
+
+def _org_edge(org_name: str, evidence: str = "") -> ExtractedEdge:
+    return ExtractedEdge(
+        person_a="Subject", organization=org_name, other_kind="organization",
+        relationship_type="employee", confidence_base=0.7, confidence_adjusted=0.7,
+        evidence_snippet=evidence, signals=EdgeSignals(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +94,40 @@ def test_profile_org_normalizes_an_out_of_vocabulary_size_tier(monkeypatch):
     assert profile["size_tier"] == "unknown"
 
 
+def test_profile_org_includes_identity_check_block_when_known_context_given(monkeypatch):
+    captured = {}
+
+    def fake_call_json(prompt, schema, model, max_tokens=4096, **kw):
+        captured["prompt"] = prompt
+        return {"size_tier": "unknown", "industry": "unknown", "summary": "", "grounded": False}
+
+    monkeypatch.setattr(node_profiler, "is_active", lambda: True)
+    monkeypatch.setattr(node_profiler, "call_json", fake_call_json)
+
+    node_profiler.profile_org("Trinamix", ["a snippet"],
+                              known_context="VP Sales at Trinamix Inc.")
+    assert "identity check" in captured["prompt"].lower()
+    assert "VP Sales at Trinamix Inc." in captured["prompt"]
+
+
+def test_profile_org_omits_identity_check_block_with_no_known_context(monkeypatch):
+    captured = {}
+
+    def fake_call_json(prompt, schema, model, max_tokens=4096, **kw):
+        captured["prompt"] = prompt
+        return {"size_tier": "unknown", "industry": "unknown", "summary": "", "grounded": False}
+
+    monkeypatch.setattr(node_profiler, "is_active", lambda: True)
+    monkeypatch.setattr(node_profiler, "call_json", fake_call_json)
+
+    node_profiler.profile_org("Trinamix", ["a snippet"])
+    # the rules always reference "the identity check, if one was given" --
+    # what must be absent with no known_context is the identity block
+    # itself (the concrete anchor text and live trinamiX GmbH example).
+    assert "Known context about the REAL organization" not in captured["prompt"]
+    assert "trinamiX GmbH" not in captured["prompt"]
+
+
 def test_profile_org_truncates_to_max_snippets_and_chars(monkeypatch):
     captured = {}
 
@@ -150,9 +193,10 @@ def test_phase_4d_profiles_and_caches_the_subjects_org(db, monkeypatch):
             "Trinamix | LinkedIn", "https://linkedin.com/company/trinamix", "snippet", "serper")],
         fetched_text="Trinamix has 201-500 employees on LinkedIn, an Oracle ERP consultancy.",
     )
-    monkeypatch.setattr(expansion, "_best_known_org", lambda edges: "Trinamix")
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge",
+                        lambda edges: _org_edge("Trinamix", "works at Trinamix"))
     monkeypatch.setattr(node_profiler, "is_active", lambda: True)
-    monkeypatch.setattr(node_profiler, "profile_org", lambda org, snippets: {
+    monkeypatch.setattr(node_profiler, "profile_org", lambda org, snippets, known_context="": {
         "size_tier": "mid", "industry": "Oracle ERP consulting",
         "summary": "A mid-sized Oracle consultancy.", "grounded": True,
     })
@@ -166,15 +210,46 @@ def test_phase_4d_profiles_and_caches_the_subjects_org(db, monkeypatch):
     assert org.meta["profile"]["industry"] == "Oracle ERP consulting"
 
 
+def test_phase_4d_passes_the_subjects_own_affiliation_evidence_as_known_context(db, monkeypatch):
+    """The identity-check fix: node_profiler needs something concrete to
+    check fetched snippets against, or a search for "Trinamix" pulling in
+    the unrelated "trinamiX GmbH" (the real live case this closes) has no
+    way to be caught. The subject's own affiliation edge evidence is that
+    anchor, and it must actually reach profile_org, not just exist."""
+    captured = {}
+    _silence_everything_but_profiling(
+        monkeypatch,
+        search_results=[SearchResult("Trinamix", "https://linkedin.com/company/trinamix",
+                                     "snippet", "serper")],
+        fetched_text="some fetched text",
+    )
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge", lambda edges: _org_edge(
+        "Trinamix", "Prantik Chakraborty, Vice President Sales & Strategy at Trinamix Inc."))
+    monkeypatch.setattr(node_profiler, "is_active", lambda: True)
+
+    def fake_profile_org(org, snippets, known_context=""):
+        captured["known_context"] = known_context
+        return {"size_tier": "unknown", "industry": "unknown", "summary": "", "grounded": False}
+
+    monkeypatch.setattr(node_profiler, "profile_org", fake_profile_org)
+
+    expansion._process_person(db, "Prantik Chakraborty", 0, {},
+                              enhanced_professional_search=True)
+
+    assert captured["known_context"] == \
+        "Prantik Chakraborty, Vice President Sales & Strategy at Trinamix Inc."
+
+
 def test_phase_4d_is_off_for_the_famous_shallow_side(db, monkeypatch):
     """enhanced_professional_search=False (professional_only side) must not
     profile anything -- mirrors phase 4c's own gating, same reasoning: the
     famous side's notability already came from the Wikidata check upstream."""
     calls = []
     _silence_everything_but_profiling(monkeypatch)
-    monkeypatch.setattr(expansion, "_best_known_org", lambda edges: "Oracle")
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge",
+                        lambda edges: _org_edge("Oracle"))
     monkeypatch.setattr(node_profiler, "profile_org",
-                        lambda org, snippets: calls.append(org) or None)
+                        lambda org, snippets, known_context="": calls.append(org) or None)
 
     expansion._process_person(db, "Larry Ellison", 0, {},
                               enhanced_professional_search=False)
@@ -186,9 +261,9 @@ def test_phase_4d_is_off_for_the_famous_shallow_side(db, monkeypatch):
 def test_phase_4d_skips_when_no_known_org(db, monkeypatch):
     calls = []
     _silence_everything_but_profiling(monkeypatch)
-    monkeypatch.setattr(expansion, "_best_known_org", lambda edges: None)
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge", lambda edges: None)
     monkeypatch.setattr(node_profiler, "profile_org",
-                        lambda org, snippets: calls.append(org) or None)
+                        lambda org, snippets, known_context="": calls.append(org) or None)
 
     expansion._process_person(db, "Nobody Notable", 0, {},
                               enhanced_professional_search=True)
@@ -209,7 +284,8 @@ def test_phase_4d_does_not_reprofile_an_already_profiled_org(db, monkeypatch):
     _silence_everything_but_profiling(monkeypatch)
     monkeypatch.setattr(expansion.ORCH, "search",
                         lambda query, is_person=True: search_calls.append(query) or [])
-    monkeypatch.setattr(expansion, "_best_known_org", lambda edges: "Trinamix")
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge",
+                        lambda edges: _org_edge("Trinamix", "works at Trinamix"))
     monkeypatch.setattr(node_profiler, "is_active", lambda: True)
 
     expansion._process_person(db, "Molly Chakraborty", 0, {},
@@ -226,7 +302,8 @@ def test_phase_4d_skips_search_entirely_when_claude_is_not_active(db, monkeypatc
     _silence_everything_but_profiling(monkeypatch)
     monkeypatch.setattr(expansion.ORCH, "search",
                         lambda query, is_person=True: search_calls.append(query) or [])
-    monkeypatch.setattr(expansion, "_best_known_org", lambda edges: "Trinamix")
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge",
+                        lambda edges: _org_edge("Trinamix", "works at Trinamix"))
     monkeypatch.setattr(node_profiler, "is_active", lambda: False)
 
     expansion._process_person(db, "Prantik Chakraborty", 0, {},

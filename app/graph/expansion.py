@@ -120,6 +120,16 @@ def _repeat_candidates(candidate_edges: List[ExtractedEdge]) -> List[str]:
 _AFFILIATION_TYPES = {"employee", "cofounder", "board_member", "faculty"}
 
 
+def _best_org_affiliation_edge(candidate_edges: List[ExtractedEdge]) -> Optional[ExtractedEdge]:
+    best: Optional[ExtractedEdge] = None
+    for e in candidate_edges:
+        if e.other_kind != "organization" or e.relationship_type not in _AFFILIATION_TYPES:
+            continue
+        if best is None or e.confidence_adjusted > best.confidence_adjusted:
+            best = e
+    return best
+
+
 def _best_known_org(candidate_edges: List[ExtractedEdge]) -> Optional[str]:
     """The subject's own highest-confidence org affiliation found so far, if
     any -- used by the targeted-recheck phase to search "{candidate} {org}"
@@ -129,12 +139,7 @@ def _best_known_org(candidate_edges: List[ExtractedEdge]) -> Optional[str]:
     subject by name at all, so a dual-name-only search never re-finds it --
     while a name+company search reliably does.
     """
-    best: Optional[ExtractedEdge] = None
-    for e in candidate_edges:
-        if e.other_kind != "organization" or e.relationship_type not in _AFFILIATION_TYPES:
-            continue
-        if best is None or e.confidence_adjusted > best.confidence_adjusted:
-            best = e
+    best = _best_org_affiliation_edge(candidate_edges)
     return best.organization if best else None
 
 
@@ -696,7 +701,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # and just invites node_profiler's model to infer instead of read.
     check_cancel()
     if enhanced_professional_search and is_person and node_profiler.is_active():
-        org_name = _best_known_org(candidate_edges)
+        org_edge = _best_org_affiliation_edge(candidate_edges)
+        org_name = org_edge.organization if org_edge else None
         if org_name:
             org_row = builder.get_or_create_org(db, org_name)
             if org_row is not None and not (org_row.meta or {}).get("profile"):
@@ -720,7 +726,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                         source = builder.save_source(db, res, query, text)
                         source_by_url[res.url] = source
                         snippets.append(text)
-                profile = node_profiler.profile_org(org_name, snippets)
+                known_context = org_edge.evidence_snippet or ""
+                profile = node_profiler.profile_org(org_name, snippets, known_context)
                 if profile is not None:
                     meta = dict(org_row.meta or {})
                     meta["profile"] = profile
