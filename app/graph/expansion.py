@@ -58,6 +58,37 @@ def _mark_trusted(edges, trusted: bool) -> None:
             e.signals.trusted = True
 
 
+# OpenAlex-sourced edges all share this SearchResult.url (see phase 4b and
+# _resolve_expansion_depths' coauthors_enrichment call) -- a cheap, already-
+# existing way to tell "this candidate came from a bare coauthor-name list"
+# apart from every other extraction source, with no new field needed.
+_OPENALEX_SOURCE_URL = "https://openalex.org/"
+
+
+def _counterpart_identity_text(edge: ExtractedEdge) -> Optional[str]:
+    """A signal describing WHO this specific edge's counterpart is, for
+    builder.get_or_create_person's homonym guard on a plain-name merge (see
+    that function's docstring). Without this, counterpart resolution merges
+    onto ANY existing same-named node with zero identity check -- confirmed
+    live: an OpenAlex coauthor named "Donald Trump" (a real academic,
+    discovered as one of Jaya Sharma's real coauthors) merged straight onto
+    the sitting-president "Donald Trump" node already in the graph, silently
+    bridging two unrelated real people through one shared name.
+
+    OpenAlex-sourced edges get an explicit "academic author" tag -- the same
+    wording-gap fix already applied to _resolve_author's SUBJECT-side
+    identity_text this session: coauthors_text's raw sentence ("X coauthor
+    of Y.") has no profession keyword in it at all, so domains_of() would
+    never anchor it in "science" without this. Every other edge falls back
+    to its own evidence sentence, which may or may not carry enough signal
+    to matter -- the guard stays silent (no false separation) when it doesn't.
+    """
+    text = edge.evidence_snippet or ""
+    if edge.source_url == _OPENALEX_SOURCE_URL:
+        text = f"{text} (an academic author, from a research coauthorship)".strip()
+    return text or None
+
+
 def _identity_signal(context: str, candidate_edges: List[ExtractedEdge]) -> str:
     """User-given `context` plus a SMALL, confidence-ranked sample of this
     node's own already-discovered evidence -- the signal an enrichment
@@ -824,7 +855,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
         check_cancel()
         if edge.other_kind == "person":
             counterpart = builder.get_or_create_person(
-                db, edge.person_b, allow_create=not at_cap
+                db, edge.person_b, allow_create=not at_cap,
+                identity_text=_counterpart_identity_text(edge),
             )
             if counterpart is None:
                 continue

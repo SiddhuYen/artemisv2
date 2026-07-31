@@ -46,7 +46,22 @@ _DOMAINS = {
     "film": {"actor", "actress", "filmmaker", "screenwriter", "comedian",
              "cinematographer", "voice actor"},
     "politics": {"politician", "senator", "governor", "minister", "congressman",
-                 "congresswoman", "mayor", "diplomat", "legislator", "councillor"},
+                 "congresswoman", "mayor", "diplomat", "legislator", "councillor",
+                 # Deliberately compound/specific head-of-state phrases, not a
+                 # bare "president" -- that word alone is hopelessly overloaded
+                 # (company president, club president, university president)
+                 # and would collide constantly with the business bucket's own
+                 # "vice president"/corporate-officer language. Added after a
+                 # live homonym slipped through: a real US-president "Donald
+                 # Trump" node absorbed an unrelated academic coauthor sharing
+                 # the same name, because nothing in this lexicon anchored his
+                 # accumulated evidence ("U.S. President Donald Trump...") in
+                 # ANY domain at all -- domains_of() came back empty, so
+                 # domain_conflict stayed silent even though a real cross-
+                 # domain mismatch existed.
+                 "u.s. president", "president of the united states",
+                 "white house", "commander in chief", "presidential administration",
+                 "president-elect"},
     "science": {"scientist", "researcher", "physicist", "chemist", "biologist",
                 "mathematician", "astronomer", "academic", "engineer"},
     "medicine": {"physician", "surgeon", "cardiologist", "psychiatrist",
