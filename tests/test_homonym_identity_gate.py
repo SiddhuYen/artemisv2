@@ -74,9 +74,22 @@ def test_resolve_author_returns_institution_as_identity_text(monkeypatch):
 
     assert author_id == "A123"
     assert "Indian Space Research Organisation" in identity
+    # "academic" is load-bearing, not decorative: an institution's bare NAME
+    # has no profession keyword in it on its own, so without an explicit
+    # "academic author" framing, disambiguate.domains_of() on this string
+    # comes back empty and domain_conflict silently never fires -- confirmed
+    # against the REAL live OpenAlex API for this exact name before this
+    # wording was added (it resolves to the same wrong ISRO-affiliated
+    # author in production right now).
+    assert "academic" in identity.lower()
 
 
-def test_identity_text_empty_when_no_institution_on_record(monkeypatch):
+def test_identity_text_still_says_academic_author_with_no_institution_on_record(monkeypatch):
+    """No institution on record doesn't mean no signal: passing the
+    works_count/name-similarity guard IS a real published record on its
+    own, so "an academic author" still holds and still gives
+    domain_conflict something to match on (see the "academic" comment in
+    _resolve_author for why a bare institution name alone isn't enough)."""
     _patch_openalex_cache_miss(monkeypatch)
     provider = openalex_module.OpenAlexProvider()
 
@@ -89,7 +102,9 @@ def test_identity_text_empty_when_no_institution_on_record(monkeypatch):
         }]})
 
     monkeypatch.setattr(openalex_module, "request_with_retry", fake_request)
-    assert provider.identity_text("Someone Else") == ""
+    identity = provider.identity_text("Someone Else")
+    assert "academic" in identity.lower()
+    assert "affiliated with" not in identity  # no institution to name
 
 
 def test_identity_text_empty_when_name_does_not_resolve(monkeypatch):

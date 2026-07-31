@@ -72,10 +72,11 @@ _DOMAINS = {
     # never fired even though the two evidently don't overlap.
     "business": {"vice president", "chief executive", "chief financial officer",
                  "chief operating officer", "chief revenue officer",
-                 "managing director", "business development",
-                 "management consulting", "account executive",
-                 "corporate strategy", "sales strategy", "vp sales",
-                 "executive vice president"},
+                 "chief technology officer", "managing director",
+                 "business development", "management consulting",
+                 "account executive", "corporate strategy", "sales strategy",
+                 "vp sales", "executive vice president", "chairman of the board",
+                 "co-founder", "cofounder"},
 }
 
 # Compile one boundary-anchored pattern per domain. `\b` bounds even the short

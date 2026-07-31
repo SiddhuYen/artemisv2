@@ -118,9 +118,21 @@ class OpenAlexProvider:
                         insts = [i.get("display_name") for i in
                                 (top.get("last_known_institutions") or [])
                                 if i.get("display_name")]
+                        # "an academic author" is explicit and load-bearing, not
+                        # filler: passing the works_count/name-similarity guard
+                        # above IS a real published record, so this is a true
+                        # statement regardless of institution data -- and it's
+                        # the word disambiguate.domain_conflict's lexicon
+                        # actually matches on. An institution's bare NAME (e.g.
+                        # "Indian Space Research Organisation") does NOT contain
+                        # a profession keyword on its own; without this, the
+                        # domain check silently never fires, which is exactly
+                        # what happened testing this against the live API for
+                        # the motivating case before this line was added.
+                        identity = f"{top.get('display_name', name)}, an academic author"
                         if insts:
-                            identity = (f"{top.get('display_name', name)}, "
-                                       f"affiliated with {', '.join(insts)}.")
+                            identity += f" affiliated with {', '.join(insts)}"
+                        identity += "."
             except Exception:
                 pass
         cache.set(key, "resolve", {"id": author_id, "identity_text": identity},
