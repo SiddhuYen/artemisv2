@@ -352,6 +352,17 @@ IDENTITY_VERIFY_ENABLED = _env_bool("ARTEMIS_IDENTITY_VERIFY_ENABLED", "1")
 IDENTITY_SIGNAL_MAX_SNIPPETS = int(
     os.environ.get("ARTEMIS_IDENTITY_SIGNAL_MAX_SNIPPETS", "5"))
 
+# --- coauthor plausibility gate (before OpenAlex, not just after) ----------
+# See extraction/coauthor_plausibility.py: a cheaper, prior question than
+# phase 4b's existing domain_conflict check -- given what's already known
+# about the subject, is an OpenAlex coauthor lookup even worth attempting?
+# Skips the call entirely for subjects who clearly aren't the type to have
+# academic publications, closing the homonym-collision risk a layer earlier
+# instead of only catching it after OpenAlex has already resolved a name.
+COAUTHOR_PLAUSIBILITY_ENABLED = _env_bool("ARTEMIS_COAUTHOR_PLAUSIBILITY", "1")
+COAUTHOR_PLAUSIBILITY_MODEL = os.environ.get(
+    "ARTEMIS_COAUTHOR_PLAUSIBILITY_MODEL", CLAUDE_BATCH_MODEL)
+
 # --- targeted professional-network re-search (bounded beam) ----------------
 # On the non-famous side of an asymmetric /connect walk (see
 # graph.connect._resolve_expansion_depths), generic silo templates find a

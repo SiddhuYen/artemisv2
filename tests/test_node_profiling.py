@@ -165,6 +165,9 @@ def _silence_everything_but_profiling(monkeypatch, search_results=None, fetched_
     monkeypatch.setattr(expansion.ORCH, "coauthors_enrichment", lambda name: {
         "coauthors": [], "coauthors_text": "", "identity_text": "",
     })
+    # Unrelated to what this file tests -- disable so it doesn't make a real
+    # network call in a test.
+    monkeypatch.setattr(expansion.coauthor_plausibility, "is_active", lambda: False)
     monkeypatch.setattr(expansion.config, "PODCASTS_ENABLED", False)
     monkeypatch.setattr(expansion.ORCH, "dedup", lambda pairs: ([], {}))
     monkeypatch.setattr(expansion, "_repeat_candidates", lambda edges: [])

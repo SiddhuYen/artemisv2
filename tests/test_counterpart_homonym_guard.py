@@ -53,6 +53,11 @@ def _silence_everything_but_openalex(monkeypatch, coauthors, identity_text=""):
     monkeypatch.setattr(expansion.ORCH, "firm_enrichment", lambda name: {"firms": []})
     monkeypatch.setattr(expansion.config, "PODCASTS_ENABLED", False)
     monkeypatch.setattr(expansion.ORCH, "dedup", lambda pairs: ([], {}))
+    # This test targets the counterpart-merge guard specifically, which only
+    # matters once OpenAlex has actually run -- disable the new pre-gate
+    # (fail-open) so it doesn't skip the call before getting there, and so
+    # this test doesn't make a real network call.
+    monkeypatch.setattr(expansion.coauthor_plausibility, "is_active", lambda: False)
     coauthors_text = " ".join(f"Jaya Sharma coauthor of {c}." for c in coauthors)
     monkeypatch.setattr(expansion.ORCH, "coauthors_enrichment", lambda name: {
         "coauthors": [{"name": c, "count": 1} for c in coauthors],

@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
-from ..extraction import node_profiler, search_strategy
+from ..extraction import coauthor_plausibility, node_profiler, search_strategy
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
@@ -604,7 +604,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 out = extract(subject_name, text, silo, res.snippet, res.url)
                 candidate_edges.extend(out.edges)
 
-    # --- phase 4b: OpenAlex coauthors, identity-gated -----------------------
+    # --- phase 4b: OpenAlex coauthors, plausibility- and identity-gated ----
     # A bare-name lookup (this one included) can't tell two same-named people
     # apart on its own -- OpenAlex's own match guard (works_count + name
     # similarity, see providers/openalex.py) narrows candidates, it doesn't
@@ -618,29 +618,46 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # sales executive at a chemicals company. Gated on `is_person`, not
     # `effective_is_person`: a context hint no longer means "skip this
     # source," it means "here's a strong signal to verify it against."
+    #
+    # coauthor_plausibility.check() runs FIRST, before the OpenAlex call
+    # even happens -- a cheaper, prior question using the SAME signal:
+    # given what's already known about this subject, would they plausibly
+    # have academic publications at all? Closes the homonym-collision risk
+    # a layer earlier than the domain_conflict check below, which only ever
+    # fires AFTER OpenAlex has already resolved a name and returned a
+    # coauthor list to check.
     check_cancel()
     if is_person:
-        oa = ORCH.coauthors_enrichment(subject_name)
-        oa_text = oa["coauthors_text"]
-        if oa_text:
-            signal = _identity_signal(context, candidate_edges)
-            if disambiguate.domain_conflict(signal, oa["identity_text"]):
-                # Advisory record only (mirrors builder._homonym_conflict's
-                # homonym_rejected note) -- doesn't block a later, better-
-                # evidenced acceptance, just explains why this pass skipped it.
-                meta = dict(subject.meta or {})
-                meta["openalex_rejected"] = {"identity_text": oa["identity_text"][:300]}
-                subject.meta = meta
-                if progress:
-                    progress(f"  ⚠ OpenAlex coauthors for {subject_name} rejected — "
-                             f"resolved identity doesn't match: {oa['identity_text'][:80]}")
-            else:
-                res = SearchResult(subject_name, "https://openalex.org/", "openalex", "openalex")
-                source = builder.save_source(db, res, "enrich:openalex", oa_text)
-                source_by_url[res.url] = source
-                out = extract(subject_name, oa_text, COLLEAGUE_SILO, "openalex", res.url)
-                _mark_trusted(out.edges, True)  # verified above, or nothing to conflict with
-                candidate_edges.extend(out.edges)
+        signal = _identity_signal(context, candidate_edges)
+        plausibility = coauthor_plausibility.check(subject_name, context, signal)
+        if plausibility is not None and not plausibility["plausible"]:
+            meta = dict(subject.meta or {})
+            meta["openalex_skipped"] = {"why": plausibility["why"]}
+            subject.meta = meta
+            if progress:
+                progress(f"  ⊘ skipping OpenAlex coauthors for {subject_name} — "
+                         f"{plausibility['why']}")
+        else:
+            oa = ORCH.coauthors_enrichment(subject_name)
+            oa_text = oa["coauthors_text"]
+            if oa_text:
+                if disambiguate.domain_conflict(signal, oa["identity_text"]):
+                    # Advisory record only (mirrors builder._homonym_conflict's
+                    # homonym_rejected note) -- doesn't block a later, better-
+                    # evidenced acceptance, just explains why this pass skipped it.
+                    meta = dict(subject.meta or {})
+                    meta["openalex_rejected"] = {"identity_text": oa["identity_text"][:300]}
+                    subject.meta = meta
+                    if progress:
+                        progress(f"  ⚠ OpenAlex coauthors for {subject_name} rejected — "
+                                 f"resolved identity doesn't match: {oa['identity_text'][:80]}")
+                else:
+                    res = SearchResult(subject_name, "https://openalex.org/", "openalex", "openalex")
+                    source = builder.save_source(db, res, "enrich:openalex", oa_text)
+                    source_by_url[res.url] = source
+                    out = extract(subject_name, oa_text, COLLEAGUE_SILO, "openalex", res.url)
+                    _mark_trusted(out.edges, True)  # verified above, or nothing to conflict with
+                    candidate_edges.extend(out.edges)
 
     # --- phase 4c: targeted re-query for names that keep coming up ---------
     # Only on the non-famous side of an asymmetric /connect walk (see

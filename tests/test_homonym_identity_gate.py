@@ -169,6 +169,12 @@ def _silence_everything_but_openalex(monkeypatch, coauthors_text="", identity_te
     monkeypatch.setattr(expansion.ORCH, "firm_enrichment", lambda name: {"firms": []})
     monkeypatch.setattr(expansion.config, "PODCASTS_ENABLED", False)
     monkeypatch.setattr(expansion.ORCH, "dedup", lambda pairs: ([], {}))
+    # This test exercises the domain_conflict check itself (AFTER OpenAlex
+    # returns), not the new pre-gate -- disable the pre-gate (fail-open, same
+    # as no Claude configured) so it doesn't skip the OpenAlex call before
+    # this test ever gets to what it's actually checking, and so it doesn't
+    # make a real network call in a test.
+    monkeypatch.setattr(expansion.coauthor_plausibility, "is_active", lambda: False)
     monkeypatch.setattr(expansion.ORCH, "coauthors_enrichment", lambda name: {
         "coauthors": [{"name": "Some Coauthor", "count": 1}] if coauthors_text else [],
         "coauthors_text": coauthors_text,
