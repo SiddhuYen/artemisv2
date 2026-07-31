@@ -1000,6 +1000,15 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
+    # Alpha step 7 (per-candidate depth): a node selected for the Alpha
+    # frontier that turns out to be independently notable/famous relative to
+    # the target gets fully processed and persisted (its own "1 hop"), but
+    # its OWN discoveries are excluded from seeding the NEXT hop -- don't
+    # keep walking outward from someone already close to the target's own
+    # world; that just re-explores a famous person's huge network instead of
+    # continuing to hunt for a targeted bridge. Populated after each Alpha
+    # frontier selection below; read (as a closure) inside _process_one.
+    shallow_nodes: Set[str] = set()
 
     # Frontier nodes within one hop are independent of each other -- nothing
     # about processing candidate #3 needs candidate #2 done first -- so they
@@ -1066,6 +1075,11 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                          f"({exc.__class__.__name__}) — skipped")
         finally:
             worker_db.close()
+        if person_norm_key(name) in shallow_nodes:
+            # Fully processed and persisted above -- only excluded from
+            # feeding the NEXT hop's frontier selection (see shallow_nodes'
+            # own comment above).
+            return {}
         return local_disc
 
     for hop in range(0, max_depth):
@@ -1155,6 +1169,23 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         frontier = _ranked_expandable(disc, visited, progress=progress,
                                       prefer_reachable=prefer_reachable,
                                       top_n=alpha_top_n)
+        # Alpha step 7 (per-candidate depth): among the selected frontier,
+        # any independently notable/famous candidate gets marked shallow --
+        # see shallow_nodes' declaration above. Checked here (once per hop,
+        # batched) rather than per-node during processing, since notability
+        # is a property of the NAME alone and this is the one place the
+        # whole hop's frontier is already assembled in one list.
+        if enhanced_professional_search and frontier:
+            check_cancel()
+            try:
+                famous = ORCH.notable_set(frontier)
+            except Exception:
+                famous = set()
+            if famous:
+                shallow_nodes.update(person_norm_key(n) for n in famous)
+                if progress:
+                    progress(f"  ⚑ {len(famous)} frontier node(s) independently notable — "
+                             f"shallow (1 hop, not walked further): {', '.join(sorted(famous))}")
         if progress and frontier:
             progress(f"  → expanding top {len(frontier)} strong nodes to hop {hop + 1}: "
                      + ", ".join(frontier[:5]) + (" …" if len(frontier) > 5 else ""))
