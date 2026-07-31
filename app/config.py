@@ -326,6 +326,29 @@ IDENTITY_VERIFY_ENABLED = _env_bool("ARTEMIS_IDENTITY_VERIFY_ENABLED", "1")
 IDENTITY_SIGNAL_MAX_SNIPPETS = int(
     os.environ.get("ARTEMIS_IDENTITY_SIGNAL_MAX_SNIPPETS", "5"))
 
+# --- targeted professional-network re-search (bounded beam) ----------------
+# On the non-famous side of an asymmetric /connect walk (see
+# graph.connect._resolve_expansion_depths), generic silo templates find a
+# subject's company but then keep guessing broadly instead of following up on
+# names that already surfaced repeatedly -- e.g. a real cofounder mentioned
+# only in passing LinkedIn posts stays capped at "weak coworker" confidence
+# forever, because nothing ever asks a sharper, targeted question about her
+# specifically. expansion._process_person's targeted-recheck phase re-queries
+# each such repeat name directly (subject + candidate, both names), instead
+# of relying on the generic net to state the relationship by accident.
+#
+# Bounded on purpose: this is a beam search, not full recursion. At
+# ENHANCED_SEARCH_MAX_CANDIDATES per hop, cost stays predictable (5 -> 25 ->
+# 125 across 3 hops) instead of scaling with however many candidates a node
+# happens to discover.
+ENHANCED_SEARCH_MAX_CANDIDATES = int(
+    os.environ.get("ARTEMIS_ENHANCED_SEARCH_MAX_CANDIDATES", "5"))
+# A name has to repeat at least this many times across independently-found
+# sources before it's worth a dedicated re-query -- a single passing mention
+# isn't the "keeps coming up" signal this is meant to act on.
+ENHANCED_SEARCH_MIN_MENTIONS = int(
+    os.environ.get("ARTEMIS_ENHANCED_SEARCH_MIN_MENTIONS", "2"))
+
 # --- OpenCorporates (company officer networks) -----------------------------
 # Free-tier token from https://opencorporates.com/api_accounts/new ; absent => skipped.
 OPENCORPORATES_API_TOKEN = os.environ.get("OPENCORPORATES_API_TOKEN", "").strip()

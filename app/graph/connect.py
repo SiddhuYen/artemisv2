@@ -328,7 +328,16 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     WorkerSession = sessionmaker(bind=engine, autoflush=False,
                                  expire_on_commit=False, future=True)
 
-    def _run(name: str, context: str, label: str, side_depth: int) -> None:
+    # Asymmetric depth (see _resolve_expansion_depths) means exactly one side
+    # is famous and shallow -- the OTHER, full-depth side is the one actually
+    # walking TOWARD a famous target, which is the situation
+    # expansion._process_person's targeted-recheck phase (4c) exists for. No
+    # asymmetry (both/neither notable) -> no clear famous target to walk
+    # toward -> neither side gets it, same as today.
+    enhanced_a = depth_a > depth_b
+    enhanced_b = depth_b > depth_a
+
+    def _run(name: str, context: str, label: str, side_depth: int, enhanced: bool) -> None:
         worker_db = WorkerSession()
         try:
             if cancel_checker:
@@ -345,6 +354,7 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                 # reachability walk /discover uses -- see connect_people. Passed
                 # per call so a concurrent /discover build keeps its own mode.
                 "prefer_reachable": False,
+                "enhanced_professional_search": enhanced,
             }
             if cancel_checker:
                 kwargs["cancel_checker"] = cancel_checker
@@ -356,8 +366,8 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         futures = [
-            ex.submit(_run, name_a, context_a, "A", depth_a),
-            ex.submit(_run, name_b, context_b, "B", depth_b),
+            ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a),
+            ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b),
         ]
         for f in futures:
             f.result()
