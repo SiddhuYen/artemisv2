@@ -205,6 +205,17 @@ EXPAND_PREFER_REACHABLE = _env_bool("ARTEMIS_EXPAND_PREFER_REACHABLE", "1")
 DOWNWEIGHT_FAMILY = _env_bool("ARTEMIS_DOWNWEIGHT_FAMILY", "1")
 FAMILY_PENALTY = float(os.environ.get("ARTEMIS_FAMILY_PENALTY", "1.5"))
 PROFESSIONAL_BONUS = float(os.environ.get("ARTEMIS_PROFESSIONAL_BONUS", "1.0"))
+# Alpha step 7: bonus per cofounder/board_member-typed (or business-domain-
+# language) edge a candidate has -- ranks "most high up and well connected"
+# candidates above equally-evidenced but junior ones. Additive on top of
+# score()'s existing strong/explicit/source terms, not a replacement for them.
+SENIORITY_BONUS = float(os.environ.get("ARTEMIS_SENIORITY_BONUS", "1.0"))
+# Alpha step 7's "pick 5 of the strongest" -- narrower than the general
+# EXPAND_TOP_STRONG beam (15). Applied only on the non-famous/origin side of
+# an asymmetric /connect walk (enhanced_professional_search), where a
+# reasoning-selected angle already narrowed the field; expanding 15 people's
+# worth of generic silo search doesn't need the same narrowing.
+ALPHA_TOP_CANDIDATES = int(os.environ.get("ARTEMIS_ALPHA_TOP_CANDIDATES", "5"))
 # Shared global map accumulates people across ALL runs, so the cap is high.
 # (A single isolated build rarely approaches this; it bounds unbounded growth.)
 MAX_TOTAL_NODES = int(os.environ.get("ARTEMIS_MAX_TOTAL_NODES", "50000"))

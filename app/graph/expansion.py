@@ -119,6 +119,11 @@ def _repeat_candidates(candidate_edges: List[ExtractedEdge]) -> List[str]:
 
 _AFFILIATION_TYPES = {"employee", "cofounder", "board_member", "faculty"}
 
+# Structural leadership types, for _Candidate.score()'s seniority bonus
+# (Alpha step 7) -- narrower than _AFFILIATION_TYPES: "employee"/"faculty"
+# say nothing about seniority on their own, cofounder/board_member do.
+_SENIORITY_TYPES = {"cofounder", "board_member"}
+
 
 def _best_org_affiliation_edge(candidate_edges: List[ExtractedEdge]) -> Optional[ExtractedEdge]:
     best: Optional[ExtractedEdge] = None
@@ -154,6 +159,7 @@ class _Candidate:
     max_conf: float = 0.0
     professional_edges: int = 0   # coworker/board/cofounder/investor/political/…
     family_edges: int = 0         # family_social (spouse/child/parent/sibling/friend)
+    seniority_edges: int = 0      # cofounder/board_member, or business-domain language
     trusted: bool = False         # came from a structured source (skip Claude filter)
 
     def avg_conf(self) -> float:
@@ -185,6 +191,16 @@ class _Candidate:
             # people almost always runs through colleagues/boards, not relatives.
             base += (self.professional_edges * config.PROFESSIONAL_BONUS
                      - self.family_edges * config.FAMILY_PENALTY)
+        # Alpha step 7 ("pick the strongest, most high up and well connected
+        # people"): a bonus for candidates whose own edges carry leadership
+        # signal (cofounder/board_member typing, or business-domain language
+        # like "Vice President"/"Chief Executive" in the evidence sentence --
+        # see disambiguate.py's "business" bucket). This is a GENERAL
+        # seniority signal, not "well-connected specifically toward THIS
+        # target" -- reasoning about a specific target's world is search_
+        # strategy's job (phase 4e); this only ranks who's worth spending the
+        # next hop's search budget on among candidates already found.
+        base += self.seniority_edges * config.SENIORITY_BONUS
         return base
 
     def is_expandable(self) -> bool:
@@ -220,6 +236,9 @@ def _record(disc: Dict[str, _Candidate], edge: ExtractedEdge) -> None:
         cand.family_edges += 1
     elif edge.relationship_type != "unknown":
         cand.professional_edges += 1  # 'unknown' counts as neither
+    if (edge.relationship_type in _SENIORITY_TYPES
+            or "business" in disambiguate.domains_of(edge.evidence_snippet)):
+        cand.seniority_edges += 1
     if edge.signals.trusted:
         cand.trusted = True
 
@@ -839,7 +858,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
 
 def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
-                       progress=None, prefer_reachable: Optional[bool] = None) -> List[str]:
+                       progress=None, prefer_reachable: Optional[bool] = None,
+                       top_n: Optional[int] = None) -> List[str]:
     """Choose the next hop's frontier.
 
     Two modes:
@@ -855,10 +875,18 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
     parameter it is just an argument two concurrent builds can disagree about.
     None keeps the configured default.
 
+    `top_n` overrides config.EXPAND_TOP_STRONG's final cap for THIS call only
+    (Alpha step 7's "pick 5 of the strongest," narrower than the general
+    15-wide beam) -- None keeps the configured default. Only narrows the
+    FINAL selection; the pre-filter shortlist size (candidate pool size
+    before ranking) is unaffected, so a smaller top_n still ranks over the
+    same breadth of candidates, it just keeps fewer of them.
+
     Claude filtering (when active) removes junk nodes from the frontier first.
     """
     if prefer_reachable is None:
         prefer_reachable = config.EXPAND_PREFER_REACHABLE
+    limit = top_n if top_n is not None else config.EXPAND_TOP_STRONG
     if prefer_reachable:
         # real people with at least a candidate-tier edge (not just explicit/strong),
         # since the bridge people toward a normal network are weakly-linked by design.
@@ -899,14 +927,14 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
         shortlist.sort(key=lambda c: (c.name in notable,
                                       c.demote_family(fam),
                                       len(c.sources), -c.avg_conf()))
-        chosen = shortlist[: config.EXPAND_TOP_STRONG]
+        chosen = shortlist[:limit]
         if progress:
             famous = [c.name for c in chosen if c.name in notable]
             progress(f"  ↧ reachability: expanding {len(chosen)} least-famous nodes "
                      f"({len(chosen) - len(famous)} with no Wikipedia page)")
         return [c.name for c in chosen]
 
-    return [c.name for c in shortlist[: config.EXPAND_TOP_STRONG]]
+    return [c.name for c in shortlist[:limit]]
 
 
 def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
@@ -1118,8 +1146,15 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             break
 
         check_cancel()
+        # Alpha step 7: the non-famous/origin side of an asymmetric /connect
+        # walk narrows to the top ALPHA_TOP_CANDIDATES (5), not the general
+        # EXPAND_TOP_STRONG beam (15) -- a reasoning-selected angle (phase
+        # 4e) already narrowed the field, so expanding as many candidates as
+        # the generic case doesn't need is wasted search budget, not thoroughness.
+        alpha_top_n = config.ALPHA_TOP_CANDIDATES if enhanced_professional_search else None
         frontier = _ranked_expandable(disc, visited, progress=progress,
-                                      prefer_reachable=prefer_reachable)
+                                      prefer_reachable=prefer_reachable,
+                                      top_n=alpha_top_n)
         if progress and frontier:
             progress(f"  → expanding top {len(frontier)} strong nodes to hop {hop + 1}: "
                      + ", ".join(frontier[:5]) + (" …" if len(frontier) > 5 else ""))
