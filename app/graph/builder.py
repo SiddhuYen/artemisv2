@@ -18,7 +18,7 @@ import time
 from typing import Callable, Optional, TypeVar
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, PendingRollbackError
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -235,7 +235,7 @@ def _deadlock_backoff(attempt: int) -> None:
     time.sleep(_DEADLOCK_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, _DEADLOCK_BACKOFF_JITTER))
 
 
-def _is_locked(exc: OperationalError) -> bool:
+def _is_locked(exc: Exception) -> bool:
     """SQLite 'database is locked' -- surfaces once busy_timeout's own
     in-driver wait (5s, see db.py's _tune_sqlite) is exhausted while a write
     is still contending for the file lock. The module docstring on
@@ -245,12 +245,22 @@ def _is_locked(exc: OperationalError) -> bool:
     hundreds of Claude-flagged junk-organization edges after researching a
     very public figure) can genuinely still be contending past it, and nothing
     retries beyond busy_timeout's own wait -- confirmed live, repeatedly,
-    against this exact code path."""
+    against this exact code path.
+
+    Also matches a PendingRollbackError wrapping the same message: confirmed
+    live that a lock during db.commit()'s internal flush sometimes surfaces
+    this way instead of a bare OperationalError -- PendingRollbackError has
+    no `.orig` at all, so `getattr(exc, "orig", exc)` falls back to the
+    exception itself, and its own str() already embeds "Original exception
+    was: ... database is locked", so the same substring check still matches.
+    Every caller must catch BOTH exception types for this to matter --
+    catching only OperationalError re-raises a PendingRollbackError
+    immediately, unretried, which is exactly what shipped and failed live."""
     msg = str(getattr(exc, "orig", exc) or "")
     return "database is locked" in msg.lower()
 
 
-def _is_transient(exc: OperationalError) -> bool:
+def _is_transient(exc: Exception) -> bool:
     """Either flavor of "retry me": a SQLite lock timeout (_is_locked) or a
     Postgres deadlock (_is_deadlock). Every retry site below should check
     this, not _is_deadlock alone -- _is_deadlock's own docstring is explicit
@@ -260,7 +270,15 @@ def _is_transient(exc: OperationalError) -> bool:
     and get_or_create_org (below) shipped with exactly that gap -- their
     SAVEPOINT/backoff scaffolding only ever fired for a deadlock, never for
     the SQLite lock this whole file is otherwise built to survive -- until
-    this function unified the two checks."""
+    this function unified the two checks.
+
+    Takes Exception, not OperationalError, because _is_locked also matches a
+    PendingRollbackError (see its docstring) -- callers must catch
+    `except (OperationalError, PendingRollbackError)`, not OperationalError
+    alone, or exactly this scenario re-raises unretried. Confirmed live: a
+    lock during a multi-row bulk delete's db.commit() surfaced as
+    PendingRollbackError, not OperationalError, and every retry site here was
+    (at the time) only catching the latter."""
     return _is_locked(exc) or _is_deadlock(exc)
 
 
@@ -295,7 +313,7 @@ def commit_with_retry(db: Session, apply: Optional[Callable[[], _T]] = None,
             result = apply() if apply is not None else None
             db.commit()
             return result
-        except OperationalError as exc:
+        except (OperationalError, PendingRollbackError) as exc:
             db.rollback()
             if not _is_transient(exc) or attempt >= _retries:
                 raise
@@ -324,7 +342,7 @@ def delete_relationship_edges_with_retry(db: Session, condition, _retries: int =
                 result = db.query(RelationshipEdge).filter(condition).delete(
                     synchronize_session=False)
             return result
-        except OperationalError as exc:
+        except (OperationalError, PendingRollbackError) as exc:
             if not _is_transient(exc) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
@@ -371,7 +389,7 @@ def _new_person_or_existing(db: Session, name: str, norm: str,
             raise  # the constraint fired on something else -- don't swallow that
         _merge_aliases(existing, name)
         return existing
-    except OperationalError as exc:
+    except (OperationalError, PendingRollbackError) as exc:
         if not _is_transient(exc) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
@@ -447,7 +465,7 @@ def get_or_create_org(
         if existing.type == "unknown" and org_type != "unknown":
             existing.type = org_type
         return existing
-    except OperationalError as exc:
+    except (OperationalError, PendingRollbackError) as exc:
         # see _new_person_or_existing / _is_transient: either a Postgres
         # deadlock between two DIFFERENT norm_names on the same index page
         # (a re-select can legitimately still miss, so retry the whole
@@ -516,7 +534,7 @@ def save_source(
                 db.add(source)
                 db.flush()
             return source
-        except OperationalError as exc:
+        except (OperationalError, PendingRollbackError) as exc:
             if not _is_transient(exc) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
@@ -637,7 +655,7 @@ def add_edge_from_extraction(
                 db.add(row)
                 db.flush()
             return row
-        except OperationalError as exc:
+        except (OperationalError, PendingRollbackError) as exc:
             if not _is_transient(exc) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)

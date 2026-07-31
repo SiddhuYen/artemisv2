@@ -20,7 +20,7 @@ number of times before succeeding for real -- the same technique
 tests/test_prune_lock_retry.py already established for this file's sibling.
 """
 import pytest
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 
 from app.extraction.schemas import EdgeSignals, ExtractedEdge
 from app.graph import builder
@@ -35,6 +35,20 @@ def _locked_error() -> OperationalError:
 
 def _other_error() -> OperationalError:
     return OperationalError("...", {}, Exception("disk I/O error"))
+
+
+def _pending_rollback_locked_error() -> PendingRollbackError:
+    """The exact shape confirmed live: a lock during db.commit()'s internal
+    flush on a multi-row bulk delete surfaced as THIS, not a bare
+    OperationalError -- PendingRollbackError has no .orig at all, only a
+    message that happens to embed the original exception's text."""
+    return PendingRollbackError(
+        "This Session's transaction has been rolled back due to a previous "
+        "exception during flush. To begin a new transaction with this "
+        "Session, first issue Session.rollback(). Original exception was: "
+        "(sqlite3.OperationalError) database is locked\n[SQL: DELETE FROM "
+        "people WHERE people.id = ?]"
+    )
 
 
 class _FakePgOrig(Exception):
@@ -81,6 +95,13 @@ def test_is_transient_rejects_an_unrelated_operational_error():
     assert builder._is_transient(_other_error()) is False
 
 
+def test_is_locked_also_recognizes_a_pending_rollback_error():
+    """PendingRollbackError has no .orig -- _is_locked's getattr(exc, "orig",
+    exc) must fall back to the exception itself, whose own str() embeds the
+    original message ("Original exception was: ... database is locked")."""
+    assert builder._is_locked(_pending_rollback_locked_error()) is True
+
+
 # ---------------------------------------------------------------------------
 # commit_with_retry
 # ---------------------------------------------------------------------------
@@ -115,6 +136,29 @@ def test_commit_with_retry_reapplies_a_mutation_lost_to_rollback(db, monkeypatch
 def test_commit_with_retry_returns_apply_result_on_success(db):
     result = builder.commit_with_retry(db, lambda: 42)
     assert result == 42
+
+
+def test_commit_with_retry_recovers_from_a_pending_rollback_error(db, monkeypatch):
+    """The actual live failure this test exists for: /connect's real bulk
+    delete of junk people (expansion._prune_invalid_nodes) hit a lock during
+    db.commit()'s internal flush, and it surfaced as PendingRollbackError,
+    not OperationalError -- commit_with_retry's except clause was only
+    catching the latter at the time, so this exact case re-raised
+    immediately, unretried, and failed the whole /connect job."""
+    p = _person(db, "Alpha")
+    db.commit()
+
+    real_commit = db.commit
+    wrapper, calls = _flaky(real_commit, fail_times=2,
+                            exc_factory=_pending_rollback_locked_error)
+    monkeypatch.setattr(db, "commit", wrapper)
+    monkeypatch.setattr(builder, "_deadlock_backoff", lambda attempt: None)
+
+    builder.commit_with_retry(db, lambda: setattr(p, "canonical_name", "Alpha Prime"))
+
+    assert calls["n"] == 3
+    fresh = db.query(Person).filter(Person.id == p.id).one()
+    assert fresh.canonical_name == "Alpha Prime"
 
 
 def test_commit_with_retry_gives_up_after_exhausting_retries(db, monkeypatch):
