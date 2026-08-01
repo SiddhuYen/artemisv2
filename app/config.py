@@ -455,15 +455,24 @@ NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CH
 STRATEGY_ENABLED = _env_bool("ARTEMIS_STRATEGY", "1")
 STRATEGY_MODEL = os.environ.get("ARTEMIS_STRATEGY_MODEL", CLAUDE_BATCH_MODEL)
 STRATEGY_ANGLE_QUERIES = {
-    "current_employer_leadership": [
-        '"{org}" leadership team OR executives',
-    ],
+    # Deliberately EMPTY, not deleted: the angle is still a meaningful thing
+    # for the model to choose, it just no longer maps to prose queries. It
+    # used to fire '"{org}" leadership team OR executives' into the ordinary
+    # extraction path, where the proximity gate decided the outcome -- a long
+    # leadership page that never names a VP-level subject had every entity
+    # dropped, and a short one had the whole exec roster wired to the subject
+    # as unevidenced colleagues. A roster is a structural assertion, so that
+    # work now happens in expansion's phase 4f via providers/directory.py,
+    # which runs for every Alpha node regardless of the chosen angle.
+    "current_employer_leadership": [],
     "past_employers": [
         '"{subject}" "previously at" OR "formerly at" OR "prior to {org}"',
     ],
-    "industry_peers": [
-        '"{industry}" industry leaders network',
-    ],
+    # Also empty, for a simpler reason: '"{industry}" industry leaders
+    # network' dropped both the subject and the target and returned
+    # listicles. The directory pack (DIRECTORY_PACKS) reaches the same
+    # people through their actual employers instead of through SEO bait.
+    "industry_peers": [],
     "board_or_advisory": [
         '"{subject}" board member OR advisor OR advisory',
     ],
@@ -496,6 +505,66 @@ MAX_FIRMS_PER_PERSON = int(os.environ.get("ARTEMIS_MAX_FIRMS_PER_PERSON", "3"))
 # raw HTML cached/parsed per page fetch (before html_to_text's further cut to
 # MAX_PAGE_CHARS) — a roster grid can sit far down the markup of a long page.
 MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", str(MAX_PAGE_CHARS * 4)))
+
+# --- Directories (org-keyed staff/professional directories) -----------------
+# The org-keyed sibling of FIRMS above: firms.py answers "who does this PERSON
+# work with", this answers "who works at this ORG". Built for Alpha's
+# non-famous side, where the subject's own employer is the densest real source
+# of professional connections there is -- and where the previous
+# implementation of that idea (the current_employer_leadership strategy angle)
+# fed a company leadership page through the PROSE extractor, which either
+# dropped everything (long page, subject never named -> proximity gate) or
+# wired the whole exec roster to the subject unevidenced (short page). A
+# roster is a structural assertion and belongs on the structural path.
+DIRECTORY_ENABLED = _env_bool("ARTEMIS_DIRECTORY_ENABLED", "1")
+DIRECTORY_MAX_MEMBERS = int(os.environ.get("ARTEMIS_DIRECTORY_MAX_MEMBERS", "60"))
+# How many located candidate URLs to verify before giving up on an org.
+DIRECTORY_MAX_CANDIDATES = int(os.environ.get("ARTEMIS_DIRECTORY_MAX_CANDIDATES", "6"))
+
+# Sector query packs, selected by keyword match against node_profiler's
+# GROUNDED `industry` string (see extraction/node_profiler.py). Same
+# containment principle as STRATEGY_ANGLE_QUERIES: the profile picks WHICH
+# pre-written pack applies, nothing ever generates query text from a model.
+# "default" is used when the industry is unknown or matches nothing, so an
+# ungrounded profile degrades to the generic pack rather than to no search.
+DIRECTORY_PACKS = {
+    "legal": {
+        "match": ("law", "legal", "attorney", "litigation", "counsel"),
+        "queries": ['"{org}" attorneys directory', '"{org}" our lawyers'],
+    },
+    "medical": {
+        "match": ("health", "medical", "hospital", "clinic", "care", "physician"),
+        "queries": ['"{org}" physicians directory', '"{org}" our providers'],
+    },
+    "academic": {
+        "match": ("university", "college", "education", "research institute"),
+        "queries": ['"{org}" faculty directory', '"{org}" department people'],
+    },
+    "consulting": {
+        "match": ("consult", "advisory", "professional services", "erp", "systems integrat"),
+        "queries": ['"{org}" our team consultants', '"{org}" leadership team'],
+    },
+    "finance": {
+        "match": ("bank", "financial", "invest", "capital", "wealth", "insurance"),
+        "queries": ['"{org}" our team', '"{org}" leadership team'],
+    },
+    "nonprofit": {
+        "match": ("nonprofit", "non-profit", "foundation", "charity", "ngo"),
+        "queries": ['"{org}" staff directory', '"{org}" our team'],
+    },
+    "default": {
+        "match": (),
+        "queries": ['"{org}" team page', '"{org}" our team', '"{org}" staff directory'],
+    },
+}
+
+# A large org's full directory is a haystack, and everyone in it is a weak
+# bridge -- so for `large` (and for `unknown`, which is the conservative
+# default when profiling didn't ground) only the leadership page is worth
+# fetching. Small/mid orgs get the full sector pack: at that size the
+# directory genuinely IS the subject's professional network.
+DIRECTORY_LEADERSHIP_QUERIES = ['"{org}" leadership team', '"{org}" executive team']
+DIRECTORY_FULL_SIZE_TIERS = ("small", "mid")
 
 # --- Podcasts (RSS host<->guest structural edges) ---------------------------
 # An episode asserts one thing: this host interviewed this guest. Tier-1 data —

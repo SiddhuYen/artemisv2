@@ -381,6 +381,43 @@ def _reuse_existing_neighbors(db: Session, subject: Person,
                  f"(skipped re-searching)")
 
 
+def _record_directory_membership(db: Session, members: List[str], org_row: Organization,
+                                 source: Optional[Source], hop: int) -> int:
+    """Persist `member works at org` edges — the weak, honest fallback when a
+    directory does not list the subject (or lists too many people to treat as
+    one another's colleagues).
+
+    Unlike every other edge this module writes, person_a here is NOT the
+    subject: each edge belongs to the member it describes. That is the point
+    -- a directory the subject is absent from is evidence about the people on
+    it, not about the subject's relationships, and writing these as subject->
+    edges would smuggle back exactly the colleague claim phase 4f declined to
+    make.
+
+    Returns how many members were recorded.
+    """
+    if not members or org_row is None:
+        return 0
+    at_cap = builder.at_node_cap(db)
+    written = 0
+    for name in members:
+        person = builder.get_or_create_person(db, name, allow_create=not at_cap)
+        if person is None:
+            continue
+        edge = ExtractedEdge(
+            person_a=name, person_b="", other_kind="organization",
+            organization=org_row.name, relationship_type="employee",
+            method="organization directory page",
+            source_url=(source.url if source else ""),
+            evidence_snippet=f"{name} is listed as an employee of {org_row.name}.",
+            confidence_base=0.5, confidence_adjusted=0.5,
+            signals=EdgeSignals(trusted=True, explicit_keyword_match=True),
+        )
+        builder.add_edge_from_extraction(db, person, edge, hop, source, org_row)
+        written += 1
+    return written
+
+
 def _dedup_and_cap(edges: List[ExtractedEdge]) -> List[ExtractedEdge]:
     """Dedup by (counterpart, type, source_url); cap/sample per node."""
     seen = {}
@@ -900,6 +937,95 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                             source_by_url[res.url] = source
                             out = extract(subject_name, text, COLLEAGUE_SILO, res.snippet, res.url)
                             candidate_edges.extend(out.edges)
+
+    # --- phase 4f: the subject's employer's own directory ------------------
+    # Alpha's densest source of real professional connections: for someone
+    # with no press coverage and no publications, the people listed on their
+    # employer's own staff/leadership page ARE their professional network.
+    #
+    # Structural, not prose -- a directory page listing two people is an
+    # assertion, and running it through the sentence-proximity extractor is
+    # what made the current_employer_leadership strategy angle useless (see
+    # providers/directory.py's docstring). So it sits here with the other
+    # structural sources, and the strategy angle no longer issues prose
+    # queries of its own (config.STRATEGY_ANGLE_QUERIES).
+    #
+    # The evidence rule, which is the whole safety story:
+    #   subject IS listed  -> subject<->member coworker edges. The page
+    #                         co-listing them is the assertion; nothing is
+    #                         inferred.
+    #   subject NOT listed -> member->org employment edges ONLY. A directory
+    #     (or overflow)       the subject is absent from says those people
+    #                         work there; it says NOTHING about whether they
+    #                         know the subject, and asserting otherwise is
+    #                         precisely the fabrication this replaces.
+    #
+    # NB those membership edges do not themselves create a /connect route --
+    # connect._adjacency traverses person<->person edges only. They are
+    # honest graph facts (and feed network.matching's org_overlap tier), not
+    # a back door for the person-level claim we just declined to make.
+    check_cancel()
+    if (enhanced_professional_search and is_person and org_row is not None
+            and org_name and config.DIRECTORY_ENABLED):
+        profile = (org_row.meta or {}).get("profile") or {}
+        if not node_profiler.is_current(profile):
+            profile = {}
+        found = ORCH.directory_enrichment(
+            org_name,
+            industry=profile.get("industry", ""),
+            size_tier=profile.get("size_tier", ""),
+        )
+        members = found.get("members") or []
+        url = found.get("url") or ""
+        if members and url:
+            subject_norm = person_norm_key(subject_name)
+            listed = any(person_norm_key(m) == subject_norm for m in members)
+            res = SearchResult(found.get("org") or org_name, url, "directory", "directory")
+            source = builder.save_source(db, res, "enrich:directory")
+            source_by_url[url] = source
+
+            if listed and not found.get("overflow"):
+                # Direct edge construction, NOT the text/silo pipeline -- the
+                # same choice phase 0d makes, for a sharper version of the
+                # same reason. Rendering the roster to prose and re-extracting
+                # it puts spaCy NER between us and names we ALREADY have: the
+                # members came from rosters.clean_roster_names, a deterministic
+                # shape filter, and re-deriving personhood from a sentence is
+                # strictly weaker evidence than the roster we scraped them
+                # from. It is also biased -- en_core_web_sm tags "Dana
+                # Whitfield" PERSON but "Molly Iyer" and "Prantik Chakraborty"
+                # ORG, so round-tripping silently drops non-Anglo names from a
+                # page that structurally asserted every one of them. For a
+                # feature whose whole purpose is growing NON-famous
+                # professional networks, that bias lands squarely on the
+                # people it exists to find.
+                for member in members:
+                    if person_norm_key(member) == subject_norm:
+                        continue
+                    candidate_edges.append(ExtractedEdge(
+                        person_a=subject_name, person_b=member, other_kind="person",
+                        relationship_type="coworker",
+                        method="organization directory page",
+                        source_url=url,
+                        evidence_snippet=(
+                            f"{org_name}'s own directory page lists both "
+                            f"{subject_name} and {member}."),
+                        # Candidate tier by construction, never strong: being
+                        # listed on one roster establishes a shared affiliation,
+                        # not a working relationship of any particular closeness
+                        # (same stance as COLLEAGUE_SILO's multiplier).
+                        confidence_base=0.5, confidence_adjusted=0.5,
+                        signals=EdgeSignals(trusted=True, explicit_keyword_match=True),
+                    ))
+                if progress:
+                    progress(f"  ▤ directory {org_name}: {len(members)} listed, "
+                             f"subject among them → colleague edges")
+            else:
+                _record_directory_membership(db, members, org_row, source, hop)
+                if progress:
+                    reason = "overflowed" if found.get("overflow") else "subject not listed"
+                    progress(f"  ▤ directory {org_name}: {len(members)} listed, {reason} "
+                             "→ employment edges only (no colleague claim)")
 
     # --- phase 5: dedup + per-node cap, then persist ----------------------
     check_cancel()

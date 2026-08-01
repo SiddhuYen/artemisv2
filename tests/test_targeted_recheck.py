@@ -133,6 +133,11 @@ def _silence_everything_but_search(monkeypatch, search_results=None, fetched_tex
     monkeypatch.setattr(expansion.ORCH, "officer_enrichment", lambda name: {"officers_text": ""})
     monkeypatch.setattr(expansion.ORCH, "edgar_enrichment", lambda name: {"edgar_text": ""})
     monkeypatch.setattr(expansion.ORCH, "firm_enrichment", lambda name: {"firms": []})
+    # Phase 4f (org directory) -- stubbed off here so it can't issue searches
+    # of its own; it has its own dedicated tests.
+    monkeypatch.setattr(expansion.ORCH, "directory_enrichment",
+                        lambda org, industry="", size_tier="": {
+                            "org": org, "url": "", "members": [], "overflow": False})
     monkeypatch.setattr(expansion.ORCH, "coauthors_enrichment", lambda name: {
         "coauthors": [], "coauthors_text": "", "identity_text": "",
     })
