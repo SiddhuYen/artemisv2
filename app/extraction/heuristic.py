@@ -87,7 +87,30 @@ def heuristic_extract(
     display: dict = {}  # norm -> original display form
     sentences = _SENT_SPLIT.split(text)
 
-    for sentence in sentences:
+    # `text` reaching this function has typically already been through
+    # html_to_text(), which itself truncates to config.MAX_PAGE_CHARS -- so
+    # even though heuristic_extract does no truncation of its own, the INPUT
+    # can already be cut off before it gets here (see the matching comment
+    # in spacy_extractor.py for the live failure this specifically closes).
+    was_truncated = len(text) >= config.MAX_PAGE_CHARS
+
+    # Proximity gate -- same fix, same reasoning, as spacy_extractor.py's
+    # (see config.ENTITY_PROXIMITY_WINDOW): without it, a candidate found
+    # ANYWHERE on a large multi-person page gets wired to the subject
+    # regardless of whether the subject is mentioned anywhere near it.
+    subject_lower = subject_person.lower()
+    subject_sent_idx = {i for i, s in enumerate(sentences) if subject_lower in s.lower()}
+
+    def _near_subject(idx: int) -> bool:
+        if not subject_sent_idx:
+            # See spacy_extractor.py's identical fallback: only safe to
+            # accept everything when nothing was actually truncated away.
+            return not was_truncated
+        return any(abs(idx - si) <= config.ENTITY_PROXIMITY_WINDOW for si in subject_sent_idx)
+
+    for sent_idx, sentence in enumerate(sentences):
+        if not _near_subject(sent_idx):
+            continue
         for match in _CANDIDATE.finditer(sentence):
             raw_phrase = match.group(0).strip(" .,-&")
             if is_noise_name(raw_phrase):
@@ -111,12 +134,19 @@ def heuristic_extract(
                     # plausible-but-rejected: violates the named-person entity rule
                     out.add_rejected("failed named-person entity rule", phrase)
 
+    # _evidence_for scans this list, not the full page, for the same reason
+    # candidate discovery is restricted above -- otherwise a candidate found
+    # near the subject could still end up "evidenced" by a same-named but
+    # unrelated mention elsewhere on the page, if that mention happens to
+    # come first in the text.
+    near_sentences = [s for i, s in enumerate(sentences) if _near_subject(i)]
+
     for norm, count in person_counts.most_common(MAX_ENTITIES_PER_TEXT):
         name = display[norm]
         out.entities.people.append(name)
         out.edges.append(
             _build_edge(subject_person, name, "person", "unknown",
-                        sentences, evidence, source_url, silo, count)
+                        near_sentences, evidence, source_url, silo, count)
         )
 
     for norm, count in org_counts.most_common(MAX_ENTITIES_PER_TEXT):
@@ -125,7 +155,7 @@ def heuristic_extract(
         out.entities.organizations.append(name)
         out.edges.append(
             _build_edge(subject_person, name, "organization", otype,
-                        sentences, evidence, source_url, silo, count)
+                        near_sentences, evidence, source_url, silo, count)
         )
 
     return out

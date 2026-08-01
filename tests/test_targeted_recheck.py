@@ -14,12 +14,21 @@ Two pieces:
      flag: whichever side is NOT the shallow, famous one in an asymmetric
      /connect walk (see _resolve_expansion_depths) -- the side actually
      walking TOWARD a famous target, not away from one.
+
+A third, mirror-image piece: `professional_only` goes to the OTHER side --
+the shallow, famous one -- dropping the family/friends silos from its own
+1-hop search entirely. Once the full-depth side's targeted search has
+concluded a professional bridge is the likeliest path (that's what
+triggered the asymmetric depth to begin with), a public figure's limited
+1-hop budget shouldn't spend part of itself on their spouse or close
+friends.
 """
 from app import config
 from app.extraction.schemas import EdgeSignals, ExtractedEdge
 from app.graph import builder, connect as C, expansion
 from app.models import RelationshipEdge
 from app.providers.base import SearchResult
+from app.silos import PERSONAL_SILO_KEYS, PROFESSIONAL_SILOS, SILOS
 
 
 def _edge(person_b: str, confidence: float, url: str = "http://x/1") -> ExtractedEdge:
@@ -227,3 +236,96 @@ def test_phase_4c_does_nothing_when_disabled(db, monkeypatch):
                               enhanced_professional_search=False)
 
     assert search_called["n"] == 0, "phase 4c must not run at all when the flag is off"
+
+
+# ---------------------------------------------------------------------------
+# silos.PROFESSIONAL_SILOS
+# ---------------------------------------------------------------------------
+def test_professional_silos_excludes_family_and_friends():
+    keys = {s.key for s in PROFESSIONAL_SILOS}
+    assert keys == {s.key for s in SILOS} - PERSONAL_SILO_KEYS
+    assert "family" not in keys
+    assert "friends" not in keys
+
+
+def test_professional_silos_keeps_everything_else():
+    assert len(PROFESSIONAL_SILOS) == len(SILOS) - len(PERSONAL_SILO_KEYS)
+    assert "company" in {s.key for s in PROFESSIONAL_SILOS}
+    assert "board_nonprofit" in {s.key for s in PROFESSIONAL_SILOS}
+
+
+# ---------------------------------------------------------------------------
+# connect._expand_both_concurrently: professional_only goes to the OTHER
+# side from enhanced_professional_search
+# ---------------------------------------------------------------------------
+def test_professional_only_goes_to_the_shallow_famous_side(db, monkeypatch):
+    captured = {}
+
+    def fake_expand_graph(worker_db, name, side_depth, **kwargs):
+        captured[name] = kwargs.get("professional_only")
+
+    monkeypatch.setattr(C, "expand_graph", fake_expand_graph)
+
+    C._expand_both_concurrently(
+        db=db, name_a="Obscure Person", name_b="Famous Person",
+        depth_a=3, depth_b=C.SHALLOW_FAMOUS_DEPTH,
+        protected=set(), progress=None, context_a="", context_b="",
+    )
+
+    assert captured["Obscure Person"] is False, "the full-depth side searches everything"
+    assert captured["Famous Person"] is True, "the shallow famous side stays professional-only"
+
+
+def test_professional_only_is_off_for_both_sides_when_symmetric(db, monkeypatch):
+    captured = {}
+
+    def fake_expand_graph(worker_db, name, side_depth, **kwargs):
+        captured[name] = kwargs.get("professional_only")
+
+    monkeypatch.setattr(C, "expand_graph", fake_expand_graph)
+
+    C._expand_both_concurrently(
+        db=db, name_a="Alpha", name_b="Beta",
+        depth_a=2, depth_b=2,
+        protected=set(), progress=None, context_a="", context_b="",
+    )
+
+    assert captured["Alpha"] is False
+    assert captured["Beta"] is False
+
+
+# ---------------------------------------------------------------------------
+# expansion._process_person's phase 1, end to end: professional_only drops
+# the family/friends queries from what actually gets searched
+# ---------------------------------------------------------------------------
+def test_professional_only_drops_family_and_friends_queries(db, monkeypatch):
+    _silence_everything_but_search(monkeypatch)
+    seen_silo_keys = set()
+
+    def capturing_dedup(pairs):
+        seen_silo_keys.update(silo.key for silo, _query in pairs)
+        return [], {}
+
+    monkeypatch.setattr(expansion.ORCH, "dedup", capturing_dedup)
+
+    expansion._process_person(db, "Larry Ellison", 0, {}, professional_only=True)
+
+    assert "family" not in seen_silo_keys
+    assert "friends" not in seen_silo_keys
+    assert "company" in seen_silo_keys
+
+
+def test_professional_only_false_still_includes_family_and_friends(db, monkeypatch):
+    _silence_everything_but_search(monkeypatch)
+    seen_silo_keys = set()
+
+    def capturing_dedup(pairs):
+        seen_silo_keys.update(silo.key for silo, _query in pairs)
+        return [], {}
+
+    monkeypatch.setattr(expansion.ORCH, "dedup", capturing_dedup)
+
+    expansion._process_person(db, "Larry Ellison", 0, {}, professional_only=False)
+
+    assert "family" in seen_silo_keys
+    assert "friends" in seen_silo_keys
