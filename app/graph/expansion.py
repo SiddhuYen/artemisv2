@@ -34,7 +34,7 @@ from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
 from ..network.silo_weights import query_budget as silo_query_budget
-from ..silos import COLLEAGUE_SILO, SILOS, STRUCTURED_SILO
+from ..silos import COLLEAGUE_SILO, SILO_BY_KEY, SILOS, STRUCTURED_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import (
     is_noise_name,
@@ -82,6 +82,59 @@ def _identity_signal(context: str, candidate_edges: List[ExtractedEdge]) -> str:
         if e.evidence_snippet
     ][:config.IDENTITY_SIGNAL_MAX_SNIPPETS]
     return " ".join(filter(None, [context, " ".join(top_evidence)]))
+
+
+def _repeat_candidates(candidate_edges: List[ExtractedEdge]) -> List[str]:
+    """Person-kind names that keep coming up across independently-found
+    candidate edges, but haven't earned 'strong' confidence yet -- the
+    targeted-recheck phase's beam (see its own comment in _process_person).
+
+    Ranked by how often the name repeats, since that's the actual "keeps
+    coming up" signal being acted on -- not by whatever confidence the
+    generic search happened to land on, which is exactly the unreliable
+    signal this phase exists to work around.
+    """
+    counts: Dict[str, int] = {}
+    best_conf: Dict[str, float] = {}
+    display: Dict[str, str] = {}
+    for e in candidate_edges:
+        if e.other_kind != "person" or not e.person_b:
+            continue
+        norm = person_norm_key(e.person_b)
+        if not norm:
+            continue
+        counts[norm] = counts.get(norm, 0) + 1
+        best_conf[norm] = max(best_conf.get(norm, 0.0), e.confidence_adjusted)
+        display.setdefault(norm, e.person_b)
+
+    eligible = [
+        norm for norm, count in counts.items()
+        if count >= config.ENHANCED_SEARCH_MIN_MENTIONS
+        and best_conf[norm] < config.STRONG_MIN
+    ]
+    eligible.sort(key=lambda norm: -counts[norm])
+    return [display[norm] for norm in eligible[: config.ENHANCED_SEARCH_MAX_CANDIDATES]]
+
+
+_AFFILIATION_TYPES = {"employee", "cofounder", "board_member", "faculty"}
+
+
+def _best_known_org(candidate_edges: List[ExtractedEdge]) -> Optional[str]:
+    """The subject's own highest-confidence org affiliation found so far, if
+    any -- used by the targeted-recheck phase to search "{candidate} {org}"
+    in addition to "{subject} {candidate}". Confirmed live this second query
+    matters: a colleague's own bio/leadership page ("Molly Chakraborty,
+    Cofounder and President, Trinamix") doesn't necessarily co-mention the
+    subject by name at all, so a dual-name-only search never re-finds it --
+    while a name+company search reliably does.
+    """
+    best: Optional[ExtractedEdge] = None
+    for e in candidate_edges:
+        if e.other_kind != "organization" or e.relationship_type not in _AFFILIATION_TYPES:
+            continue
+        if best is None or e.confidence_adjusted > best.confidence_adjusted:
+            best = e
+    return best.organization if best else None
 
 
 @dataclass
@@ -258,7 +311,8 @@ def _dedup_and_cap(edges: List[ExtractedEdge]) -> List[ExtractedEdge]:
 def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _Candidate],
                     progress=None, is_person: bool = True, context: str = "",
                     cancel_checker: Optional[Callable[[], None]] = None,
-                    silo_weights: Optional[Dict[str, float]] = None) -> None:
+                    silo_weights: Optional[Dict[str, float]] = None,
+                    enhanced_professional_search: bool = False) -> None:
     def check_cancel() -> None:
         if cancel_checker:
             cancel_checker()
@@ -522,6 +576,101 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 _mark_trusted(out.edges, True)  # verified above, or nothing to conflict with
                 candidate_edges.extend(out.edges)
 
+    # --- phase 4c: targeted re-query for names that keep coming up ---------
+    # Only on the non-famous side of an asymmetric /connect walk (see
+    # connect._expand_both_concurrently, which is the only caller that ever
+    # passes True here) -- this is the fix for a specific, observed failure:
+    # a real cofounder/close colleague, mentioned only in passing across
+    # several LinkedIn posts with no sentence ever stating the relationship,
+    # stays capped at "weak coworker" confidence forever under the generic
+    # silo search alone (see extraction.confidence's evidence-ceiling rules
+    # -- co-occurrence with no explicit keyword cannot exceed 0.39, no matter
+    # how many times the same weak mention repeats). The fix isn't a
+    # confidence-model change -- weak evidence should stay weak -- it's
+    # asking a SHARPER question for names that already earned it: search the
+    # subject and that specific candidate together, directly, the same way
+    # connect._direct_pair_search checks the two /connect endpoints.
+    #
+    # Bounded to ENHANCED_SEARCH_MAX_CANDIDATES names (a beam, not full
+    # recursion -- see config's comment on why this keeps cost predictable
+    # across hops) and only for names that (a) repeated at least
+    # ENHANCED_SEARCH_MIN_MENTIONS times, since a single passing mention
+    # isn't the "keeps coming up" signal this acts on, and (b) haven't
+    # already reached 'strong' -- nothing to gain re-querying a pair that's
+    # already well-evidenced.
+    # Claude reclassification of what phase 4c finds, when configured: the
+    # deterministic spaCy/keyword confidence model (extraction.confidence)
+    # starts every match at a modest base and multiplies up from there, so
+    # even a clean, targeted, co-occurring hit ("X, Cofounder and President
+    # of Y, has worked alongside the subject for a decade") can land short
+    # of 'strong' on the arithmetic alone. Reusing the SAME batched-verdict
+    # mechanism _retype_unknown_edges already applies to weak/unknown edges
+    # elsewhere gives a targeted hit the decisive read it was worth going
+    # and looking for in the first place, instead of leaving it exactly as
+    # capped as the generic mention it was meant to replace.
+    from ..extraction import relation_classifier
+
+    check_cancel()
+    if enhanced_professional_search and is_person:
+        org_name = _best_known_org(candidate_edges)
+        for candidate_name in _repeat_candidates(candidate_edges):
+            check_cancel()
+            # Two DIFFERENT questions, both worth asking: "is there a stated
+            # relationship between them" (dual-name) and "what IS this
+            # candidate, at the subject's own company" (candidate+org).
+            # Confirmed live these find different things -- a colleague's own
+            # bio/leadership page states their role without ever naming the
+            # subject, so dual-name-only misses exactly the fact that
+            # matters ("Molly Chakraborty, Cofounder and President,
+            # Trinamix" never mentions "Prantik Chakraborty" at all).
+            queries = [f'"{subject_name}" "{candidate_name}"']
+            if org_name:
+                queries.append(f'"{candidate_name}" "{org_name}"')
+
+            candidate_norm = person_norm_key(candidate_name)
+            found_edges: List[ExtractedEdge] = []
+            seen_urls: Set[str] = set()
+            for query in queries:
+                check_cancel()
+                try:
+                    results = ORCH.search(query, is_person=True)
+                except Exception:
+                    continue
+                for res in results[: config.SCRAPE_TOP_N]:
+                    check_cancel()
+                    if res.url in seen_urls:
+                        continue
+                    seen_urls.add(res.url)
+                    page = ORCH.fetch(res.url)
+                    text = html_to_text(page.content) if page.content else ""
+                    text = text or f"{res.title}. {res.snippet}"
+                    source = builder.save_source(db, res, query, text)
+                    source_by_url[res.url] = source
+                    out = extract(subject_name, text, SILO_BY_KEY["company"], res.snippet, res.url)
+                    # Keep only edges actually about the candidate this query
+                    # targeted -- a scraped page can mention plenty of other
+                    # names, and those belong to whichever query's own pass
+                    # would have found them, not this one's targeted intent.
+                    found_edges.extend(
+                        e for e in out.edges
+                        if e.other_kind == "person" and person_norm_key(e.person_b) == candidate_norm
+                    )
+
+            if found_edges and relation_classifier.is_active():
+                check_cancel()
+                items = [{"a": subject_name, "b": candidate_name, "evidence": e.evidence_snippet}
+                        for e in found_edges]
+                verdicts = relation_classifier.classify(items)
+                for e, v in zip(found_edges, verdicts):
+                    rtype, conf = v.get("type", "unknown"), v.get("confidence", 0.0)
+                    if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
+                        e.relationship_type = rtype
+                        e.confidence_adjusted = max(
+                            e.confidence_adjusted, round(min(conf, config.RELATION_CONF_CEILING), 3))
+                        e.signals.explicit_keyword_match = True
+
+            candidate_edges.extend(found_edges)
+
     # --- phase 5: dedup + per-node cap, then persist ----------------------
     check_cancel()
     final_edges = _dedup_and_cap(candidate_edges)
@@ -650,7 +799,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  cancel_checker: Optional[Callable[[], None]] = None,
                  should_stop: Optional[Callable[[Session], bool]] = None,
                  prefer_reachable: Optional[bool] = None,
-                 silo_weights: Optional[Dict[str, float]] = None) -> dict:
+                 silo_weights: Optional[Dict[str, float]] = None,
+                 enhanced_professional_search: bool = False) -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -671,7 +821,16 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     `prefer_reachable` overrides config.EXPAND_PREFER_REACHABLE for THIS call
     only (see _ranked_expandable). connect_people passes False; leaving it None
     keeps the configured default. Per-call rather than global so two builds can
-    run concurrently without fighting over one another's strategy."""
+    run concurrently without fighting over one another's strategy.
+
+    `enhanced_professional_search`, when True, is threaded to EVERY node
+    processed on this call (not just the seed) -- see _process_person's
+    phase 4c. connect_people sets this for whichever side is NOT the shallow,
+    famous one in an asymmetric walk (see _expand_both_concurrently): as that
+    side's frontier walks outward hop by hop, each new node gets the same
+    targeted-recheck treatment the seed did, which is what turns a single
+    node's fix into the recursive "top candidates, searched properly, at
+    every hop" behavior this was designed for."""
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
@@ -722,6 +881,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     # a founder's neighbours are also founders is exactly the
                     # unfounded prior this feature exists to remove.
                     "silo_weights": (silo_weights if hop == 0 else None),
+                    "enhanced_professional_search": enhanced_professional_search,
                 }
                 if cancel_checker:
                     kwargs["cancel_checker"] = cancel_checker
