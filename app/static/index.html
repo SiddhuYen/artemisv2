@@ -661,6 +661,18 @@ body {
 .rt-pnode .pinfo .n { font-size:12px;color:var(--ink-dim);letter-spacing:0.06em; }
 .rt-pnode .pinfo .r { font-size:9px;color:var(--ink-faint);letter-spacing:0.16em; }
 .rt-homonym-flag { margin-left:6px;color:#e0902f;cursor:help;font-size:11px; }
+/* per-hop "how are they connected" -- evidence sentence + confidence +
+   source, so a weak/noisy hop reads as visibly weaker than a strong one
+   instead of every hop looking equally confident. */
+.rt-desc { margin-top:4px;max-width:420px; }
+.rt-evidence { font-size:10px;line-height:1.5;color:var(--ink-mute);font-style:italic;letter-spacing:0.01em; }
+.rt-meta { margin-top:3px;display:flex;align-items:center;gap:10px;flex-wrap:wrap; }
+.rt-conf { font-size:8px;letter-spacing:0.14em;color:var(--ink-faint); }
+.rt-conf.t-strong { color:var(--accent-bright);text-shadow:0 0 6px var(--accent-glow); }
+.rt-conf.t-candidate { color:var(--ink-dim); }
+.rt-conf.t-weak { color:#e0902f; }
+.rt-src { font-size:8px;letter-spacing:0.14em;color:var(--ink-faint);text-decoration:none;border-bottom:1px solid var(--accent-line); }
+.rt-src:hover { color:var(--accent-bright);border-color:var(--accent); }
 
 /* ── CONTACT DETAIL RAIL ── */
 #ctRailScrim { position:fixed;inset:0;z-index:140;background:oklch(0.06 0.02 22/0.55);backdrop-filter:blur(1.5px);display:none; }
@@ -816,6 +828,15 @@ body {
 .bvr-cancel-btn:hover { background:oklch(0.68 0.19 38);color:var(--bg0); }
 .bvr-result-lbl { font-size:9px;letter-spacing:0.26em;color:var(--ink-mute);margin-bottom:12px; }
 .bvr-no-path { font-size:11px;color:var(--ink-faint);letter-spacing:0.1em;line-height:1.6; }
+
+/* live "thinking" transcript -- every graph.*'s progress() line as it
+   happens (strategy decisions, org profiling, homonym rejections, skip
+   reasons), not just the coarse hop/node % bar above it. */
+.bvr-thinking { margin:10px 0 14px;border:1px solid var(--accent-line);background:var(--bg1); }
+.bvr-thinking-hdr { font-size:9px;letter-spacing:0.24em;color:var(--ink-faint);padding:7px 10px;border-bottom:1px solid var(--accent-line); }
+.bvr-thinking-log { max-height:160px;overflow-y:auto;padding:8px 10px;font-family:var(--mono-hv, monospace); }
+.bvr-thinking-line { font-size:10px;line-height:1.65;color:var(--ink-mute);letter-spacing:0.01em;white-space:pre-wrap;word-break:break-word; }
+.bvr-thinking-line:last-child { color:var(--ink-dim); }
 
 /* ── LINKEDIN IMPORT MODAL ── */
 #liScrim { position:fixed;inset:0;z-index:150;display:none;place-items:center;background:oklch(0.06 0.02 22/0.7);backdrop-filter:blur(2px);padding:20px; }
@@ -1707,6 +1728,10 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
     <button class="bvr-run-btn" id="bvrRunBtn" onclick="execBoardRoute()">TRACE ROUTE ▸</button>
     <button class="bvr-run-btn bvr-cancel-btn" id="bvrCancelBtn" onclick="cancelBoardRoute()">CANCEL ROUTE ✕</button>
     <div class="hv-loadbar" id="bvrProgress"><div class="hv-loadbar-fill" id="bvrProgressFill"></div></div>
+    <div class="bvr-thinking" id="bvrThinking" style="display:none">
+      <div class="bvr-thinking-hdr">// ARTEMIS THINKING</div>
+      <div class="bvr-thinking-log" id="bvrThinkingLog"></div>
+    </div>
     <div class="bvr-result-lbl" id="bvrResultLbl" style="display:none">// PATH FOUND</div>
     <div id="bvrResult"></div>
   </div>

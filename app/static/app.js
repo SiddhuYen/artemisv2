@@ -1996,18 +1996,35 @@ function renderRoutePath(path) {
   if (!path || !path.length) return `<div class="rt-no-path">// No path found.</div>`;
   return `<div class="rt-path">${path.map(step => {
     const label = step.role || step.company
-      ? `${step.role}${step.role && step.company?' · ':''}${step.company}`
+      ? `${humanizeRelType(step.role)}${step.role && step.company?' · ':''}${step.company}`
       : '';
     const sym = step.kind === 'you' ? '●' : step.kind === 'target' ? '◆' : '○';
     const flagTitle = step.homonymFlag?.identity_text
       ? `Kept separate from a same-named public figure — evidence didn't match: ${step.homonymFlag.identity_text}`
       : '';
     const flag = flagTitle ? `<span class="rt-homonym-flag" title="${esc(flagTitle)}">⚠</span>` : '';
+    // "How are they connected" -- the evidence sentence this specific hop's
+    // edge was extracted from, plus its confidence and a link back to the
+    // source page, so a weak/noisy hop reads as visibly weak instead of
+    // looking as confident as a strong one (see the phantom-edge pathfinding
+    // fix -- this is the UI half of "don't just assert a connection,
+    // show why").
+    const pct = step.confidence != null ? Math.round(step.confidence * 100) : null;
+    const tier = pct == null ? '' : pct >= 60 ? 'strong' : pct >= 30 ? 'candidate' : 'weak';
+    const evidenceLine = step.evidence
+      ? `<div class="rt-evidence">“${esc(step.evidence.length > 180 ? step.evidence.slice(0, 180) + '…' : step.evidence)}”</div>`
+      : '';
+    const metaBits = [];
+    if (pct != null) metaBits.push(`<span class="rt-conf t-${tier}">${pct}% CONFIDENCE</span>`);
+    if (step.sourceUrl) metaBits.push(`<a class="rt-src" href="${esc(step.sourceUrl)}" target="_blank" rel="noopener noreferrer">SOURCE ↗</a>`);
+    const metaLine = metaBits.length ? `<div class="rt-meta">${metaBits.join(' · ')}</div>` : '';
+    const desc = (evidenceLine || metaLine) ? `<div class="rt-desc">${evidenceLine}${metaLine}</div>` : '';
     return `<div class="rt-pnode k-${step.kind}">
       <div class="pip">${sym}</div>
       <div class="pinfo">
         <div class="n">${esc(step.name)}${flag}</div>
         ${label?`<div class="r">${esc(label)}</div>`:''}
+        ${desc}
       </div>
     </div>`;
   }).join('')}</div>`;
@@ -2081,9 +2098,14 @@ function showBoardRouteFinder() {
   // search for a totally different, unrelated pair if left in place.
   const ctxA = document.getElementById('bvrContextA'); if (ctxA) ctxA.value = '';
   const ctxB = document.getElementById('bvrContextB'); if (ctxB) ctxB.value = '';
+  document.getElementById('bvrThinking').style.display = 'none';
+  document.getElementById('bvrThinkingLog').innerHTML = '';
   document.getElementById('bvRoutePanel')?.classList.add('open');
   document.getElementById('bvRoutePanelScrim')?.classList.add('open');
-  if (start && target) execBoardRoute();
+  // Opening the sidebar must never itself start a search -- the user still
+  // needs a chance to review/edit the (just-cleared) context fields above
+  // before anything runs. The search only starts when they explicitly click
+  // TRACE ROUTE inside this panel (bvrRunBtn -> execBoardRoute()).
 }
 function closeBoardRouteFinder() {
   if (_bvrActiveJobId) cancelBoardRoute(true);
@@ -2148,6 +2170,9 @@ async function execBoardRoute() {
   const progressEl = document.getElementById('bvrProgress');
   const fillEl = document.getElementById('bvrProgressFill');
   const setProgress = progressTracker(fillEl);
+  const thinkingEl = document.getElementById('bvrThinking');
+  const thinkingLogEl = document.getElementById('bvrThinkingLog');
+  let shownLogLines = 0;
   if (_bvrActiveJobId) await cancelBoardRoute(true);
   if (runSeq !== _bvrRunSeq) return;
   _bvrActiveJobId = null;
@@ -2157,6 +2182,8 @@ async function execBoardRoute() {
   resultEl.innerHTML = `<div class="bvr-no-path">Searching the public web for every route between "${esc(start.name)}" and "${esc(target.name)}"…</div>`;
   progressEl?.classList.add('on');
   if (fillEl) fillEl.style.width = '0%';
+  if (thinkingLogEl) thinkingLogEl.innerHTML = '';
+  if (thinkingEl) thinkingEl.style.display = 'block';
   try {
     const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
@@ -2174,6 +2201,21 @@ async function execBoardRoute() {
       if (runSeq !== _bvrRunSeq) return;
       const pct = setProgress(job);
       if (job.message) lbl.textContent = `// [${pct}%] ${job.message.toUpperCase()}`;
+      // Live "thinking" transcript: append only the NEW lines since the last
+      // tick (job.log is the full accumulated list every poll, not a delta),
+      // then auto-scroll so the latest line stays in view.
+      if (thinkingLogEl && Array.isArray(job.log) && job.log.length > shownLogLines) {
+        const frag = document.createDocumentFragment();
+        for (let i = shownLogLines; i < job.log.length; i++) {
+          const line = document.createElement('div');
+          line.className = 'bvr-thinking-line';
+          line.textContent = job.log[i];
+          frag.appendChild(line);
+        }
+        thinkingLogEl.appendChild(frag);
+        shownLogLines = job.log.length;
+        thinkingLogEl.scrollTop = thinkingLogEl.scrollHeight;
+      }
     }, 700, () => _bvrCancelRequested || runSeq !== _bvrRunSeq);
     if (runSeq !== _bvrRunSeq) return;
     if (!data.connected) {
@@ -2188,6 +2230,7 @@ async function execBoardRoute() {
         name: n.label, role: n.relationship_from_previous||'', company: '',
         kind: idx===0 ? 'you' : (idx===arr.length-1 ? 'target' : 'node'),
         homonymFlag: n.homonym_flag || null,
+        evidence: n.evidence || '', confidence: n.confidence, sourceUrl: n.source_url || '',
       }));
       return `<div style="margin-bottom:16px"><div class="bvr-flbl">ROUTE ${i+1} · ${route.hops} HOPS · SCORE ${route.score}</div>${renderRoutePath(steps)}</div>`;
     }).join('');
