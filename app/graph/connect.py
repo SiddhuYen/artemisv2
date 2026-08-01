@@ -257,6 +257,15 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
 # to which of the two starting people gets the full expansion.
 SHALLOW_FAMOUS_DEPTH = 1
 
+# SHALLOW_FAMOUS_DEPTH never scales with the caller's requested `depth` -- the
+# famous side is always capped at exactly 1 hop, whether the request is depth
+# 2 or depth 5. At depth=3 specifically that means the origin side's normal
+# reach (3 hops) already dwarfs the famous side's fixed 1-hop reach, so the
+# origin side gets ONE hop beyond `depth` to compensate. Deliberately scoped
+# to exactly 3 (not depth>=3) -- the right scaling for 4+ hasn't been decided
+# yet and generalizing without evidence would just be guessing at cost/value.
+ORIGIN_EXTRA_HOP_AT_DEPTH = 3
+
 # A trailing "of X" / "at X" / ", X" clause some names carry baked into one
 # field instead of a separate context_a/context_b (e.g. "Larry Ellison of
 # Oracle" typed as a single board-node name -- the frontend's Route panel has
@@ -287,6 +296,10 @@ def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int
     _strip_trailing_context) in one batched lookup -- a person counts as
     notable if either resolves, so "Larry Ellison of Oracle" still gets
     caught even though the exact string never has its own Wikipedia page.
+
+    See ORIGIN_EXTRA_HOP_AT_DEPTH: at depth=3 exactly, the non-famous
+    (origin) side's full depth is bumped by one hop to partially offset the
+    famous side's fixed 1-hop cap not scaling with `depth`.
     """
     stripped_a, stripped_b = _strip_trailing_context(name_a), _strip_trailing_context(name_b)
     try:
@@ -298,7 +311,8 @@ def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int
     if a_notable == b_notable:
         return depth, depth
     shallow = min(SHALLOW_FAMOUS_DEPTH, depth)
-    return (shallow, depth) if a_notable else (depth, shallow)
+    full = depth + 1 if depth == ORIGIN_EXTRA_HOP_AT_DEPTH else depth
+    return (shallow, full) if a_notable else (full, shallow)
 
 
 def _expand_both_concurrently(db: Session, name_a: str, name_b: str,

@@ -318,12 +318,29 @@ def test_resolve_expansion_depths_shallows_the_notable_side_even_with_context_ba
 def test_resolve_expansion_depths_shallows_the_notable_side(monkeypatch):
     monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
 
+    depth_a, depth_b = C._resolve_expansion_depths("Famous Person", "Obscure Person", 2)
+    assert depth_a == C.SHALLOW_FAMOUS_DEPTH
+    assert depth_b == 2
+
+    depth_a, depth_b = C._resolve_expansion_depths("Obscure Person", "Famous Person", 2)
+    assert depth_a == 2
+    assert depth_b == C.SHALLOW_FAMOUS_DEPTH
+
+
+def test_resolve_expansion_depths_gives_origin_side_one_extra_hop_at_depth_3(monkeypatch):
+    """ORIGIN_EXTRA_HOP_AT_DEPTH: the famous side's SHALLOW_FAMOUS_DEPTH cap
+    never scales with the requested depth, so at depth=3 specifically the
+    non-famous (origin) side gets depth+1 to partly offset that gap. Scoped
+    to exactly 3, not depth>=3 -- deliberately not generalized until there's
+    evidence for how 4+ should scale (see the constant's own comment)."""
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
+
     depth_a, depth_b = C._resolve_expansion_depths("Famous Person", "Obscure Person", 3)
     assert depth_a == C.SHALLOW_FAMOUS_DEPTH
-    assert depth_b == 3
+    assert depth_b == 4
 
     depth_a, depth_b = C._resolve_expansion_depths("Obscure Person", "Famous Person", 3)
-    assert depth_a == 3
+    assert depth_a == 4
     assert depth_b == C.SHALLOW_FAMOUS_DEPTH
 
 
@@ -339,7 +356,10 @@ def test_resolve_expansion_depths_symmetric_when_neither_notable(monkeypatch):
 
 def test_resolve_expansion_depths_never_deepens_past_the_requested_depth(monkeypatch):
     """A shallow depth-1 request must stay depth 1 for the famous side, not
-    get rounded up to SHALLOW_FAMOUS_DEPTH if that's somehow larger."""
+    get rounded up to SHALLOW_FAMOUS_DEPTH if that's somehow larger. (Depth 3
+    is the one deliberate exception -- see
+    test_resolve_expansion_depths_gives_origin_side_one_extra_hop_at_depth_3.)
+    """
     monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
     depth_a, depth_b = C._resolve_expansion_depths("Famous Person", "Obscure Person", 1)
     assert depth_a == 1
@@ -368,4 +388,5 @@ def test_connect_people_passes_asymmetric_depths_to_expansion(db, monkeypatch):
 
     C.connect_people(db, "Famous Person", "Obscure Person", depth=3)
 
-    assert captured["depths"] == (C.SHALLOW_FAMOUS_DEPTH, 3)
+    # depth=3 triggers ORIGIN_EXTRA_HOP_AT_DEPTH: the origin side gets 4, not 3.
+    assert captured["depths"] == (C.SHALLOW_FAMOUS_DEPTH, 4)
