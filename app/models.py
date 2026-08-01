@@ -236,7 +236,8 @@ ENRICHMENT_TASK_STATES = (
     "done",          # expanded (or already processed by an earlier run/teammate)
     "probed_empty",  # cheap probe found no web footprint — full sweep skipped
     "skipped",       # never eligible (see EnrichmentTask.skip_reason)
-    "failed",        # attempted and errored; retryable
+    "failed",        # attempted and errored; retried by _next_task up to
+                     # config.ENRICH_MAX_ATTEMPTS, then terminal
 )
 
 # Why a contact was excluded from enrichment before spending anything on it.

@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -122,16 +122,40 @@ def _real_orgs(values: List[str]) -> List[str]:
     return out
 
 
-def _people_with_public_evidence(db: Session) -> Set[str]:
-    """norm_names the public graph holds web-sourced evidence about.
+def _people_with_public_evidence(db: Session, contact_norms: Set[str]) -> Set[str]:
+    """Which of `contact_norms` the public graph holds web-sourced evidence
+    about.
 
     Edges the operator's own export produced (linkedin_1st, and wave 0's
     coworker/employee/student) are excluded — they exist for every contact by
     construction, so counting them would flatten this signal to a constant.
+
+    Scoped to `contact_norms` rather than scanning every Person/
+    RelationshipEdge in the graph: the discovery graph is shared across every
+    operator and grows with every run anyone does, but this only ever needs
+    an answer for the contacts actually being ranked right now. Planning is
+    supposed to cost nothing — scanning the whole shared graph here would
+    make every operator's "free" plan slower in proportion to everyone
+    else's enrichment history, not their own contact list.
     """
-    people = {p.id: p.norm_name for p in db.execute(select(Person)).scalars()}
+    if not contact_norms:
+        return set()
+    people = {
+        p.id: p.norm_name
+        for p in db.execute(
+            select(Person).where(Person.norm_name.in_(contact_norms))
+        ).scalars()
+    }
+    if not people:
+        return set()
+    person_ids = list(people)
     found: Set[str] = set()
-    for e in db.execute(select(RelationshipEdge)).scalars():
+    for e in db.execute(
+        select(RelationshipEdge).where(
+            or_(RelationshipEdge.person_a_id.in_(person_ids),
+                RelationshipEdge.person_b_id.in_(person_ids))
+        )
+    ).scalars():
         if e.relationship_type in _EDGE_TYPES_THAT_PROVE_NOTHING:
             continue
         for pid in (e.person_a_id, e.person_b_id):
@@ -153,9 +177,17 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
     owner_co = org_norm_key(owner_company) if owner_company else ""
     owner_sch = org_norm_key(owner_school) if owner_school else ""
 
-    with_evidence = _people_with_public_evidence(db)
+    contact_norms = {
+        (profile.norm_name or person_norm_key(profile.canonical_name))
+        for profile in profiles
+    }
+    contact_norms.discard("")
+    contact_norms.discard(owner_norm)
+
+    with_evidence = _people_with_public_evidence(db, contact_norms)
     processed = {p.norm_name for p in db.execute(
-        select(Person).where(Person.processed == 1)).scalars()}
+        select(Person).where(Person.processed == 1,
+                             Person.norm_name.in_(contact_norms))).scalars()}
 
     scored: List[ScoredContact] = []
     for profile in profiles:

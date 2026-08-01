@@ -9,6 +9,7 @@ import time
 
 from sqlalchemy import select
 
+from app import config
 from app.models import EnrichmentRun, EnrichmentTask
 from app.network.enrichment import plan_run, tally
 from app.network.executor import execute_run
@@ -120,8 +121,11 @@ def test_a_paused_run_resumes_where_it_stopped(db):
     assert tally(db, run.id)["done"] == 5
 
 
-def test_a_failing_contact_is_recorded_and_the_run_continues(db):
-    """One bad contact must not abort hours of remaining work."""
+def test_a_permanently_failing_contact_is_recorded_and_the_run_continues(db):
+    """One bad contact must not abort hours of remaining work. Since it fails
+    unconditionally, it burns through every retry (config.ENRICH_MAX_ATTEMPTS)
+    before landing in `failed` for good — see the retry tests below for a
+    contact that recovers instead."""
     run = _plan(db, n=3)
 
     def _expand(db_, name, depth, context, protected, should_stop, progress, is_person=True, silo_weights=None):
@@ -136,8 +140,69 @@ def test_a_failing_contact_is_recorded_and_the_run_continues(db):
                                      EnrichmentTask.state == "failed")
     ).scalars().one()
     assert "provider exploded" in failed.last_error
-    assert failed.attempts == 1
-    # a failed task is not pending, so the run is finished rather than paused
+    assert failed.attempts == config.ENRICH_MAX_ATTEMPTS
+    # exhausted its retries and nothing else is pending or retryable
+    assert _state(db, run.id) == "done"
+
+
+def test_a_transiently_failing_contact_is_retried_and_recovers(db):
+    """The whole point of bounded retries: an error that doesn't recur (a
+    timeout, a rate-limit blip) should not permanently drop a good contact."""
+    run = _plan(db, n=1)
+    seen = []
+
+    def _expand(db_, name, depth, context, protected, should_stop, progress, is_person=True, silo_weights=None):
+        seen.append(name)
+        if len(seen) == 1:
+            raise RuntimeError("transient blip")
+
+    counts = execute_run(db, run.id, probe=_has_footprint, expand=_expand)
+    assert len(seen) == 2                    # failed once, retried, then succeeded
+    assert counts["done"] == 1
+    assert counts.get("failed", 0) == 0
+    task = db.execute(
+        select(EnrichmentTask).where(EnrichmentTask.run_id == run.id)
+    ).scalars().one()
+    assert task.state == "done"
+    assert task.attempts == 2
+    assert _state(db, run.id) == "done"
+
+
+def test_retries_are_bounded_so_a_permanent_failure_does_not_loop_forever(db):
+    run = _plan(db, n=1)
+
+    def _always_fails(db_, name, depth, context, protected, should_stop, progress, is_person=True, silo_weights=None):
+        raise RuntimeError("permanently broken")
+
+    counts = execute_run(db, run.id, probe=_has_footprint, expand=_always_fails)
+    assert counts["failed"] == 1
+    task = db.execute(
+        select(EnrichmentTask).where(EnrichmentTask.run_id == run.id)
+    ).scalars().one()
+    assert task.attempts == config.ENRICH_MAX_ATTEMPTS
+    assert _state(db, run.id) == "done"      # nothing retryable left
+
+
+def test_stopping_on_a_retryable_failure_pauses_not_finishes(db):
+    """If the run stops (wave limit here) right after a failure that still has
+    retries left, that must not be reported as `done` -- `done` runs can never
+    be resumed, which would silently strand a task that WOULD have recovered."""
+    run = _plan(db, n=1)
+
+    def _fails_once(db_, name, depth, context, protected, should_stop, progress, is_person=True, silo_weights=None):
+        raise RuntimeError("blip")
+
+    counts = execute_run(db, run.id, probe=_has_footprint, expand=_fails_once, limit=1)
+    assert counts["failed"] == 1
+    task = db.execute(
+        select(EnrichmentTask).where(EnrichmentTask.run_id == run.id)
+    ).scalars().one()
+    assert task.attempts == 1 and task.attempts < config.ENRICH_MAX_ATTEMPTS
+    assert _state(db, run.id) == "paused"
+
+    # resuming picks the still-retryable task back up
+    second = execute_run(db, run.id, probe=_has_footprint, expand=_noop_expand)
+    assert second["done"] == 1
     assert _state(db, run.id) == "done"
 
 

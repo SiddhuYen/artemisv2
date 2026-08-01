@@ -133,6 +133,41 @@ def test_existing_public_evidence_boosts(db):
     assert scored["Aa Known"].score > scored["Bb Unknown"].score
 
 
+def test_public_evidence_check_is_scoped_to_the_given_contacts(db):
+    """_people_with_public_evidence must only ever answer for the norm_names
+    it's asked about, not scan the whole shared graph -- the graph is shared
+    across every operator and grows with every run anyone does, so a plan for
+    THIS operator's contacts must not pay for everyone else's history."""
+    from app.extraction.schemas import EdgeSignals, ExtractedEdge
+    from app.graph import builder
+    from app.network.ranking import _people_with_public_evidence
+    from app.providers.base import SearchResult
+    from app.utils.names import person_norm_key
+
+    in_scope = builder.get_or_create_person(db, "In Scope Person")
+    out_of_scope = builder.get_or_create_person(db, "Out Of Scope Person")
+    other = builder.get_or_create_person(db, "Some Journalist")
+    source = builder.save_source(
+        db, SearchResult("t", "https://example.com/a", "s", "web"), "q")
+    for subject in (in_scope, out_of_scope):
+        builder.add_edge_from_extraction(db, subject, ExtractedEdge(
+            person_a=subject.canonical_name, person_b="Some Journalist",
+            other_kind="person", relationship_type="interview",
+            confidence_base=0.7, confidence_adjusted=0.7,
+            signals=EdgeSignals()), 0, source, other)
+    db.commit()
+
+    found = _people_with_public_evidence(db, {person_norm_key("In Scope Person")})
+    assert found == {person_norm_key("In Scope Person")}
+    assert person_norm_key("Out Of Scope Person") not in found
+
+
+def test_public_evidence_check_with_no_contacts_is_a_clean_no_op(db):
+    from app.network.ranking import _people_with_public_evidence
+
+    assert _people_with_public_evidence(db, set()) == set()
+
+
 def test_second_contact_at_the_same_employer_is_damped(db):
     """Coverage, not popularity: the tenth person you know at one company opens
     almost no territory the first nine didn't, so a big employer must not eat
