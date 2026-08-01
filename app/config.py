@@ -56,6 +56,30 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+
+# Wikimedia (Wikipedia + Wikidata) enforce a robot policy that REJECTS generic
+# browser-mimicking user agents with HTTP 403: https://w.wiki/4wJS . A crawler
+# must identify itself and provide contact info, the same requirement EDGAR_
+# USER_AGENT below already honors for the SEC.
+#
+# This was found the hard way. Sending USER_AGENT above got a blanket 403 from
+# every Wikimedia endpoint, and because every wiki call is best-effort
+# (notable_set swallows exceptions, enrich_person returns None on failure) a
+# TOTAL outage was indistinguishable from "this person simply isn't famous".
+# Silently, that meant: notable_set() always empty, so /connect's asymmetric
+# Alpha walk NEVER fired for anyone; enrich_person() always None, so Tier-1
+# Wikipedia/Wikidata structured enrichment never ran; no QID ever anchored a
+# person, so homonym disambiguation lost its authoritative signal and
+# FAME_PENALTY never applied to any transit node.
+#
+# Scoped to Wikimedia rather than replacing USER_AGENT globally: the browser
+# UA is doing real work for ordinary page scraping, where plenty of sites
+# refuse non-browser agents -- exactly the opposite constraint.
+WIKIMEDIA_USER_AGENT = os.environ.get(
+    "ARTEMIS_WIKIMEDIA_USER_AGENT",
+    "ArtemisGraphBuilder/2.0 (https://github.com/SiddhuYen/artemisv2; "
+    "research@artemis.local)")
+WIKIMEDIA_HEADERS = {"User-Agent": WIKIMEDIA_USER_AGENT}
 HTTP_TIMEOUT = float(os.environ.get("ARTEMIS_HTTP_TIMEOUT", "8.0"))
 # retry: only on 429/5xx, exponential backoff, honor Retry-After
 HTTP_RETRIES = int(os.environ.get("ARTEMIS_HTTP_RETRIES", "3"))

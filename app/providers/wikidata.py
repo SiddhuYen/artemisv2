@@ -112,7 +112,7 @@ class WikidataProvider:
             batch = uniq[i:i + 50]
             _LIMITER.acquire()
             resp = request_with_retry(
-                "GET", _WBGET, provider=self.name,
+                "GET", _WBGET, provider=self.name, headers=config.WIKIMEDIA_HEADERS,
                 params={"action": "wbgetentities", "sites": "enwiki",
                         "titles": "|".join(batch), "props": "claims|labels",
                         "languages": "en", "format": "json"},
@@ -188,7 +188,8 @@ class WikidataProvider:
         resp = request_with_retry(
             "GET", _SPARQL, provider=self.name,
             params={"query": query, "format": "json"},
-            headers={"Accept": "application/sparql-results+json"},
+            headers={**config.WIKIMEDIA_HEADERS,
+                     "Accept": "application/sparql-results+json"},
         )
         if resp is None or resp.status_code != 200:
             return []
@@ -202,7 +203,7 @@ class WikidataProvider:
     # --- internals --------------------------------------------------------
     def _entity_claims(self, qid: str) -> Dict[str, list]:
         _LIMITER.acquire()
-        resp = request_with_retry("GET", _ENTITYDATA.format(qid=qid), provider=self.name)
+        resp = request_with_retry("GET", _ENTITYDATA.format(qid=qid), provider=self.name, headers=config.WIKIMEDIA_HEADERS)
         if resp is None or resp.status_code != 200:
             return {}
         try:
@@ -218,7 +219,7 @@ class WikidataProvider:
             batch = uniq[i:i + 50]
             _LIMITER.acquire()
             resp = request_with_retry(
-                "GET", _WBGET, provider=self.name,
+                "GET", _WBGET, provider=self.name, headers=config.WIKIMEDIA_HEADERS,
                 params={"action": "wbgetentities", "ids": "|".join(batch),
                         "props": "labels", "languages": "en", "format": "json"},
             )

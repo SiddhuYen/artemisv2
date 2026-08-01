@@ -31,7 +31,7 @@ class WikipediaProvider(SearchProvider):
         _LIMITER.acquire()
         params = {"action": "query", "list": "search", "srsearch": query,
                   "format": "json", "srlimit": config.RESULTS_PER_QUERY}
-        resp = request_with_retry("GET", _API, provider=self.name, params=params)
+        resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
         out: List[SearchResult] = []
         if resp is not None and resp.status_code == 200:
             try:
@@ -51,7 +51,7 @@ class WikipediaProvider(SearchProvider):
             return cached.get("text", "")
         _LIMITER.acquire()
         resp = request_with_retry("GET", _SUMMARY + title.replace(" ", "_"),
-                                  provider=self.name)
+                                  provider=self.name, headers=config.WIKIMEDIA_HEADERS)
         text = ""
         if resp is not None and resp.status_code == 200:
             try:
@@ -70,7 +70,7 @@ class WikipediaProvider(SearchProvider):
         _LIMITER.acquire()
         params = {"action": "query", "prop": "extracts", "explaintext": 1,
                   "titles": title, "format": "json", "redirects": 1}
-        resp = request_with_retry("GET", _API, provider=self.name, params=params)
+        resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
         text = ""
         if resp is not None and resp.status_code == 200:
             try:
@@ -93,7 +93,7 @@ class WikipediaProvider(SearchProvider):
         _LIMITER.acquire()
         params = {"action": "query", "prop": "links", "titles": title,
                   "pllimit": limit, "plnamespace": 0, "format": "json"}
-        resp = request_with_retry("GET", _API, provider=self.name, params=params)
+        resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
         links: List[str] = []
         if resp is not None and resp.status_code == 200:
             try:
@@ -115,7 +115,7 @@ class WikipediaProvider(SearchProvider):
         _LIMITER.acquire()
         params = {"action": "query", "prop": "pageprops", "ppprop": "wikibase_item",
                   "titles": title, "format": "json", "redirects": 1}
-        resp = request_with_retry("GET", _API, provider=self.name, params=params)
+        resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
         qid = None
         if resp is not None and resp.status_code == 200:
             try:
