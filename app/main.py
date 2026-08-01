@@ -256,8 +256,32 @@ def _new_job(kind: str = "job", ticket=None) -> str:
             # The build-queue ticket this job is waiting on, so /jobs/{id} can
             # report a real place in line instead of an opaque "queued…".
             "_ticket": ticket,
+            # Live "thinking" transcript -- every graph.*'s free-text
+            # progress() line (strategy decisions, org profiling verdicts,
+            # homonym rejections, skip reasons), appended as they happen, not
+            # just the coarse hop/node counters `message` carries. See
+            # _append_job_log.
+            "log": [],
         }
     return job_id
+
+
+# A long build could otherwise accumulate an unbounded log -- bound it to the
+# most recent lines; anything older has already scrolled past in a live-
+# following UI and isn't needed for the final result either.
+_JOB_LOG_MAX = 500
+
+
+def _append_job_log(job_id: str, line: str) -> None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            return
+        log = job.setdefault("log", [])
+        log.append(line)
+        if len(log) > _JOB_LOG_MAX:
+            del log[: len(log) - _JOB_LOG_MAX]
+        job["updated_at"] = time.time()
 
 
 def _update_job(job_id: str, **fields) -> None:
@@ -624,6 +648,18 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
         _update_job(job_id, pct=int(min(97, frac * 100)),
                     message=message)
 
+    # "Thinking" transcript: every free-text progress() line the graph layer
+    # already produces (strategy decisions, org profiling verdicts, homonym
+    # rejections, OpenAlex skip reasons, per-hop node counts) -- previously
+    # generated and immediately discarded, since no caller passed a
+    # `progress` callback into connect_people at all. Called from multiple
+    # threads (both /connect sides, and per-hop node workers, run
+    # concurrently) -- safe: _append_job_log takes the same lock _update_job
+    # does.
+    def progress(line: str) -> None:
+        check_cancel()
+        _append_job_log(job_id, line)
+
     db = None
     try:
         db = SessionLocal()
@@ -631,7 +667,7 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
         check_cancel()
         result = connect_people(db, a, b, depth, context_a=context_a,
                                 context_b=context_b, on_step=on_step,
-                                cancel_checker=check_cancel)
+                                progress=progress, cancel_checker=check_cancel)
         check_cancel()
         result["graph_id"] = "global"
         _update_job(job_id, status="done", pct=100, message="done", result=result)
