@@ -62,8 +62,43 @@ _UNTRAVERSABLE_STATUS = {"rejected"}
 UNKNOWN_TYPE_SURCHARGE = 1.2  # extra cost for an untyped ('unknown') edge
 
 
+def _untraversable(status: str, relationship_type: str, signals: Optional[dict]) -> bool:
+    """Shared traversability rule for _path_worthy (full ORM row) and
+    _route_exists (lean column-only SELECT, for the same reason no edge
+    cost/fame penalty applies here either -- see both callers' docstrings).
+
+    'rejected' status means an edge was reviewed and marked false -- the
+    only status that means "not a real connection" outright (see the long
+    comment on _UNTRAVERSABLE_STATUS for why weak/unknown edges otherwise
+    stay traversable -- that fix, and the reasoning behind it, stays intact
+    here unchanged).
+
+    The second exclusion is narrower and different in KIND, not degree: an
+    edge with NO real evidence the two names ever appeared together
+    (signals.sentence_cooccurrence False) AND no explicit relationship
+    keyword AND no assigned relationship type at all is not weak evidence of
+    a real connection -- it's two coincidental mentions on the same fetched
+    page glued into an edge by bare co-presence. Confirmed live: "Dream
+    Sports Chief Technology Officer Amit Sharma..." and "...Mark Zuckerberg
+    seeks to..." are two unrelated sentences from one page, persisted as a
+    'directly connected' result at confidence 0.10. This does NOT touch the
+    broader weak/unknown-type population (an edge with either cooccurrence
+    OR an explicit keyword still passes) -- excluding by status/type alone
+    was already tried and reverted for breaking real sparse-graph
+    connectivity (see the block comment above); this is a much narrower cut.
+    """
+    if status in _UNTRAVERSABLE_STATUS:
+        return True
+    signals = signals or {}
+    if (relationship_type == "unknown"
+            and not signals.get("sentence_cooccurrence")
+            and not signals.get("explicit_keyword_match")):
+        return True
+    return False
+
+
 def _path_worthy(e: RelationshipEdge) -> bool:
-    return e.status not in _UNTRAVERSABLE_STATUS
+    return not _untraversable(e.status, e.relationship_type, e.signals)
 
 
 def _adjacency(db: Session):
@@ -222,16 +257,18 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
         for i in range(0, len(ids), _PROBE_ID_CHUNK):
             chunk = ids[i:i + _PROBE_ID_CHUNK]
             rows = db.execute(
-                select(RelationshipEdge.person_b_id, RelationshipEdge.status)
+                select(RelationshipEdge.person_b_id, RelationshipEdge.status,
+                      RelationshipEdge.relationship_type, RelationshipEdge.signals)
                 .join(Person, Person.id == RelationshipEdge.person_b_id)
                 .where(RelationshipEdge.person_a_id.in_(chunk))
             ).all() + db.execute(
-                select(RelationshipEdge.person_a_id, RelationshipEdge.status)
+                select(RelationshipEdge.person_a_id, RelationshipEdge.status,
+                      RelationshipEdge.relationship_type, RelationshipEdge.signals)
                 .join(Person, Person.id == RelationshipEdge.person_a_id)
                 .where(RelationshipEdge.person_b_id.in_(chunk))
             ).all()
-            for far_id, status in rows:
-                if status in _UNTRAVERSABLE_STATUS:
+            for far_id, status, rtype, signals in rows:
+                if _untraversable(status, rtype, signals):
                     continue
                 if far_id == b_id:
                     return True
