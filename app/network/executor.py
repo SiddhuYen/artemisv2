@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -85,9 +85,26 @@ def _run_state(bind, run_id: str) -> Optional[str]:
 
 
 def _next_task(db: Session, run_id: str) -> Optional[EnrichmentTask]:
+    """The best-ranked task still worth attempting.
+
+    A `failed` task is included as long as it has attempts left
+    (config.ENRICH_MAX_ATTEMPTS) — at ~35 outbound calls per contact, a
+    transient provider timeout or rate-limit blip is an expected occurrence
+    over an hours-long run, not a rare one, so 'failed' has to mean "try
+    again", not "gone forever". Past the ceiling it stops being selected here
+    and stays failed for good, so a contact that's PERMANENTLY broken (a name
+    that reliably crashes the extractor) doesn't retry indefinitely.
+    """
     return db.execute(
         select(EnrichmentTask)
-        .where(EnrichmentTask.run_id == run_id, EnrichmentTask.state == "pending")
+        .where(
+            EnrichmentTask.run_id == run_id,
+            or_(
+                EnrichmentTask.state == "pending",
+                and_(EnrichmentTask.state == "failed",
+                     EnrichmentTask.attempts < config.ENRICH_MAX_ATTEMPTS),
+            ),
+        )
         .order_by(EnrichmentTask.rank)
         .limit(1)
     ).scalars().first()
@@ -295,6 +312,21 @@ def execute_run(db: Session, run_id: str, limit: int = 0, expand: Callable = Non
         raise
 
 
+def _has_retryable_failures(db: Session, run_id: str) -> bool:
+    """A `failed` task with attempts left is still work to do, even though its
+    state isn't `pending` — see _next_task. Without this, a run that stops
+    (limit/budget/pause) with its last remaining task sitting in a
+    not-yet-exhausted `failed` state would be reported `done`, and `done`
+    can never be (re)started — silently stranding a retryable task forever."""
+    return db.execute(
+        select(EnrichmentTask.id).where(
+            EnrichmentTask.run_id == run_id,
+            EnrichmentTask.state == "failed",
+            EnrichmentTask.attempts < config.ENRICH_MAX_ATTEMPTS,
+        ).limit(1)
+    ).first() is not None
+
+
 def _finalize(db: Session, run_id: str, progress=None) -> dict:
     """Settle the run's terminal state from what is actually left to do."""
     run = db.get(EnrichmentRun, run_id)
@@ -308,7 +340,8 @@ def _finalize(db: Session, run_id: str, progress=None) -> dict:
     state = _run_state(db.get_bind(), run_id)
     if state == "cancelled":
         pass  # terminal already; the canceller wrote finished_at
-    elif counts.get("pending", 0) or counts.get("enriching", 0):
+    elif (counts.get("pending", 0) or counts.get("enriching", 0)
+          or _has_retryable_failures(db, run_id)):
         # Stopped early — budget, wave limit, or a pause. Resumable, so saying
         # "done" here would misreport an unfinished plan as a complete one.
         run.state = "paused"
