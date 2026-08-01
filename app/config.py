@@ -424,6 +424,16 @@ ENHANCED_SEARCH_MIN_MENTIONS = int(
 # verdict collapses to "unknown" rather than a plausible-sounding guess.
 NODE_PROFILE_ENABLED = _env_bool("ARTEMIS_NODE_PROFILE", "1")
 NODE_PROFILE_MODEL = os.environ.get("ARTEMIS_NODE_PROFILE_MODEL", CLAUDE_BATCH_MODEL)
+# Cached profiles live on Organization.meta with NO TTL (an org's size/industry
+# doesn't churn), which means a profile written under an OLDER prompt or guard
+# set is indistinguishable from a current one and is reused forever. That is
+# not hypothetical: the org-identity block (node_profiler's third guard) was
+# added only after a live run conflated "Trinamix Inc" with "trinamiX GmbH",
+# so every profile written before it is a pre-guard verdict. BUMP THIS on any
+# change to the prompt, the schema, or the post-call guards -- a stale profile
+# then simply re-profiles on next encounter instead of silently standing in
+# for one the current code would never have produced.
+NODE_PROFILE_VERSION = 2
 # Structured-source-first queries (LinkedIn's employee-count badge, Crunchbase's
 # headcount field) are strongly preferred over generic "about us" marketing
 # copy, which almost never states real numbers and just invites the model to

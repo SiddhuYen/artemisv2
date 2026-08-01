@@ -51,6 +51,7 @@ def test_profile_org_accepts_a_grounded_verdict(monkeypatch):
     })
     profile = node_profiler.profile_org("Trinamix", ["Trinamix, a mid-size Oracle consultancy..."])
     assert profile == {
+        "v": config.NODE_PROFILE_VERSION,
         "size_tier": "mid",
         "industry": "Oracle ERP consulting",
         "summary": "A mid-sized Oracle implementation consultancy.",
@@ -279,7 +280,8 @@ def test_phase_4d_does_not_reprofile_an_already_profiled_org(db, monkeypatch):
     re-profiled (re-searched, re-Claude-called) by the next colleague who
     happens to work there."""
     org = builder.get_or_create_org(db, "Trinamix")
-    org.meta = {"profile": {"size_tier": "mid", "industry": "Oracle ERP consulting",
+    org.meta = {"profile": {"v": config.NODE_PROFILE_VERSION,
+                            "size_tier": "mid", "industry": "Oracle ERP consulting",
                             "summary": "already known", "grounded": True}}
     db.commit()
 
@@ -313,4 +315,63 @@ def test_phase_4d_skips_search_entirely_when_claude_is_not_active(db, monkeypatc
                               enhanced_professional_search=True)
 
     assert search_calls == []
-    assert _get_org(db, "Trinamix") is None
+    # The org ROW is still resolved even with profiling off: phase 4e needs
+    # the same row, and nesting the lookup inside node_profiler.is_active()
+    # is what made ARTEMIS_NODE_PROFILE=0 silently disable the strategy stage
+    # too. No profile is written -- that's the part that must not happen.
+    org = _get_org(db, "Trinamix")
+    assert org is not None
+    assert "profile" not in (org.meta or {})
+
+
+def test_a_stale_profile_is_reprofiled_rather_than_reused(db, monkeypatch):
+    """Profiles are cached on the org row with no TTL, so a verdict produced
+    under an older prompt/guard set would otherwise stand in forever for one
+    the current code would never have produced -- concretely, a profile
+    written before the org-identity guard existed. An unstamped or
+    old-version profile must be treated as absent."""
+    org = builder.get_or_create_org(db, "Trinamix")
+    org.meta = {"profile": {"v": config.NODE_PROFILE_VERSION - 1,
+                            "size_tier": "large", "industry": "biometric sensors",
+                            "summary": "pre-identity-guard verdict", "grounded": True}}
+    db.commit()
+
+    _silence_everything_but_profiling(
+        monkeypatch,
+        search_results=[SearchResult("Trinamix", "https://linkedin.com/company/trinamix",
+                                     "snippet", "serper")],
+        fetched_text="Trinamix is an Oracle ERP consultancy with 201-500 employees.",
+    )
+    monkeypatch.setattr(expansion, "_best_org_affiliation_edge",
+                        lambda edges: _org_edge("Trinamix", "works at Trinamix"))
+    monkeypatch.setattr(node_profiler, "is_active", lambda: True)
+    monkeypatch.setattr(node_profiler, "profile_org", lambda org, snippets, known_context="": {
+        "v": config.NODE_PROFILE_VERSION, "size_tier": "mid",
+        "industry": "Oracle ERP consulting", "summary": "fresh", "grounded": True,
+    })
+
+    expansion._process_person(db, "Prantik Chakraborty", 0, {},
+                              enhanced_professional_search=True)
+
+    profile = _get_org(db, "Trinamix").meta["profile"]
+    assert profile["summary"] == "fresh"
+    assert profile["v"] == config.NODE_PROFILE_VERSION
+
+
+def test_profile_org_stamps_the_current_version(monkeypatch):
+    monkeypatch.setattr(node_profiler, "is_active", lambda: True)
+    monkeypatch.setattr(node_profiler, "call_json", lambda *a, **k: {
+        "size_tier": "mid", "industry": "Oracle ERP consulting",
+        "summary": "ok", "grounded": True,
+    })
+    profile = node_profiler.profile_org("Trinamix", ["a snippet"])
+    assert profile["v"] == config.NODE_PROFILE_VERSION
+    assert node_profiler.is_current(profile)
+
+
+def test_is_current_rejects_unstamped_and_superseded_profiles():
+    assert not node_profiler.is_current(None)
+    assert not node_profiler.is_current({})
+    assert not node_profiler.is_current({"size_tier": "mid", "grounded": True})
+    assert not node_profiler.is_current({"v": config.NODE_PROFILE_VERSION - 1})
+    assert node_profiler.is_current({"v": config.NODE_PROFILE_VERSION})

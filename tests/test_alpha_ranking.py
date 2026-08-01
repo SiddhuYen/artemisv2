@@ -13,9 +13,12 @@ to the non-famous/origin side of an asymmetric /connect walk
     (phase 4e) already narrowed the field, so expanding as many candidates
     as the untargeted case doesn't need is wasted search budget.
 """
+import dataclasses
+
 from app import config
 from app.extraction.schemas import EdgeSignals, ExtractedEdge
 from app.graph import expansion
+from app.models import Person, RelationshipEdge
 
 
 def _edge(person_b: str, relationship_type: str, confidence: float,
@@ -65,6 +68,87 @@ def test_seniority_bonus_is_additive_not_a_replacement():
             source_url=f"http://x/{i}", signals=EdgeSignals(explicit_keyword_match=True),
         ))
     assert disc["strong coworker"].score() > disc["weak cofounder"].score()
+
+
+# ---------------------------------------------------------------------------
+# The seniority tally has to SURVIVE both accumulation paths, not just
+# _record. It previously survived neither: _merge_disc (concurrent hop
+# workers recombining) and _reuse_existing_neighbors (already-processed
+# nodes, i.e. most nodes in a warm shared graph) both dropped it silently.
+# ---------------------------------------------------------------------------
+def test_candidate_absorb_covers_every_accumulated_field():
+    """Every _Candidate field except the identity `name` must be merged by
+    absorb(). This is the regression guard for the whole bug class: the
+    dataclass gained `seniority_edges`, the merge didn't, and nothing failed
+    -- Alpha's ranking signal just quietly stopped working for duplicates."""
+    a = expansion._Candidate(name="X")
+    b = expansion._Candidate(
+        name="X", sources={"http://s"}, confidences=[0.7], strong_edges=1,
+        explicit_edges=1, max_conf=0.7, professional_edges=1, family_edges=1,
+        seniority_edges=1, trusted=True,
+    )
+    a.absorb(b)
+
+    identity_fields = {"name"}
+    empty = expansion._Candidate(name="X")
+    for f in dataclasses.fields(expansion._Candidate):
+        if f.name in identity_fields:
+            continue
+        assert getattr(a, f.name) != getattr(empty, f.name), (
+            f"_Candidate.{f.name} is not merged by absorb() — add it there, "
+            "or add it to identity_fields if it genuinely isn't accumulated"
+        )
+
+
+def test_merge_disc_preserves_seniority_across_concurrent_workers():
+    """Two hop workers each discover the same senior person. The merged
+    tally must carry BOTH sightings -- a candidate two coworkers
+    independently name is the strongest signal Alpha has."""
+    worker_a, worker_b = {}, {}
+    expansion._record(worker_a, _edge("Molly Chakraborty", "cofounder", 0.8, explicit=True))
+    expansion._record(worker_b, ExtractedEdge(
+        person_a="Someone Else", person_b="Molly Chakraborty", other_kind="person",
+        relationship_type="cofounder", confidence_base=0.8, confidence_adjusted=0.8,
+        source_url="http://other", signals=EdgeSignals(explicit_keyword_match=True),
+    ))
+
+    expansion._merge_disc(worker_a, worker_b)
+    assert worker_a["molly chakraborty"].seniority_edges == 2
+
+
+def test_reuse_existing_neighbors_recomputes_seniority(db):
+    """The 'graph is the cache' path re-derives candidate tallies from
+    PERSISTED edges rather than re-searching. It has to reproduce _record's
+    seniority tally too, or the bonus is always zero on any node a previous
+    run already processed."""
+    subject = Person(canonical_name="Subject", norm_name="subject")
+    cofounder = Person(canonical_name="Cofounder Cate", norm_name="cofounder cate")
+    exec_by_title = Person(canonical_name="VP Vera", norm_name="vp vera")
+    plain = Person(canonical_name="Coworker Cody", norm_name="coworker cody")
+    db.add_all([subject, cofounder, exec_by_title, plain])
+    db.flush()
+
+    db.add_all([
+        # typed seniority
+        RelationshipEdge(person_a_id=subject.id, person_b_id=cofounder.id,
+                         relationship_type="cofounder", confidence_raw=0.8, signals={}),
+        # business-domain language in the evidence, generic type
+        RelationshipEdge(person_a_id=subject.id, person_b_id=exec_by_title.id,
+                         relationship_type="coworker", confidence_raw=0.7, signals={},
+                         evidence_snippet="Vera is Vice President Sales & Strategy."),
+        # neither
+        RelationshipEdge(person_a_id=subject.id, person_b_id=plain.id,
+                         relationship_type="coworker", confidence_raw=0.7, signals={}),
+    ])
+    db.flush()
+
+    disc = {}
+    expansion._reuse_existing_neighbors(db, subject, disc)
+
+    assert disc["cofounder cate"].seniority_edges == 1
+    assert disc["vp vera"].seniority_edges == 1
+    assert disc["coworker cody"].seniority_edges == 0
+    assert disc["cofounder cate"].score() > disc["coworker cody"].score()
 
 
 # ---------------------------------------------------------------------------
