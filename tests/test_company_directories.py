@@ -91,6 +91,51 @@ def test_org_name_from_page_can_refuse_the_domain_stem_fallback():
         plain, "https://doas.ga.gov/x", allow_stem_fallback=False) == ""
 
 
+def test_wikidata_official_domain_verifies_what_the_name_cannot():
+    """"gatech.edu" is not derivable from "Georgia Institute of Technology" by
+    any prefix or initialism rule -- it contracts the state's postal
+    abbreviation -- so every one of Georgia Tech's real leadership pages
+    failed Guard 2 on the name alone."""
+    plain = "<html><head><title>x</title></head></html>"
+    org = "Georgia Institute of Technology"
+    assert not rosters.page_belongs_to_org(
+        "https://research.gatech.edu/leadership", plain, org)
+    assert rosters.page_belongs_to_org(
+        "https://research.gatech.edu/leadership", plain, org,
+        official_domain="gatech")
+
+
+def test_official_domain_is_additive_and_never_vetoes():
+    """Wikidata can carry a stale value -- Uncork Capital still lists
+    softtechvc.com -- so a mismatch must not reject a page the name checks
+    would have accepted on their own."""
+    plain = "<html><head><title>x</title></head></html>"
+    assert rosters.page_belongs_to_org(
+        "https://uncorkcapital.com/team", plain, "Uncork Capital",
+        official_domain="softtechvc")
+
+
+def test_directory_status_explains_every_empty_result(monkeypatch):
+    """An empty result that doesn't say why is indistinguishable from "this
+    org has no directory" -- the same shape as the Wikimedia outage that hid
+    for so long behind best-effort failure handling."""
+    monkeypatch.setattr(D.cache, "get", lambda key: None)
+    monkeypatch.setattr(D.cache, "set", lambda *a, **k: None)
+
+    # nothing located
+    provider, _ = _provider(monkeypatch, results=[], pages={})
+    assert provider.directory("Acme", size_tier="small")["status"] == "no_verified_page"
+
+    # located and verified, but the markup has no readable text nodes
+    url = "https://acme.com/team"
+    provider, _ = _provider(
+        monkeypatch,
+        results=[SearchResult("Team | Acme", url, "s", "serper")],
+        pages={url: "<html><head><title>Acme</title></head><body></body></html>"},
+    )
+    assert provider.directory("Acme", size_tier="small")["status"] == "js_shell"
+
+
 def test_org_chart_labels_are_not_scraped_as_people():
     """A directory interleaves section headings with actual people, and two
     capitalised words is all looks_like_person_name needs -- so "Executive
@@ -101,6 +146,45 @@ def test_org_chart_labels_are_not_scraped_as_people():
             "Information Technology", "President’s Cabinet", "Board of Directors",
             "Senior Management", "Office of the President"]
     assert rosters.clean_roster_names(junk) == []
+
+
+def test_office_locations_are_not_scraped_as_people():
+    """A professional directory lists office cities as sibling text nodes
+    right beside the attorneys ("Demian Ahn", "Palo Alto", "Josephine Aiello
+    LeBeau", ...), and a two-word city is shaped exactly like a name."""
+    junk = ["Palo Alto", "New York", "Washington, D.C.", "Hong Kong", "Menlo Park"]
+    assert rosters.clean_roster_names(junk) == []
+
+
+def test_single_word_city_names_are_kept_because_people_have_them():
+    """Only MULTI-word cities are filtered. Austin, Paris, Dallas and
+    Savannah are ordinary given names, and a single-word blocklist would
+    delete real people to remove a rare piece of furniture."""
+    real = ["Austin Chen", "Paris Hilton", "Dallas Green", "Savannah Guthrie"]
+    assert rosters.clean_roster_names(real) == real
+
+
+def test_a_comma_marks_furniture_but_a_period_does_not():
+    """The punctuation rule rejects on comma ("Washington, D.C.") but must NOT
+    reject on a bare period, which is how a middle initial is written."""
+    assert rosters.is_org_chart_label("Washington, D.C.")
+    assert not rosters.is_org_chart_label("M. Joseph Sirgy")
+
+
+def test_known_gap_initial_led_names_are_dropped_upstream():
+    """DOCUMENTS A PRE-EXISTING LIMITATION, not this module's behavior.
+
+    is_org_chart_label accepts "M. Joseph Sirgy", but clean_roster_names still
+    drops it: utils.names.looks_like_person_name rejects any part normalizing
+    to under 2 characters, to "drop initials / single letters". So a roster
+    listing "M. Joseph Sirgy" or "J. Robert Oppenheimer" loses that person.
+
+    Real people hit this -- M. Joseph Sirgy appeared on a live expansion
+    frontier. Fixing it means touching looks_like_person_name, which every
+    extractor shares, so it is recorded here rather than changed as a side
+    effect of directory work."""
+    assert not rosters.is_org_chart_label("M. Joseph Sirgy")
+    assert rosters.clean_roster_names(["M. Joseph Sirgy"]) == []
 
 
 def test_role_noun_surnames_are_still_kept():
@@ -242,8 +326,18 @@ def test_a_page_that_does_not_belong_to_the_org_is_rejected(monkeypatch):
     assert found["members"] == []
 
 
+def _fake_people(n):
+    """n distinct plausible names. Deliberately digit-free: a personal name
+    never contains one, and is_org_chart_label now rejects on that."""
+    firsts = ["Ana", "Bob", "Cara", "Dan", "Eve", "Finn", "Gia", "Hal", "Ida", "Jon"]
+    lasts = ["Alder", "Brook", "Chapman", "Dorn", "Ellis", "Frost", "Grove", "Hale"]
+    out = [f"{f} {l}" for l in lasts for f in firsts]
+    assert len(out) >= n, "widen the name pools"
+    return out[:n]
+
+
 def test_overflow_is_reported_when_the_page_lists_more_than_the_cap(monkeypatch):
-    names = "".join(f"<h3>Person Number{i}</h3>" for i in range(80))
+    names = "".join(f"<h3>{n}</h3>" for n in _fake_people(80))
     url = "https://acme.com/team"
     provider, _ = _provider(
         monkeypatch,

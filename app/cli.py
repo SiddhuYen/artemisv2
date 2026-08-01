@@ -550,10 +550,70 @@ def _run_search(argv) -> None:
         seed_is_person=not args.org)
 
 
+def cmd_directory(argv) -> None:
+    """List the contacts an organization's own directory page names.
+
+    Read-only and graph-free: this scrapes and prints, it writes no nodes or
+    edges. Deciding that any of these people are connected to a *subject* is
+    expansion phase 4f's job, and it needs a subject to do it -- see
+    providers/directory.py. Here you are just looking at who a company lists.
+    """
+    from . import config
+    from .providers import SearchOrchestrator
+
+    p = argparse.ArgumentParser(prog="directory")
+    p.add_argument("org", nargs="*", help='organization name, e.g. "Uncork Capital"')
+    p.add_argument("--industry", default="",
+                   help="sector hint; picks the query pack (see config.DIRECTORY_PACKS)")
+    p.add_argument("--size", default="small",
+                   choices=["small", "mid", "large", "unknown"],
+                   help="small/mid scrape the full directory; large/unknown are "
+                        "restricted to a leadership page (default: small)")
+    ns = p.parse_args(argv)
+    org = " ".join(ns.org).strip()
+    if not org:
+        print('usage: python -m app.cli directory "Org Name" [--industry X] [--size small|mid|large]',
+              file=sys.stderr)
+        sys.exit(1)
+
+    orch = SearchOrchestrator()
+    print(f"\n▤  Directory: {org}   (size={ns.size}"
+          f"{', industry=' + ns.industry if ns.industry else ''})", flush=True)
+    found = orch.directory_enrichment(org, industry=ns.industry, size_tier=ns.size)
+
+    status, url, members = found.get("status"), found.get("url"), found.get("members") or []
+    if not members:
+        # Say WHY, never just "nothing found" -- an empty result that doesn't
+        # explain itself is indistinguishable from "this org has no directory".
+        reason = {
+            "no_verified_page": "no page passed the roster-shape check and org-identity guard",
+            "js_shell": "the page is a JavaScript shell with no readable text "
+                        "(a headless browser would be needed; see providers/browser.py)",
+            "identity_mismatch": "the page found does not belong to this organization",
+            "no_names_found": "the page was readable but held no person-shaped names",
+            "disabled": "directory lookups are disabled (ARTEMIS_DIRECTORY_ENABLED)",
+        }.get(status, f"status={status}")
+        if str(status).startswith("fetch_"):
+            reason = f"the page refused the fetch ({status.split('_', 1)[1]}) — bot-blocked"
+        print(f"\n  no contacts found — {reason}")
+        if url:
+            print(f"  page: {url}")
+        return
+
+    print(f"\n  source: {url}")
+    if found.get("overflow"):
+        print(f"  (page lists more than {config.DIRECTORY_MAX_MEMBERS}; showing the cap)")
+    print(f"\n  {len(members)} contact(s):\n")
+    for i, name in enumerate(members, 1):
+        print(f"    {i:>3}. {name}")
+    print()
+
+
 _SUBCOMMANDS = {
     "upload-network": cmd_upload,
     "add-org-network": cmd_add_org,
     "connect": cmd_connect,
+    "directory": cmd_directory,
     "match": cmd_match,
     "paths": cmd_paths,
     "funding-rounds": cmd_funding_rounds,

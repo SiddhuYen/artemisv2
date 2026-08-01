@@ -82,11 +82,29 @@ class DirectoryProvider:
 
     name = "directory"
 
-    def __init__(self, search: Optional[Callable[[str], List[SearchResult]]] = None) -> None:
+    def __init__(self, search: Optional[Callable[[str], List[SearchResult]]] = None,
+                 official_domain: Optional[Callable[[str], str]] = None) -> None:
         self._search = search
+        # Injected rather than imported so this provider stays a leaf: it
+        # never reaches back into the orchestrator, and a test can exercise
+        # the Wikidata-verified path without any network.
+        self._official_domain_fn = official_domain
 
     def available(self) -> bool:
         return bool(config.DIRECTORY_ENABLED) and self._search is not None
+
+    def _official_domain(self, org_name: str) -> str:
+        """Registrable domain of the org's Wikidata official website, or "".
+
+        Best-effort in the same sense as everything else here: a failure means
+        Guard 2 falls back to name matching alone, exactly as before.
+        """
+        if not self._official_domain_fn:
+            return ""
+        try:
+            return self._official_domain_fn(org_name) or ""
+        except Exception:
+            return ""
 
     # --- locate ------------------------------------------------------------
     def _plan(self, org_name: str, industry: str, size_tier: str):
@@ -106,7 +124,7 @@ class DirectoryProvider:
         return queries, is_leadership_url
 
     def find_directory_page(self, org_name: str, industry: str = "",
-                            size_tier: str = "") -> Optional[str]:
+                            size_tier: str = "", official_domain: str = "") -> Optional[str]:
         """The org's own directory URL, or None. Verified by Guard 2."""
         if not org_name or not self.available():
             return None
@@ -138,7 +156,8 @@ class DirectoryProvider:
             pages = list(ex.map(fetch_readable, candidates))
         for candidate, page in zip(candidates, pages):
             if (page.status_code == 200 and page.content
-                    and page_belongs_to_org(candidate, page.content, org_name)):
+                    and page_belongs_to_org(candidate, page.content, org_name,
+                                            official_domain=official_domain)):
                 return candidate
         return None
 
@@ -158,8 +177,10 @@ class DirectoryProvider:
         "colleagues of the subject" -- this module has no subject.
         """
         out = {"org": org_name, "url": "", "members": [], "overflow": False,
-               "leadership_only": size_tier not in config.DIRECTORY_FULL_SIZE_TIERS}
+               "leadership_only": size_tier not in config.DIRECTORY_FULL_SIZE_TIERS,
+               "status": "ok"}
         if not org_name or not self.available():
+            out["status"] = "disabled"
             return out
 
         key = cache.make_key(self.name, "directory",
@@ -168,18 +189,30 @@ class DirectoryProvider:
         if cached is not None:
             return cached
 
-        url = self.find_directory_page(org_name, industry, size_tier)
+        # One authoritative identity lookup per org, reused by both guards.
+        official_domain = self._official_domain(org_name)
+        url = self.find_directory_page(org_name, industry, size_tier, official_domain)
         if not url:
+            # Nothing survived the shape check + Guard 2. Distinguishing this
+            # from the other zero-member outcomes is the whole point of
+            # `status`: a silent empty result is indistinguishable from "this
+            # org has no directory", which is exactly how the Wikimedia
+            # outage hid for so long.
+            out["status"] = "no_verified_page"
             cache.set(key, "directory", out, config.CACHE_TTL_PAGE)
             return out
 
         page = fetch_readable(url)
         if page.status_code != 200 or not page.content:
+            out["status"] = f"fetch_{page.status_code}"  # 403 => bot-blocked
+            out["url"] = url
             return out
         # Guard 2 again on the page we actually scrape -- find_directory_page
         # verified a page, but re-verifying here keeps `directory()` safe to
         # call with a URL that came from anywhere.
-        if not page_belongs_to_org(url, page.content, org_name):
+        if not page_belongs_to_org(url, page.content, org_name,
+                                   official_domain=official_domain):
+            out["status"] = "identity_mismatch"
             return out
 
         # Prefer schema.org Person data when present -- machine-readable and
@@ -187,7 +220,14 @@ class DirectoryProvider:
         jsonld = clean_roster_names(jsonld_names(page.content, "Person"))
         blocks = text_blocks(page.content)
         if not jsonld and not blocks:
-            return out  # a JS-rendered shell asserts nothing we can read
+            # No readable text nodes at all: a JS-rendered shell. THIS is the
+            # case a headless browser would recover, and the only one -- see
+            # config.MAX_HTML_CHARS for why most apparent "SPAs" were really
+            # just truncation. Recorded so a future bench can measure how
+            # often rendering would actually pay for itself.
+            out["status"] = "js_shell"
+            out["url"] = url
+            return out
 
         scraped = clean_roster_names(blocks)
         names, seen = [], set()
@@ -201,6 +241,10 @@ class DirectoryProvider:
         out["url"] = url
         out["members"] = names[: config.DIRECTORY_MAX_MEMBERS]
         out["overflow"] = len(names) > config.DIRECTORY_MAX_MEMBERS
+        # A verified page that yields no names is its own diagnosis: the
+        # markup was readable and simply had no person-shaped text (or the
+        # junk filter took all of it).
+        out["status"] = "ok" if names else "no_names_found"
         cache.set(key, "directory", out, config.CACHE_TTL_PAGE)
         return out
 

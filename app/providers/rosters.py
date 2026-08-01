@@ -227,7 +227,8 @@ def org_name_from_page(html: str, url: str, allow_stem_fallback: bool = True) ->
     return stem.title() if stem else ""
 
 
-def page_belongs_to_org(url: str, html: str, org_name: str) -> bool:
+def page_belongs_to_org(url: str, html: str, org_name: str,
+                        official_domain: str = "") -> bool:
     """Guard 2. The page must BE this organization's, established by identity
     -- the domain, or the name the page declares for itself -- never keyword
     presence.
@@ -235,9 +236,20 @@ def page_belongs_to_org(url: str, html: str, org_name: str) -> bool:
     So: the domain must begin with a distinctive token of the org's name, or
     the page's own declared name must equal that org (allowing an initialism,
     since "btv.vc" declares itself "BTV" and means Better Tomorrow Ventures).
+
+    `official_domain` is the registrable domain of the org's Wikidata-declared
+    official website (P856), supplied by the caller -- this module makes no
+    network calls. It settles what string comparison cannot: "gatech.edu" is
+    not derivable from "Georgia Institute of Technology" by any prefix or
+    initialism rule, since it contracts the state's postal abbreviation. It is
+    checked FIRST and is purely additive: Wikidata can carry a stale value
+    (Uncork Capital still lists softtechvc.com), so a mismatch here must never
+    veto a page the name checks below would have accepted on their own.
     """
     tokens = org_tokens(org_name)
     stem = domain_stem(url)
+    if official_domain and stem and stem == official_domain:
+        return True
     if not tokens:
         # No distinctive tokens at all -- either a very short name ("GA") or
         # one made entirely of generic words ("The Fund", "Capital Partners").
@@ -323,18 +335,80 @@ _ORG_CHART_WORDS = {
 }
 
 
-def is_org_chart_label(name: str) -> bool:
-    """True when EVERY token is org-chart vocabulary — a section heading, not
-    a person.
+# Page furniture and marketing copy that survives the name-shape filter
+# because it is simply two or three capitalised words. Observed live on real
+# roster pages: "GET YOUR TICKET!", "ROSTER LOADED", "Continuous Integration".
+_PAGE_FURNITURE_WORDS = {
+    "get", "your", "our", "ticket", "tickets", "roster", "loaded", "menu",
+    "search", "login", "sign", "subscribe", "newsletter", "read", "more",
+    "learn", "view", "apply", "join", "contact", "email", "share", "follow",
+    "continuous", "integration", "delivery", "product", "design", "data",
+    "quality", "security", "support", "success", "platform", "solutions",
+    "lead", "leads", "hiring", "careers", "culture", "values", "mission",
+    "us", "we", "here", "now", "all", "home", "about", "back", "next", "close",
+    "project", "projects", "ops", "account", "accounts", "portfolio", "press",
+    "notice", "notices", "info", "privacy", "terms", "copyright", "sitemap",
+    "accessibility", "policy", "cookie", "cookies", "disclaimer", "legal",
+    "bar", "admissions", "spotlight", "priority", "priorities", "attorney",
+    "attorneys", "overview", "events", "insights", "publications", "awards",
+    "recognition", "rankings", "practice", "practices", "industries", "offices",
+    "portal", "directory", "directories", "profile", "profiles", "bio", "bios",
+}
 
-    Deliberately requires *all* tokens to match, not any. Plenty of real
-    surnames are also role nouns (Dean, Chase, Marshall, Bishop, Steward), so
-    an any-token rule would reject "Dean Martin" as a job title. Requiring the
-    whole string keeps "Dean Martin" (dean + martin) while dropping "Deputy
-    Commissioner" (deputy + commissioner).
+# A person's name does not contain these. Digits, terminal punctuation and
+# separators mark a heading, a CTA, or a run-together text node. A comma is
+# included ("Washington, D.C.") but NOT a bare period, which would reject
+# every middle initial ("M. Joseph Sirgy").
+_NON_NAME_CHARS = re.compile(r"[0-9!?:;,|/@#$%•·]")
+
+# Office locations, which professional directories list as sibling text nodes
+# right beside the people ("Demian Ahn", "Palo Alto", "Josephine Aiello
+# LeBeau", ...). Only MULTI-WORD cities are listed: single-word ones like
+# Austin, Dallas, Savannah or Paris are also perfectly ordinary given names,
+# and rejecting those would cost real people.
+_OFFICE_CITIES = {
+    "palo alto", "new york", "san francisco", "los angeles", "san diego",
+    "hong kong", "salt lake city", "washington dc", "district of columbia",
+    "menlo park", "mountain view", "santa monica", "san jose", "las vegas",
+    "buenos aires", "sao paulo", "tel aviv", "abu dhabi", "kuala lumpur",
+    "new delhi", "san mateo", "redwood city", "century city", "costa mesa",
+}
+
+
+def is_org_chart_label(name: str) -> bool:
+    """True when `name` is a section heading, role, or page furniture rather
+    than a person.
+
+    Three independent rejects:
+
+    1. Every token is org-chart / page-furniture vocabulary. Deliberately
+       requires *all* tokens, not any: plenty of real surnames are also role
+       nouns (Dean, Chase, Marshall, Bishop, Steward), so an any-token rule
+       would reject "Dean Martin" as a job title. Requiring the whole string
+       keeps "Dean Martin" while dropping "Deputy Commissioner".
+       Tokens are singularised first, so "Product Managers" and "Delivery
+       Leads" match the same vocabulary as their singular forms.
+    2. Contains a character no personal name carries (digit, !, ?, :, |, @...).
+    3. Multi-word ALL CAPS -- "ROSTER LOADED" is a status message, and a
+       roster that genuinely upper-cases its people still yields them via the
+       JSON-LD path, which is preferred anyway.
     """
-    tokens = [t for t in normalize(name).split() if t]
-    return bool(tokens) and all(t in _ORG_CHART_WORDS for t in tokens)
+    raw = (name or "").strip()
+    if not raw:
+        return False
+    if _NON_NAME_CHARS.search(raw):
+        return True
+    words = raw.split()
+    if len(words) > 1 and raw == raw.upper() and any(c.isalpha() for c in raw):
+        return True
+    tokens = [t for t in normalize(raw).split() if t]
+    if not tokens:
+        return False
+    if " ".join(tokens) in _OFFICE_CITIES:
+        return True
+    vocab = _ORG_CHART_WORDS | _PAGE_FURNITURE_WORDS
+    singular = [t[:-1] if len(t) > 3 and t.endswith("s") else t for t in tokens]
+    return all(t in vocab or s in vocab for t, s in zip(tokens, singular))
 
 
 def clean_roster_names(candidates: List[str]) -> List[str]:

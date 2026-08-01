@@ -502,9 +502,19 @@ PROPUBLICA_MAX_ORGS = int(os.environ.get("ARTEMIS_PROPUBLICA_MAX_ORGS", "3"))
 FIRMS_ENABLED = _env_bool("ARTEMIS_FIRMS_ENABLED", "1")
 MAX_ROSTER_MEMBERS = int(os.environ.get("ARTEMIS_MAX_ROSTER_MEMBERS", "40"))
 MAX_FIRMS_PER_PERSON = int(os.environ.get("ARTEMIS_MAX_FIRMS_PER_PERSON", "3"))
-# raw HTML cached/parsed per page fetch (before html_to_text's further cut to
+# Raw HTML cached/parsed per page fetch (before html_to_text's further cut to
 # MAX_PAGE_CHARS) — a roster grid can sit far down the markup of a long page.
-MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", str(MAX_PAGE_CHARS * 4)))
+#
+# Measured, not guessed. At the old MAX_PAGE_CHARS * 4 (80k) the cap landed
+# mid-boilerplate on every large roster tried: uncorkcapital.com/team gave 0
+# names truncated vs 14 whole, stthomas.edu 0 vs 16, bvp.com/team 65 vs 252.
+# Those pages are NOT single-page apps -- the names were in the plain response
+# all along, just past the cut. 250k is where all of them reach full recall.
+#
+# Affordable only because fetch_page now strips inline script/style bodies
+# BEFORE truncating (htmltext.strip_inline_noise), which roughly halves what
+# is stored; a bare cap raise would have multiplied page-cache growth instead.
+MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", "250000"))
 
 # --- Directories (org-keyed staff/professional directories) -----------------
 # The org-keyed sibling of FIRMS above: firms.py answers "who does this PERSON
