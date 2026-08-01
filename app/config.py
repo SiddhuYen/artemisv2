@@ -411,6 +411,12 @@ ENRICH_WAVE1_SIZE = int(os.environ.get("ARTEMIS_ENRICH_WAVE1_SIZE", "30"))
 # How long a background task waits for a build slot before re-checking whether
 # its run was cancelled. Short: this is a poll interval, not a timeout.
 ENRICH_SLOT_POLL_S = float(os.environ.get("ARTEMIS_ENRICH_SLOT_POLL_S", "2.0"))
+# A failed task (a transient provider timeout, a rate-limit blip -- expected,
+# not exceptional, at ~35 outbound calls per contact) is eligible to be picked
+# up again by _next_task as long as its attempts stay under this. Bounded so a
+# contact that fails for a PERMANENT reason (a name that reliably crashes the
+# extractor) doesn't retry forever — it fails out for good past this ceiling.
+ENRICH_MAX_ATTEMPTS = int(os.environ.get("ARTEMIS_ENRICH_MAX_ATTEMPTS", "3"))
 
 # The probe: one query to decide whether a contact's full ~35-query sweep is
 # worth paying for at all (see network/probe.py). Most contacts in a real
