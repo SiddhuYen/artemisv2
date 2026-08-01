@@ -106,6 +106,17 @@ async function loadContactsFromBackend() {
   if (typeof syncNetworkGate === 'function') syncNetworkGate();
 }
 
+// Wave 0 of enrichment: turn the employer/school columns the operator just
+// imported into real org membership and small-employer coworker edges. Costs
+// no searches and no API spend, so it can run on every contacts change — but
+// NOT from loadContactsFromBackend, which also fires on every page load, and
+// re-deriving the whole graph on boot would be pure waste. Best-effort and
+// never awaited by the UI: the import itself already succeeded.
+function refreshWave0() {
+  fetch('/network/cliques', { method: 'POST' })
+    .catch(() => { /* idempotent — the next import picks it up */ });
+}
+
 function uid() { return Math.random().toString(36).slice(2)+Date.now().toString(36); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function initials(name) { return name.trim().split(/\s+/).map(w=>w[0]||'').join('').slice(0,2).toUpperCase(); }
@@ -1874,6 +1885,7 @@ async function submitAddContact() {
     closeAddContactModal();
     await loadContactsFromBackend();
     renderContacts();
+    refreshWave0();   // one added contact can complete an employer clique
   } catch(e) { alert('Failed to add contact: '+e.message); }
 }
 
@@ -2371,6 +2383,7 @@ async function confirmLinkedInImport() {
     closeLinkedInImport();
     await loadContactsFromBackend();
     renderContacts();
+    refreshWave0();
     alert(`Imported: ${data.ingested.created} new, ${data.ingested.updated} updated, ${data.ingested.skipped} skipped.`);
   } catch(e) {
     alert('Import failed: '+e.message);
@@ -2625,7 +2638,11 @@ async function confirmVcfImport() {
         contacts: picked.map(c => ({
           name: vcfFullName(c), company: c.org, title: c.title, email: c.email,
           notes: c.tel ? `Phone: ${c.tel}` : ''
-        }))
+        })),
+        // Same bridge the CSV path does (see confirmLinkedInImport): without
+        // owner_name these contacts land in LocalProfile only and stay
+        // invisible to /connect and /discover.
+        ...(operatorName() !== 'OPERATOR' ? { owner_name: operatorName() } : {}),
       })
     });
     if (!res.ok) throw new Error(await res.text());
@@ -2633,6 +2650,7 @@ async function confirmVcfImport() {
     closeLinkedInImport();
     await loadContactsFromBackend();
     renderContacts();
+    refreshWave0();
     alert(`Imported: ${data.ingested.created} new, ${data.ingested.updated} updated, ${data.ingested.skipped} skipped.`);
   } catch (e) {
     alert('Import failed: ' + e.message);

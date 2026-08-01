@@ -32,6 +32,7 @@ from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
+from ..network.silo_weights import query_budget as silo_query_budget
 from ..silos import COLLEAGUE_SILO, SILOS, STRUCTURED_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import (
@@ -228,7 +229,8 @@ def _dedup_and_cap(edges: List[ExtractedEdge]) -> List[ExtractedEdge]:
 
 def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _Candidate],
                     progress=None, is_person: bool = True, context: str = "",
-                    cancel_checker: Optional[Callable[[], None]] = None) -> None:
+                    cancel_checker: Optional[Callable[[], None]] = None,
+                    silo_weights: Optional[Dict[str, float]] = None) -> None:
     def check_cancel() -> None:
         if cancel_checker:
             cancel_checker()
@@ -376,16 +378,26 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
     # --- phase 1: build (silo, query) pairs, then DEDUP across silos -------
     check_cancel()
+    # Per-silo query allowance. Without weights every silo gets the full
+    # MAX_QUERIES_PER_SILO, i.e. unchanged behavior; with them, silos that
+    # cannot pay off for this particular subject are dropped and the rest are
+    # scaled — see network/silo_weights.query_budget.
+    budget = silo_query_budget(silo_weights)
     pairs = []
     for silo in SILOS:
-        for query in silo.render_queries(subject_name)[: config.MAX_QUERIES_PER_SILO]:
+        allowance = budget.get(silo.key, 0)
+        if allowance <= 0:
+            continue
+        for query in silo.render_queries(subject_name)[:allowance]:
             pairs.append((silo, f"{query} {context}".strip() if context else query))
     unique_queries, query_to_silos = ORCH.dedup(pairs)
 
     if progress:
         ctx = f" [context: {context}]" if context else ""
+        weighted = (f"  ·  {len(budget)}/{len(SILOS)} silos"
+                    if silo_weights else "")
         progress(f"  [hop {hop}] {subject_name}{ctx}  ·  {len(unique_queries)} unique queries "
-                 f"(deduped from {len(pairs)})…")
+                 f"(deduped from {len(pairs)}){weighted}…")
 
     # --- phase 2: routed search, concurrent (cache-first) ------------------
     def _do_search(query):
@@ -558,7 +570,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  on_step: Optional[Callable[[dict], None]] = None,
                  cancel_checker: Optional[Callable[[], None]] = None,
                  should_stop: Optional[Callable[[Session], bool]] = None,
-                 prefer_reachable: Optional[bool] = None) -> dict:
+                 prefer_reachable: Optional[bool] = None,
+                 silo_weights: Optional[Dict[str, float]] = None) -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -624,6 +637,12 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     "progress": progress,
                     "is_person": (seed_is_person or hop > 0),
                     "context": (seed_context if hop == 0 else ""),
+                    # Weights describe THIS contact, derived from their own
+                    # export row — they say nothing about the strangers found
+                    # at hop 1+, so they apply to the seed only. Guessing that
+                    # a founder's neighbours are also founders is exactly the
+                    # unfounded prior this feature exists to remove.
+                    "silo_weights": (silo_weights if hop == 0 else None),
                 }
                 if cancel_checker:
                     kwargs["cancel_checker"] = cancel_checker

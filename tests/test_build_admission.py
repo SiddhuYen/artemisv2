@@ -276,5 +276,9 @@ def test_targets_search_is_now_a_background_job(open_client):
 
 def test_status_exposes_queue_depth(open_client):
     body = open_client.get("/status").json()
-    assert set(body["builds"]) == {"running", "queued", "capacity", "max_queued"}
+    assert set(body["builds"]) == {"running", "queued", "capacity", "max_queued",
+                                   "reserved_for_interactive"}
     assert body["builds"]["capacity"] == config.MAX_CONCURRENT_BUILDS
+    # slots an enrichment run may never occupy — see buildqueue's background lane
+    assert body["builds"]["reserved_for_interactive"] == \
+        config.ENRICH_RESERVED_BUILD_SLOTS

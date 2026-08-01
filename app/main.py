@@ -46,11 +46,16 @@ from .models import (
     CandidatePath,
     GraphMatch,
     LocalEdge,
+    EnrichmentRun,
     LocalProfile,
     Person,
     Source,
 )
+from .network.cliques import materialize_contact_cliques
+from .network.enrichment import RunConflict, cancel_run, plan_run, run_dict
+from .network.executor import STARTABLE, claim_run, execute_run
 from .network.ingest import backfill_graph_edges, ingest_csv, ingest_rows
+from .network.owner import get_owner, owner_dict, upsert_owner
 from .network.matching import run_matching
 from .network.paths import generate_paths_for_target
 from .schemas import GraphResponse, GraphStats, TargetSearchRequest
@@ -373,6 +378,14 @@ def _str_field(req: dict, key: str) -> str:
     if not isinstance(val, str):
         raise HTTPException(status_code=400, detail=f"'{key}' must be a string")
     return val.strip()
+
+
+def _owner_id(x_graph_id: str = Header(default="default", alias="X-Graph-Id")) -> str:
+    """The per-browser id the frontend mints into localStorage. Scopes both the
+    operator's own profile (/owner) and Boards; the discovery graph itself is
+    shared. Defined up here because endpoints in several sections below take it
+    as a dependency, and Depends() resolves at decoration time."""
+    return safe_graph_id(x_graph_id)
 
 
 @app.get("/jobs/{job_id}")
@@ -769,6 +782,185 @@ async def network_profiles_backfill(req: dict, db: Session = Depends(get_db)) ->
     return {"graph_edges": count}
 
 
+@app.post("/network/cliques")
+async def network_cliques(owner_id: str = Depends(_owner_id),
+                          db: Session = Depends(get_db)) -> dict:
+    """Wave 0 of initial enrichment: derive org membership and small-employer
+    coworker cliques from the already-imported contacts.
+
+    Costs nothing — no searches, no page fetches, no Claude — so it is NOT a
+    build and deliberately skips the BuildQueue admission path that /connect
+    and /discover go through. Idempotent; the frontend calls it after an
+    import, and calling it again just converges.
+
+    A saved owner profile puts the operator into their own employer's and
+    school's clusters too; without one they stay outside every org cluster."""
+    counts = await run_in_threadpool(
+        materialize_contact_cliques, db, None, get_owner(db, owner_id))
+    return {"wave0": counts}
+
+
+# ===========================================================================
+# The operator's own identity, scoped by X-Graph-Id (see _owner_id).
+# ===========================================================================
+@app.get("/owner")
+def read_owner(owner_id: str = Depends(_owner_id),
+               db: Session = Depends(get_db)) -> dict:
+    """The stored profile, or an unconfigured placeholder. Never 404s: "no
+    profile yet" is a normal first-boot state, not a client error."""
+    return owner_dict(get_owner(db, owner_id))
+
+
+@app.put("/owner")
+def write_owner(req: dict, owner_id: str = Depends(_owner_id),
+                db: Session = Depends(get_db)) -> dict:
+    """Save who the operator is. Body may carry any of name, company, title,
+    school, linkedin_url, email; omitted fields keep their stored value.
+
+    `company` and `school` are what let ranking's shared-affiliation boost
+    actually fire — nothing was sending them before this existed.
+    """
+    fields = {k: _str_field(req, k) for k in
+              ("name", "company", "title", "school", "linkedin_url", "email")
+              if k in req}
+    if not fields:
+        raise HTTPException(status_code=400, detail="no recognized fields")
+    existing = get_owner(db, owner_id)
+    if "name" in fields and not fields["name"] and existing is None:
+        raise HTTPException(status_code=400, detail="name required")
+    return owner_dict(upsert_owner(db, owner_id, **fields))
+
+
+# ===========================================================================
+# Initial enrichment — the operator's own 2-layer network.
+#
+# Planning is free and separate from execution on purpose: POST /enrich/runs
+# ranks the contacts and persists the plan without issuing a single search, so
+# the operator can see who would be enriched, in what order, and who is
+# excluded and why, before committing to hours of paid crawling.
+# ===========================================================================
+@app.post("/enrich/runs")
+async def create_enrichment_run(req: dict, owner_id: str = Depends(_owner_id),
+                                db: Session = Depends(get_db)) -> dict:
+    """Plan a run over the imported contacts. Costs nothing; runs nothing.
+
+    Body: {"owner_name": "...", "owner_company": "...", "owner_school": "...",
+    "depth": 1, "budget_s": 0}
+    """
+    # The stored profile supplies whatever the request leaves out — that is the
+    # point of having one. owner_company/owner_school in particular were never
+    # sent by any caller, so before this the shared-affiliation boost in
+    # ranking.score_contacts was dead code in practice.
+    profile = get_owner(db, owner_id)
+    owner_name = _str_field(req, "owner_name") or (profile.name if profile else "")
+    if not owner_name:
+        raise HTTPException(
+            status_code=400,
+            detail="owner_name required (or save a profile via PUT /owner)")
+    company = _str_field(req, "owner_company") or (profile.company if profile else "") or ""
+    school = _str_field(req, "owner_school") or (profile.school if profile else "") or ""
+    try:
+        depth = max(1, min(int(req.get("depth", 1)), 3))
+        budget_s = max(0.0, float(req.get("budget_s", 0) or 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="depth must be an integer 1-3 and budget_s a number")
+    try:
+        run = await run_in_threadpool(
+            plan_run, db, owner_name, company, school, depth, budget_s)
+    except RunConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return run_dict(db, run)
+
+
+@app.get("/enrich/runs")
+def list_enrichment_runs(db: Session = Depends(get_db)) -> list:
+    runs = db.execute(
+        select(EnrichmentRun).order_by(EnrichmentRun.created_at.desc()).limit(20)
+    ).scalars()
+    # The cached counters on the row are good enough for a list view — see
+    # enrichment.tally on why they are never trusted for a single run's detail.
+    return [{"id": r.id, "owner_name": r.owner_name, "state": r.state,
+             "depth": r.depth, "counters": r.counters or {},
+             "created_at": r.created_at, "finished_at": r.finished_at}
+            for r in runs]
+
+
+@app.get("/enrich/runs/{run_id}")
+def get_enrichment_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+    run = db.get(EnrichmentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="unknown enrichment run")
+    return run_dict(db, run)
+
+
+@app.post("/enrich/runs/{run_id}/start")
+def start_enrichment_run(run_id: str, req: dict = None,
+                         db: Session = Depends(get_db)) -> dict:
+    """Begin (or resume) execution on a background thread; returns immediately.
+
+    Body: {"limit": 30} — how many contacts THIS invocation covers. Defaults to
+    config.ENRICH_WAVE1_SIZE (wave 1); pass 0 to run the plan to exhaustion.
+
+    Deliberately NOT routed through _start_build_job: that admits a single
+    build, whereas a run admits one background build PER CONTACT so interactive
+    callers can interleave (see network/executor.py).
+    """
+    req = req or {}
+    run = db.get(EnrichmentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="unknown enrichment run")
+    try:
+        limit = int(req.get("limit", config.ENRICH_WAVE1_SIZE))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer")
+
+    # Claim BEFORE spawning: a conditional UPDATE, so a double-clicked start
+    # button gets one worker and one 409 rather than two threads racing over
+    # the same plan and paying twice per contact.
+    if not claim_run(db, run_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"run is {run.state}; only {' or '.join(STARTABLE)} can start")
+
+    def _worker() -> None:
+        # Its own Session: this outlives the request, and the request-scoped
+        # one from Depends(get_db) is closed the moment we return.
+        worker_db = SessionLocal()
+        try:
+            execute_run(worker_db, run_id, limit=max(0, limit), claimed=True)
+        except Exception:
+            pass  # executor already recorded the failure on the run row
+        finally:
+            worker_db.close()
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"enrich-{run_id[:8]}").start()
+    db.expire(run)
+    return run_dict(db, run)
+
+
+@app.post("/enrich/runs/{run_id}/pause")
+def pause_enrichment_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+    """Stop after the contact currently in flight. Progress is kept, and
+    POST .../start resumes from the next pending task."""
+    run = db.get(EnrichmentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="unknown enrichment run")
+    if run.state == "running":
+        run.state = "paused"
+        db.commit()
+    return run_dict(db, run)
+
+
+@app.post("/enrich/runs/{run_id}/cancel")
+def cancel_enrichment_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+    run = db.get(EnrichmentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="unknown enrichment run")
+    return run_dict(db, cancel_run(db, run))
+
+
 @app.post("/network/contacts/import")
 async def import_contacts(req: dict, db: Session = Depends(get_db)) -> dict:
     """Bulk-add already-parsed contacts (the phone/vCard import in the UI).
@@ -896,14 +1088,10 @@ def get_candidate_path(path_id: str, db: Session = Depends(get_db)) -> dict:
 
 # ===========================================================================
 # Boards — a user's manually-built canvas workspace (UI-only; never mutates
-# the canonical discovery data above). Owner-scoped by X-Graph-Id, the
-# per-browser id the frontend already mints into localStorage. Each board
-# holds one or more Pages, each an independent node/edge canvas.
+# the canonical discovery data above). Owner-scoped by X-Graph-Id (see
+# _owner_id above). Each board holds one or more Pages, each an independent
+# node/edge canvas.
 # ===========================================================================
-def _owner_id(x_graph_id: str = Header(default="default", alias="X-Graph-Id")) -> str:
-    return safe_graph_id(x_graph_id)
-
-
 def _get_owned_board(db: Session, board_id: str, owner_id: str) -> Board:
     b = db.get(Board, board_id)
     if b is None or b.owner_id != owner_id:
