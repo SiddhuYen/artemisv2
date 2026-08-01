@@ -117,11 +117,19 @@ class SearchOrchestrator:
         return self.duckduckgo.fetch(url)  # shared cache-first fetch
 
     def coauthors_enrichment(self, name: str) -> dict:
-        """Academic coauthors (OpenAlex) for any person — independent of Wikipedia."""
+        """Academic coauthors (OpenAlex) for any person — independent of Wikipedia.
+
+        `identity_text` describes whoever the name actually resolved to at
+        OpenAlex (their last known institution, if any) -- see
+        graph.expansion's use of this alongside graph.disambiguate.domain_conflict
+        to verify the match before trusting `coauthors_text`, which by itself
+        is just a list of names with no identity signal in it at all.
+        """
         coauthors = self.openalex.coauthors(name)
         return {
             "coauthors": coauthors,
             "coauthors_text": self.openalex.coauthors_text(name, coauthors) if coauthors else "",
+            "identity_text": self.openalex.identity_text(name) if coauthors else "",
         }
 
     def officer_enrichment(self, name: str) -> dict:

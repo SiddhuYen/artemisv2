@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
+from . import disambiguate
 from ..extraction import extract, tier
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
@@ -54,6 +55,33 @@ def _mark_trusted(edges, trusted: bool) -> None:
     if trusted:
         for e in edges:
             e.signals.trusted = True
+
+
+def _identity_signal(context: str, candidate_edges: List[ExtractedEdge]) -> str:
+    """User-given `context` plus a SMALL, confidence-ranked sample of this
+    node's own already-discovered evidence -- the signal an enrichment
+    match (see phase 4b in _process_person) gets checked against before
+    it's trusted.
+
+    Deliberately NOT every candidate edge found so far: confirmed live that
+    concatenating everything breaks this. A well-searched node can rack up
+    1000+ raw candidate edges before this runs, and a text blob that large
+    touches nearly every professional-domain bucket by sheer volume (a
+    stray "engineer"/"researcher" surfacing ANYWHERE in a thousand
+    snippets) -- domains_of(signal) becomes a near-superset that overlaps
+    with almost any candidate identity, so domain_conflict silently never
+    fires. Not because the identity check is wrong -- because "signal"
+    stopped meaning anything once it was everything. Same fix
+    builder._existing_evidence_signal already applies to the identical
+    problem, for the identical reason: a small, confidence-ranked sample,
+    not the whole pile.
+    """
+    top_evidence = [
+        e.evidence_snippet for e in
+        sorted(candidate_edges, key=lambda e: e.confidence_adjusted, reverse=True)
+        if e.evidence_snippet
+    ][:config.IDENTITY_SIGNAL_MAX_SNIPPETS]
+    return " ".join(filter(None, [context, " ".join(top_evidence)]))
 
 
 @dataclass
@@ -291,11 +319,15 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             candidate_edges.extend(out.edges)
 
     # --- phase 0b: shared-affiliation colleague sources (lower confidence) ---
+    # OpenAlex is handled separately, LATER (see phase 4b below) -- it needs
+    # an identity check against evidence this same call gathers, so it can't
+    # run this early. OpenCorporates/EDGAR still run here, ungated: unlike
+    # OpenAlex's bare coauthor-name list, no per-provider identity signal was
+    # available to build a comparable check for these two without deeper
+    # provider changes -- a known, scoped-out gap, not an oversight.
     check_cancel()
     if effective_is_person:
         for src_name, url, query, text in (
-            ("openalex", "https://openalex.org/", "enrich:openalex",
-             ORCH.coauthors_enrichment(subject_name)["coauthors_text"]),
             ("opencorporates", "https://opencorporates.com/", "enrich:opencorporates",
              ORCH.officer_enrichment(subject_name)["officers_text"]),
             ("edgar", "https://www.sec.gov/cgi-bin/browse-edgar", "enrich:edgar",
@@ -450,6 +482,44 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             for silo in silos:
                 check_cancel()
                 out = extract(subject_name, text, silo, res.snippet, res.url)
+                candidate_edges.extend(out.edges)
+
+    # --- phase 4b: OpenAlex coauthors, identity-gated -----------------------
+    # A bare-name lookup (this one included) can't tell two same-named people
+    # apart on its own -- OpenAlex's own match guard (works_count + name
+    # similarity, see providers/openalex.py) narrows candidates, it doesn't
+    # confirm identity. This runs HERE, after the main search above (not
+    # back in phase 0b with the other enrichments), specifically so there's
+    # real evidence about the subject already gathered to check the resolved
+    # author's own affiliation against -- catching exactly the failure mode
+    # that shipped live: an OpenAlex "Prantik Chakraborty" resolving to an
+    # unrelated ISRO researcher while the actual subject (per real web
+    # results already in candidate_edges, or per user-given `context`) is a
+    # sales executive at a chemicals company. Gated on `is_person`, not
+    # `effective_is_person`: a context hint no longer means "skip this
+    # source," it means "here's a strong signal to verify it against."
+    check_cancel()
+    if is_person:
+        oa = ORCH.coauthors_enrichment(subject_name)
+        oa_text = oa["coauthors_text"]
+        if oa_text:
+            signal = _identity_signal(context, candidate_edges)
+            if disambiguate.domain_conflict(signal, oa["identity_text"]):
+                # Advisory record only (mirrors builder._homonym_conflict's
+                # homonym_rejected note) -- doesn't block a later, better-
+                # evidenced acceptance, just explains why this pass skipped it.
+                meta = dict(subject.meta or {})
+                meta["openalex_rejected"] = {"identity_text": oa["identity_text"][:300]}
+                subject.meta = meta
+                if progress:
+                    progress(f"  ⚠ OpenAlex coauthors for {subject_name} rejected — "
+                             f"resolved identity doesn't match: {oa['identity_text'][:80]}")
+            else:
+                res = SearchResult(subject_name, "https://openalex.org/", "openalex", "openalex")
+                source = builder.save_source(db, res, "enrich:openalex", oa_text)
+                source_by_url[res.url] = source
+                out = extract(subject_name, oa_text, COLLEAGUE_SILO, "openalex", res.url)
+                _mark_trusted(out.edges, True)  # verified above, or nothing to conflict with
                 candidate_edges.extend(out.edges)
 
     # --- phase 5: dedup + per-node cap, then persist ----------------------

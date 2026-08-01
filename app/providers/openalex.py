@@ -41,7 +41,7 @@ class OpenAlexProvider:
         if cached is not None:
             return cached.get("coauthors", [])
 
-        author_id = self._resolve_author(name)
+        author_id, _identity = self._resolve_author(name)
         result: List[dict] = []
         if author_id:
             counts: Counter = Counter()
@@ -67,26 +67,74 @@ class OpenAlexProvider:
     def coauthors_text(self, subject: str, coauthors: List[dict]) -> str:
         return " ".join(f"{subject} coauthor of {c['name']}." for c in coauthors)
 
+    def identity_text(self, name: str) -> str:
+        """A short description of whoever `name` actually resolved to at
+        OpenAlex -- their last known institutional affiliation, if any.
+
+        This exists so a caller can verify the match BEFORE trusting the
+        coauthor list this same resolution produces (see graph.expansion +
+        graph.disambiguate.domain_conflict) -- the works_count/name-similarity
+        guard in _resolve_author narrows candidates, it doesn't confirm
+        identity, and a bare name search has no way to tell "Prantik
+        Chakraborty, VP Sales at a chemicals company" from "Prantik
+        Chakraborty, ISRO radar researcher" without something like this.
+        """
+        if not name:
+            return ""
+        _author_id, identity = self._resolve_author(name)
+        return identity
+
     def _resolve_author(self, name: str):
+        """Returns (author_id, identity_text) -- (None, "") on no match.
+
+        Both come from, and are cached with, the same lookup: identity_text
+        is whatever this resolution already told us about who it resolved
+        to, at no extra request cost.
+        """
+        key = cache.make_key(self.name, "resolve", name.lower())
+        cached = cache.get(key)
+        if cached is not None:
+            return cached.get("id"), cached.get("identity_text", "")
+
         _LIMITER.acquire()
         resp = request_with_retry(
             "GET", _AUTHORS, provider=self.name,
             params={"search": name, "per_page": 1,
-                    "select": "id,display_name,works_count"},
+                    "select": "id,display_name,works_count,last_known_institutions"},
         )
-        if resp is None or resp.status_code != 200:
-            return None
-        try:
-            results = resp.json().get("results", []) or []
-            if not results:
-                return None
-            top = results[0]
-            # guard against namesakes: require a real publication record and a
-            # close name match (reduces matching a researcher to a non-academic).
-            if (top.get("works_count") or 0) < config.OPENALEX_MIN_WORKS:
-                return None
-            if _name_ratio(name, top.get("display_name", "")) < config.OPENALEX_NAME_SIM:
-                return None
-            return top["id"].rsplit("/", 1)[-1]
-        except Exception:
-            return None
+        author_id, identity = None, ""
+        if resp is not None and resp.status_code == 200:
+            try:
+                results = resp.json().get("results", []) or []
+                if results:
+                    top = results[0]
+                    # guard against namesakes: require a real publication record
+                    # and a close name match (reduces matching a researcher to a
+                    # non-academic) -- narrows candidates, doesn't confirm identity.
+                    if ((top.get("works_count") or 0) >= config.OPENALEX_MIN_WORKS
+                            and _name_ratio(name, top.get("display_name", ""))
+                                >= config.OPENALEX_NAME_SIM):
+                        author_id = top["id"].rsplit("/", 1)[-1]
+                        insts = [i.get("display_name") for i in
+                                (top.get("last_known_institutions") or [])
+                                if i.get("display_name")]
+                        # "an academic author" is explicit and load-bearing, not
+                        # filler: passing the works_count/name-similarity guard
+                        # above IS a real published record, so this is a true
+                        # statement regardless of institution data -- and it's
+                        # the word disambiguate.domain_conflict's lexicon
+                        # actually matches on. An institution's bare NAME (e.g.
+                        # "Indian Space Research Organisation") does NOT contain
+                        # a profession keyword on its own; without this, the
+                        # domain check silently never fires, which is exactly
+                        # what happened testing this against the live API for
+                        # the motivating case before this line was added.
+                        identity = f"{top.get('display_name', name)}, an academic author"
+                        if insts:
+                            identity += f" affiliated with {', '.join(insts)}"
+                        identity += "."
+            except Exception:
+                pass
+        cache.set(key, "resolve", {"id": author_id, "identity_text": identity},
+                 config.CACHE_TTL_WIKI)
+        return author_id, identity
