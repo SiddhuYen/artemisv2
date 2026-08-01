@@ -65,8 +65,21 @@ DIRECTORY_HINTS = ("attorneys", "lawyers", "professionals", "physicians",
                    "consultants", "bankers", "agents", "clinicians")
 
 # Never a roster, even when a hint appears elsewhere in the path.
+#
+# The second group is what makes this usable for technology companies at all.
+# In software, "team" overwhelmingly names a PRODUCT FEATURE rather than a
+# staff list, and those pages live on the company's own domain -- so Guard 2
+# cannot tell them apart, because they genuinely do belong to the company.
+# Measured live: /docs/cli/teams and /docs/rest-api/teams/list-team-members
+# (Vercel), /get-started/account/teams (Stripe), /docs/teams (Linear),
+# /integrations/microsoft-teams (Retool), /community/file/... (a Figma
+# template). Every one passed both guards and yielded product copy.
 NEGATIVE_HINTS = ("portfolio", "blog", "post", "news", "careers", "jobs",
-                  "contact", "privacy", "terms", "press", "insights")
+                  "contact", "privacy", "terms", "press", "insights",
+                  "docs", "documentation", "help", "support", "changelog",
+                  "integrations", "community", "api", "reference", "guides",
+                  "tutorial", "pricing", "download", "signup", "login",
+                  "get-started", "getting-started", "faq", "status")
 
 # Aggregators and socials: real pages, but never the org's own roster.
 BLOCKED_HOSTS = ("linkedin.com", "twitter.com", "x.com", "facebook.com",
@@ -286,8 +299,23 @@ def page_belongs_to_org(url: str, html: str, org_name: str,
     # A bare domain match settles a single-token org ("Homebrew" -> homebrew.co).
     # It does NOT settle a multi-word one -- a business unit of a much bigger
     # company can share the parent's domain stem while being a different desk.
+    #
+    # And it must be the WHOLE label, not a prefix of it. A short company name
+    # is a prefix of plenty of unrelated domains: "Ramp" (the fintech) matched
+    # rampinteractive.com, a sports-league software company, and scraped its
+    # roster. A longer domain that merely starts with the org's only
+    # distinctive token is a different company far more often than it is the
+    # same one.
+    # The label must equal the token, or the org's whole name compacted --
+    # NOT merely start with it. "Uncork Capital" -> uncorkcapital.com is the
+    # ordinary name-as-domain pattern and must pass; "Ramp" -> rampinteractive
+    # .com is a different company that happens to share a prefix, and did get
+    # its roster scraped.
     if domain_hit and len(tokens) == 1:
-        return True
+        only = next(iter(tokens))
+        compact_name = normalize(org_name).replace(" ", "")
+        if any(lbl == only or lbl == compact_name for lbl in labels):
+            return True
 
     declared = org_name_from_page(html, url)
     if not declared:
