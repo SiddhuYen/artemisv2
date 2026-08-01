@@ -155,8 +155,16 @@ CACHE_TTL_PAGE = int(os.environ.get("ARTEMIS_CACHE_TTL_PAGE", str(30 * 86400)))
 CACHE_TTL_WIKI = int(os.environ.get("ARTEMIS_CACHE_TTL_WIKI", str(30 * 86400)))
 
 # --- search behaviour ------------------------------------------------------
-RESULTS_PER_QUERY = int(os.environ.get("ARTEMIS_RESULTS_PER_QUERY", "5"))
-SCRAPE_TOP_N = int(os.environ.get("ARTEMIS_SCRAPE_TOP_N", "3"))
+# RESULTS_PER_QUERY caps how many results a provider even RETURNS per query
+# (the "num"/"count" param sent to Serper/Brave/etc) -- SCRAPE_TOP_N below
+# can never scrape past this, since ranks beyond it don't exist in the
+# results list at all. Raised alongside SCRAPE_TOP_N (both 3->10, live-
+# tested: two comparable never-searched people at 3 vs 6 took ~the same
+# wall-clock time, 19s vs 17s -- page fetches within a query already run
+# concurrently, and Serper bills per QUERY regardless of "num", so this is
+# effectively free coverage, not a cost increase).
+RESULTS_PER_QUERY = int(os.environ.get("ARTEMIS_RESULTS_PER_QUERY", "10"))
+SCRAPE_TOP_N = int(os.environ.get("ARTEMIS_SCRAPE_TOP_N", "10"))
 MAX_PAGE_CHARS = int(os.environ.get("ARTEMIS_MAX_PAGE_CHARS", "20000"))
 # How many sentences away from an actual mention of the SUBJECT's own name an
 # extracted entity's sentence may be and still count as evidence about the
