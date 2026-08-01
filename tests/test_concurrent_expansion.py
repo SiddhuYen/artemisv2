@@ -136,7 +136,8 @@ def test_expand_graph_runs_hop_nodes_concurrently_and_skips_a_failure(tmp_path, 
 
     def fake_process_person(worker_db, name, hop, local_disc, progress=None,
                             is_person=True, context="", silo_weights=None,
-                            enhanced_professional_search=False, professional_only=False):
+                            enhanced_professional_search=False, professional_only=False,
+                            target_person_name="", target_context=""):
         if hop == 0:
             subject = builder.get_or_create_person(worker_db, name)
             subject.processed = 1
@@ -202,7 +203,8 @@ def test_expand_graph_single_frontier_node_does_not_use_a_thread_pool(tmp_path, 
 
     def fake_process_person(worker_db, name, hop, local_disc, progress=None,
                             is_person=True, context="", silo_weights=None,
-                            enhanced_professional_search=False, professional_only=False):
+                            enhanced_professional_search=False, professional_only=False,
+                            target_person_name="", target_context=""):
         subject = builder.get_or_create_person(worker_db, name)
         subject.processed = 1
         worker_db.commit()
@@ -228,7 +230,8 @@ def test_expand_graph_checks_stop_condition_after_each_enriched_node(db, monkeyp
 
     def fake_process_person(worker_db, name, hop, local_disc, progress=None,
                             is_person=True, context="", silo_weights=None,
-                            enhanced_professional_search=False, professional_only=False):
+                            enhanced_professional_search=False, professional_only=False,
+                            target_person_name="", target_context=""):
         processed.append((name, hop))
         subject = builder.get_or_create_person(worker_db, name)
         subject.processed = 1

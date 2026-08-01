@@ -34,9 +34,15 @@ def _person(db, name, **kw):
     return p
 
 
-def _edge(db, a, b, rel="coworker", status="candidate", conf=0.5):
+def _edge(db, a, b, rel="coworker", status="candidate", conf=0.5, signals=None):
+    # Default signals represent realistic weak-but-real evidence (the two
+    # names DO cooccur in some sentence, just without an explicit keyword) --
+    # not the "two coincidental mentions on the same page, never actually
+    # cooccurring" case _untraversable specifically excludes (see connect.py).
+    # A test that wants THAT exact shape passes signals={} explicitly.
     e = RelationshipEdge(person_a_id=a.id, person_b_id=b.id,
-                         relationship_type=rel, status=status, confidence_raw=conf)
+                         relationship_type=rel, status=status, confidence_raw=conf,
+                         signals={"sentence_cooccurrence": True} if signals is None else signals)
     db.add(e)
     return e
 
@@ -136,6 +142,66 @@ def test_unknown_type_edge_is_traversable_when_it_is_the_only_route(db):
     adj, person_by_id, src_by_id, degree = C._adjacency(db)
     routes = C._diverse_paths(adj, a.id, b.id, 3, 1, person_by_id, degree)
     assert routes, "an unknown-typed edge must still form a path when it's the only one"
+
+
+# --- bug 5: a phantom edge from two coincidental same-page mentions must
+# not be traversable, even as the only route -- live case: "Amit Sharma" (a
+# real person, DIFFERENT from the Trinamix Amit Sharma) reported as
+# "directly connected" to Mark Zuckerberg off two unrelated sentences on
+# one page, confidence 0.10, no cooccurrence, no explicit keyword, unknown
+# type. Distinct in kind (not just degree) from bug 4's weak/unknown edges,
+# which DO have real -- if weak -- cooccurring evidence.
+def test_phantom_no_cooccurrence_edge_is_not_traversable_even_as_the_only_route(db):
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="unknown", status="weak", conf=0.1, signals={
+        "sentence_cooccurrence": False, "explicit_keyword_match": False,
+    })
+    db.commit()
+
+    adj, person_by_id, src_by_id, degree = C._adjacency(db)
+    routes = C._diverse_paths(adj, a.id, b.id, 3, 1, person_by_id, degree)
+    assert not routes, ("two names that never actually cooccur must not form a "
+                        "path just because nothing else competes with it")
+
+
+def test_route_exists_is_false_for_a_phantom_no_cooccurrence_edge(db):
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="unknown", status="weak", conf=0.1, signals={
+        "sentence_cooccurrence": False, "explicit_keyword_match": False,
+    })
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is False
+
+
+def test_edge_with_cooccurrence_but_no_keyword_stays_traversable(db):
+    """The narrow cut is EITHER cooccurrence OR an explicit keyword, not
+    both -- an edge that cooccurs but has no strength keyword (the common
+    'weak, real mention' shape) must still pass."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="unknown", status="weak", conf=0.29, signals={
+        "sentence_cooccurrence": True, "explicit_keyword_match": False,
+    })
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is True
+
+
+def test_a_typed_edge_stays_traversable_even_with_no_cooccurrence_signal(db):
+    """The cut only applies when relationship_type is ALSO 'unknown' -- a
+    typed edge (however it got typed) is a real assertion, not a phantom
+    coincidence, even if the cooccurrence signal wasn't recorded."""
+    a = _person(db, "A Person")
+    b = _person(db, "B Person")
+    _edge(db, a, b, rel="coworker", status="weak", conf=0.2, signals={
+        "sentence_cooccurrence": False, "explicit_keyword_match": False,
+    })
+    db.commit()
+
+    assert C._route_exists(db, "A Person", "B Person", 3) is True
 
 
 def test_typed_candidate_edge_still_beats_an_unknown_shortcut(db):

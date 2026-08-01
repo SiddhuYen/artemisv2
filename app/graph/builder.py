@@ -93,11 +93,23 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
         a separate, QID-suffixed node.
       - no qid: fall back to the normalized-name key (today's behavior).
 
-    `identity_text` is a short description of the identity `qid` refers to
-    (e.g. a Wikipedia summary) -- the candidate side of the homonym check.
-    Callers that don't have one (e.g. counterpart resolution during edge
-    extraction, which never passes a qid at all) get the guard's old,
-    unconditional-adopt behavior; there is nothing to check the name against.
+    `identity_text` is a short description of the identity being merged onto
+    an existing same-named node -- the candidate side of the homonym check.
+    With a `qid`, it's the QID's own identity (e.g. a Wikipedia summary).
+    WITHOUT a qid -- counterpart resolution during edge persistence, which
+    never has a QID to key off -- it's whatever the caller knows about this
+    SPECIFIC mention (typically the edge's own evidence sentence); a rejected
+    merge there gets a domain-keyed node instead of a QID-keyed one, since
+    there's no QID to disambiguate by (see the no-QID branch below). Omitting
+    it entirely reverts to the old unconditional-adopt behavior -- there is
+    nothing to check the name against.
+
+    This split exists because of a live miss: a real "Donald Trump" (US
+    president) node in the graph silently absorbed an unrelated academic
+    coauthor sharing the same bare name, because counterpart resolution
+    never passed anything to compare against at all -- the QID path's guard
+    only ever protected the SUBJECT side of identity resolution, never an
+    arbitrary discovered counterpart.
     """
     name = _strip_nul(name)
     norm = person_norm_key(name)
@@ -132,16 +144,37 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
         node_norm = norm if by_name is None else f"{norm}#{qid}"
         return _new_person_or_existing(db, name, node_norm, qid)
 
-    # no QID: plain name-key dedup
+    # no QID: plain name-key dedup, homonym-gated when the caller gave an
+    # identity_text to check (see this function's docstring). A rejected
+    # merge gets a DOMAIN-keyed node, not a hash of the raw text -- so every
+    # future sighting of the same KIND of conflicting mention (e.g. another
+    # academic coauthor named "Donald Trump") converges onto the SAME
+    # secondary node instead of fragmenting into a new one per differently-
+    # worded sentence. Silent (no separation) whenever domains_of() can't
+    # anchor the candidate side, same conservative default _homonym_conflict
+    # already has -- an unrecognizable signal is not evidence of a conflict.
     existing = db.execute(
         select(Person).where(Person.norm_name == norm)
     ).scalar_one_or_none()
+    node_norm = norm
+    if existing is not None and _homonym_conflict(db, existing, identity_text):
+        # domain_conflict (called inside _homonym_conflict) only ever returns
+        # True when BOTH sides' domains_of() are non-empty -- so `domains`
+        # here is guaranteed non-empty too; the guard below is a defensive
+        # invariant check, not a reachable branch.
+        domains = sorted(disambiguate.domains_of(identity_text or ""))
+        if domains:
+            node_norm = f"{norm}#{'+'.join(domains)}"
+            distinct = db.execute(
+                select(Person).where(Person.norm_name == node_norm)
+            ).scalar_one_or_none()
+            existing = distinct  # None if this specific conflicting identity hasn't been seen before
     if existing:
         _merge_aliases(existing, name)
         return existing
     if not allow_create:
         return None
-    return _new_person_or_existing(db, name, norm, None)
+    return _new_person_or_existing(db, name, node_norm, None)
 
 
 def _existing_evidence_signal(db: Session, person: Person) -> str:

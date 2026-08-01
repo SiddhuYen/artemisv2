@@ -155,8 +155,16 @@ CACHE_TTL_PAGE = int(os.environ.get("ARTEMIS_CACHE_TTL_PAGE", str(30 * 86400)))
 CACHE_TTL_WIKI = int(os.environ.get("ARTEMIS_CACHE_TTL_WIKI", str(30 * 86400)))
 
 # --- search behaviour ------------------------------------------------------
-RESULTS_PER_QUERY = int(os.environ.get("ARTEMIS_RESULTS_PER_QUERY", "5"))
-SCRAPE_TOP_N = int(os.environ.get("ARTEMIS_SCRAPE_TOP_N", "3"))
+# RESULTS_PER_QUERY caps how many results a provider even RETURNS per query
+# (the "num"/"count" param sent to Serper/Brave/etc) -- SCRAPE_TOP_N below
+# can never scrape past this, since ranks beyond it don't exist in the
+# results list at all. Raised alongside SCRAPE_TOP_N (both 3->10, live-
+# tested: two comparable never-searched people at 3 vs 6 took ~the same
+# wall-clock time, 19s vs 17s -- page fetches within a query already run
+# concurrently, and Serper bills per QUERY regardless of "num", so this is
+# effectively free coverage, not a cost increase).
+RESULTS_PER_QUERY = int(os.environ.get("ARTEMIS_RESULTS_PER_QUERY", "10"))
+SCRAPE_TOP_N = int(os.environ.get("ARTEMIS_SCRAPE_TOP_N", "10"))
 MAX_PAGE_CHARS = int(os.environ.get("ARTEMIS_MAX_PAGE_CHARS", "20000"))
 # How many sentences away from an actual mention of the SUBJECT's own name an
 # extracted entity's sentence may be and still count as evidence about the
@@ -205,6 +213,17 @@ EXPAND_PREFER_REACHABLE = _env_bool("ARTEMIS_EXPAND_PREFER_REACHABLE", "1")
 DOWNWEIGHT_FAMILY = _env_bool("ARTEMIS_DOWNWEIGHT_FAMILY", "1")
 FAMILY_PENALTY = float(os.environ.get("ARTEMIS_FAMILY_PENALTY", "1.5"))
 PROFESSIONAL_BONUS = float(os.environ.get("ARTEMIS_PROFESSIONAL_BONUS", "1.0"))
+# Alpha step 7: bonus per cofounder/board_member-typed (or business-domain-
+# language) edge a candidate has -- ranks "most high up and well connected"
+# candidates above equally-evidenced but junior ones. Additive on top of
+# score()'s existing strong/explicit/source terms, not a replacement for them.
+SENIORITY_BONUS = float(os.environ.get("ARTEMIS_SENIORITY_BONUS", "1.0"))
+# Alpha step 7's "pick 5 of the strongest" -- narrower than the general
+# EXPAND_TOP_STRONG beam (15). Applied only on the non-famous/origin side of
+# an asymmetric /connect walk (enhanced_professional_search), where a
+# reasoning-selected angle already narrowed the field; expanding 15 people's
+# worth of generic silo search doesn't need the same narrowing.
+ALPHA_TOP_CANDIDATES = int(os.environ.get("ARTEMIS_ALPHA_TOP_CANDIDATES", "5"))
 # Shared global map accumulates people across ALL runs, so the cap is high.
 # (A single isolated build rarely approaches this; it bounds unbounded growth.)
 MAX_TOTAL_NODES = int(os.environ.get("ARTEMIS_MAX_TOTAL_NODES", "50000"))
@@ -341,6 +360,17 @@ IDENTITY_VERIFY_ENABLED = _env_bool("ARTEMIS_IDENTITY_VERIFY_ENABLED", "1")
 IDENTITY_SIGNAL_MAX_SNIPPETS = int(
     os.environ.get("ARTEMIS_IDENTITY_SIGNAL_MAX_SNIPPETS", "5"))
 
+# --- coauthor plausibility gate (before OpenAlex, not just after) ----------
+# See extraction/coauthor_plausibility.py: a cheaper, prior question than
+# phase 4b's existing domain_conflict check -- given what's already known
+# about the subject, is an OpenAlex coauthor lookup even worth attempting?
+# Skips the call entirely for subjects who clearly aren't the type to have
+# academic publications, closing the homonym-collision risk a layer earlier
+# instead of only catching it after OpenAlex has already resolved a name.
+COAUTHOR_PLAUSIBILITY_ENABLED = _env_bool("ARTEMIS_COAUTHOR_PLAUSIBILITY", "1")
+COAUTHOR_PLAUSIBILITY_MODEL = os.environ.get(
+    "ARTEMIS_COAUTHOR_PLAUSIBILITY_MODEL", CLAUDE_BATCH_MODEL)
+
 # --- targeted professional-network re-search (bounded beam) ----------------
 # On the non-famous side of an asymmetric /connect walk (see
 # graph.connect._resolve_expansion_depths), generic silo templates find a
@@ -363,6 +393,48 @@ ENHANCED_SEARCH_MAX_CANDIDATES = int(
 # isn't the "keeps coming up" signal this is meant to act on.
 ENHANCED_SEARCH_MIN_MENTIONS = int(
     os.environ.get("ARTEMIS_ENHANCED_SEARCH_MIN_MENTIONS", "2"))
+
+# --- Alpha step 4/5: node profiling (org size/industry) --------------------
+# See extraction/node_profiler.py for the hallucination guard this feeds --
+# the model must ground every field in the fetched snippets or the whole
+# verdict collapses to "unknown" rather than a plausible-sounding guess.
+NODE_PROFILE_ENABLED = _env_bool("ARTEMIS_NODE_PROFILE", "1")
+NODE_PROFILE_MODEL = os.environ.get("ARTEMIS_NODE_PROFILE_MODEL", CLAUDE_BATCH_MODEL)
+# Structured-source-first queries (LinkedIn's employee-count badge, Crunchbase's
+# headcount field) are strongly preferred over generic "about us" marketing
+# copy, which almost never states real numbers and just invites the model to
+# infer instead of read.
+NODE_PROFILE_QUERIES = [
+    '"{org}" employees size linkedin',
+    '"{org}" crunchbase OR overview company',
+]
+NODE_PROFILE_MAX_SNIPPETS = int(os.environ.get("ARTEMIS_NODE_PROFILE_MAX_SNIPPETS", "3"))
+NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CHARS", "600"))
+
+# --- Alpha step 6: search strategy (which angle of the professional network
+# to search) -----------------------------------------------------------------
+# See extraction/search_strategy.py: the model picks a FIXED angle, never
+# writes query text itself -- STRATEGY_ANGLE_QUERIES below is the actual,
+# fully deterministic and inspectable query surface. "generic" intentionally
+# maps to no extra queries: the existing broad silo search already runs
+# regardless, this only ever ADDS a couple of targeted queries on top.
+STRATEGY_ENABLED = _env_bool("ARTEMIS_STRATEGY", "1")
+STRATEGY_MODEL = os.environ.get("ARTEMIS_STRATEGY_MODEL", CLAUDE_BATCH_MODEL)
+STRATEGY_ANGLE_QUERIES = {
+    "current_employer_leadership": [
+        '"{org}" leadership team OR executives',
+    ],
+    "past_employers": [
+        '"{subject}" "previously at" OR "formerly at" OR "prior to {org}"',
+    ],
+    "industry_peers": [
+        '"{industry}" industry leaders network',
+    ],
+    "board_or_advisory": [
+        '"{subject}" board member OR advisor OR advisory',
+    ],
+    "generic": [],
+}
 
 # --- OpenCorporates (company officer networks) -----------------------------
 # Free-tier token from https://opencorporates.com/api_accounts/new ; absent => skipped.

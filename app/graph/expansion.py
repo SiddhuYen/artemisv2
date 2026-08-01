@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
+from ..extraction import coauthor_plausibility, node_profiler, search_strategy
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
@@ -55,6 +56,37 @@ def _mark_trusted(edges, trusted: bool) -> None:
     if trusted:
         for e in edges:
             e.signals.trusted = True
+
+
+# OpenAlex-sourced edges all share this SearchResult.url (see phase 4b and
+# _resolve_expansion_depths' coauthors_enrichment call) -- a cheap, already-
+# existing way to tell "this candidate came from a bare coauthor-name list"
+# apart from every other extraction source, with no new field needed.
+_OPENALEX_SOURCE_URL = "https://openalex.org/"
+
+
+def _counterpart_identity_text(edge: ExtractedEdge) -> Optional[str]:
+    """A signal describing WHO this specific edge's counterpart is, for
+    builder.get_or_create_person's homonym guard on a plain-name merge (see
+    that function's docstring). Without this, counterpart resolution merges
+    onto ANY existing same-named node with zero identity check -- confirmed
+    live: an OpenAlex coauthor named "Donald Trump" (a real academic,
+    discovered as one of Jaya Sharma's real coauthors) merged straight onto
+    the sitting-president "Donald Trump" node already in the graph, silently
+    bridging two unrelated real people through one shared name.
+
+    OpenAlex-sourced edges get an explicit "academic author" tag -- the same
+    wording-gap fix already applied to _resolve_author's SUBJECT-side
+    identity_text this session: coauthors_text's raw sentence ("X coauthor
+    of Y.") has no profession keyword in it at all, so domains_of() would
+    never anchor it in "science" without this. Every other edge falls back
+    to its own evidence sentence, which may or may not carry enough signal
+    to matter -- the guard stays silent (no false separation) when it doesn't.
+    """
+    text = edge.evidence_snippet or ""
+    if edge.source_url == _OPENALEX_SOURCE_URL:
+        text = f"{text} (an academic author, from a research coauthorship)".strip()
+    return text or None
 
 
 def _identity_signal(context: str, candidate_edges: List[ExtractedEdge]) -> str:
@@ -118,6 +150,21 @@ def _repeat_candidates(candidate_edges: List[ExtractedEdge]) -> List[str]:
 
 _AFFILIATION_TYPES = {"employee", "cofounder", "board_member", "faculty"}
 
+# Structural leadership types, for _Candidate.score()'s seniority bonus
+# (Alpha step 7) -- narrower than _AFFILIATION_TYPES: "employee"/"faculty"
+# say nothing about seniority on their own, cofounder/board_member do.
+_SENIORITY_TYPES = {"cofounder", "board_member"}
+
+
+def _best_org_affiliation_edge(candidate_edges: List[ExtractedEdge]) -> Optional[ExtractedEdge]:
+    best: Optional[ExtractedEdge] = None
+    for e in candidate_edges:
+        if e.other_kind != "organization" or e.relationship_type not in _AFFILIATION_TYPES:
+            continue
+        if best is None or e.confidence_adjusted > best.confidence_adjusted:
+            best = e
+    return best
+
 
 def _best_known_org(candidate_edges: List[ExtractedEdge]) -> Optional[str]:
     """The subject's own highest-confidence org affiliation found so far, if
@@ -128,12 +175,7 @@ def _best_known_org(candidate_edges: List[ExtractedEdge]) -> Optional[str]:
     subject by name at all, so a dual-name-only search never re-finds it --
     while a name+company search reliably does.
     """
-    best: Optional[ExtractedEdge] = None
-    for e in candidate_edges:
-        if e.other_kind != "organization" or e.relationship_type not in _AFFILIATION_TYPES:
-            continue
-        if best is None or e.confidence_adjusted > best.confidence_adjusted:
-            best = e
+    best = _best_org_affiliation_edge(candidate_edges)
     return best.organization if best else None
 
 
@@ -148,6 +190,7 @@ class _Candidate:
     max_conf: float = 0.0
     professional_edges: int = 0   # coworker/board/cofounder/investor/political/…
     family_edges: int = 0         # family_social (spouse/child/parent/sibling/friend)
+    seniority_edges: int = 0      # cofounder/board_member, or business-domain language
     trusted: bool = False         # came from a structured source (skip Claude filter)
 
     def avg_conf(self) -> float:
@@ -179,6 +222,16 @@ class _Candidate:
             # people almost always runs through colleagues/boards, not relatives.
             base += (self.professional_edges * config.PROFESSIONAL_BONUS
                      - self.family_edges * config.FAMILY_PENALTY)
+        # Alpha step 7 ("pick the strongest, most high up and well connected
+        # people"): a bonus for candidates whose own edges carry leadership
+        # signal (cofounder/board_member typing, or business-domain language
+        # like "Vice President"/"Chief Executive" in the evidence sentence --
+        # see disambiguate.py's "business" bucket). This is a GENERAL
+        # seniority signal, not "well-connected specifically toward THIS
+        # target" -- reasoning about a specific target's world is search_
+        # strategy's job (phase 4e); this only ranks who's worth spending the
+        # next hop's search budget on among candidates already found.
+        base += self.seniority_edges * config.SENIORITY_BONUS
         return base
 
     def is_expandable(self) -> bool:
@@ -214,6 +267,9 @@ def _record(disc: Dict[str, _Candidate], edge: ExtractedEdge) -> None:
         cand.family_edges += 1
     elif edge.relationship_type != "unknown":
         cand.professional_edges += 1  # 'unknown' counts as neither
+    if (edge.relationship_type in _SENIORITY_TYPES
+            or "business" in disambiguate.domains_of(edge.evidence_snippet)):
+        cand.seniority_edges += 1
     if edge.signals.trusted:
         cand.trusted = True
 
@@ -313,7 +369,9 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                     cancel_checker: Optional[Callable[[], None]] = None,
                     silo_weights: Optional[Dict[str, float]] = None,
                     enhanced_professional_search: bool = False,
-                    professional_only: bool = False) -> None:
+                    professional_only: bool = False,
+                    target_person_name: str = "",
+                    target_context: str = "") -> None:
     def check_cancel() -> None:
         if cancel_checker:
             cancel_checker()
@@ -546,7 +604,7 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 out = extract(subject_name, text, silo, res.snippet, res.url)
                 candidate_edges.extend(out.edges)
 
-    # --- phase 4b: OpenAlex coauthors, identity-gated -----------------------
+    # --- phase 4b: OpenAlex coauthors, plausibility- and identity-gated ----
     # A bare-name lookup (this one included) can't tell two same-named people
     # apart on its own -- OpenAlex's own match guard (works_count + name
     # similarity, see providers/openalex.py) narrows candidates, it doesn't
@@ -560,29 +618,46 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # sales executive at a chemicals company. Gated on `is_person`, not
     # `effective_is_person`: a context hint no longer means "skip this
     # source," it means "here's a strong signal to verify it against."
+    #
+    # coauthor_plausibility.check() runs FIRST, before the OpenAlex call
+    # even happens -- a cheaper, prior question using the SAME signal:
+    # given what's already known about this subject, would they plausibly
+    # have academic publications at all? Closes the homonym-collision risk
+    # a layer earlier than the domain_conflict check below, which only ever
+    # fires AFTER OpenAlex has already resolved a name and returned a
+    # coauthor list to check.
     check_cancel()
     if is_person:
-        oa = ORCH.coauthors_enrichment(subject_name)
-        oa_text = oa["coauthors_text"]
-        if oa_text:
-            signal = _identity_signal(context, candidate_edges)
-            if disambiguate.domain_conflict(signal, oa["identity_text"]):
-                # Advisory record only (mirrors builder._homonym_conflict's
-                # homonym_rejected note) -- doesn't block a later, better-
-                # evidenced acceptance, just explains why this pass skipped it.
-                meta = dict(subject.meta or {})
-                meta["openalex_rejected"] = {"identity_text": oa["identity_text"][:300]}
-                subject.meta = meta
-                if progress:
-                    progress(f"  ⚠ OpenAlex coauthors for {subject_name} rejected — "
-                             f"resolved identity doesn't match: {oa['identity_text'][:80]}")
-            else:
-                res = SearchResult(subject_name, "https://openalex.org/", "openalex", "openalex")
-                source = builder.save_source(db, res, "enrich:openalex", oa_text)
-                source_by_url[res.url] = source
-                out = extract(subject_name, oa_text, COLLEAGUE_SILO, "openalex", res.url)
-                _mark_trusted(out.edges, True)  # verified above, or nothing to conflict with
-                candidate_edges.extend(out.edges)
+        signal = _identity_signal(context, candidate_edges)
+        plausibility = coauthor_plausibility.check(subject_name, context, signal)
+        if plausibility is not None and not plausibility["plausible"]:
+            meta = dict(subject.meta or {})
+            meta["openalex_skipped"] = {"why": plausibility["why"]}
+            subject.meta = meta
+            if progress:
+                progress(f"  ⊘ skipping OpenAlex coauthors for {subject_name} — "
+                         f"{plausibility['why']}")
+        else:
+            oa = ORCH.coauthors_enrichment(subject_name)
+            oa_text = oa["coauthors_text"]
+            if oa_text:
+                if disambiguate.domain_conflict(signal, oa["identity_text"]):
+                    # Advisory record only (mirrors builder._homonym_conflict's
+                    # homonym_rejected note) -- doesn't block a later, better-
+                    # evidenced acceptance, just explains why this pass skipped it.
+                    meta = dict(subject.meta or {})
+                    meta["openalex_rejected"] = {"identity_text": oa["identity_text"][:300]}
+                    subject.meta = meta
+                    if progress:
+                        progress(f"  ⚠ OpenAlex coauthors for {subject_name} rejected — "
+                                 f"resolved identity doesn't match: {oa['identity_text'][:80]}")
+                else:
+                    res = SearchResult(subject_name, "https://openalex.org/", "openalex", "openalex")
+                    source = builder.save_source(db, res, "enrich:openalex", oa_text)
+                    source_by_url[res.url] = source
+                    out = extract(subject_name, oa_text, COLLEAGUE_SILO, "openalex", res.url)
+                    _mark_trusted(out.edges, True)  # verified above, or nothing to conflict with
+                    candidate_edges.extend(out.edges)
 
     # --- phase 4c: targeted re-query for names that keep coming up ---------
     # Only on the non-famous side of an asymmetric /connect walk (see
@@ -679,6 +754,107 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
             candidate_edges.extend(found_edges)
 
+    # --- phase 4d: node profiling (Alpha step 4/5 -- "understand current
+    # node"): how big is the subject's own org, what industry is it in. Same
+    # gating as phase 4c (non-famous side of an asymmetric walk only) -- the
+    # famous side's own notability already came from the Wikidata check in
+    # connect._resolve_expansion_depths, nothing to profile there. Cached on
+    # the Organization row's own meta (no TTL, same convention as
+    # openalex_rejected above): an org already profiled by one colleague
+    # isn't re-profiled by the next, in this run or a future one.
+    #
+    # Deliberately fewer, more targeted queries than phase 1's silo search --
+    # see config.NODE_PROFILE_QUERIES's comment: structured-source-first
+    # (LinkedIn's employee-count badge, Crunchbase's headcount field) rather
+    # than generic "about us" copy, which almost never states real numbers
+    # and just invites node_profiler's model to infer instead of read.
+    check_cancel()
+    org_row = None
+    org_name = None
+    if enhanced_professional_search and is_person and node_profiler.is_active():
+        org_edge = _best_org_affiliation_edge(candidate_edges)
+        org_name = org_edge.organization if org_edge else None
+        if org_name:
+            org_row = builder.get_or_create_org(db, org_name)
+            if org_row is not None and not (org_row.meta or {}).get("profile"):
+                snippets: List[str] = []
+                seen_urls: Set[str] = set()
+                for template in config.NODE_PROFILE_QUERIES:
+                    check_cancel()
+                    query = template.format(org=org_name)
+                    try:
+                        results = ORCH.search(query, is_person=False)
+                    except Exception:
+                        continue
+                    for res in results[:2]:
+                        check_cancel()
+                        if res.url in seen_urls:
+                            continue
+                        seen_urls.add(res.url)
+                        page = ORCH.fetch(res.url)
+                        text = html_to_text(page.content) if page.content else ""
+                        text = text or f"{res.title}. {res.snippet}"
+                        source = builder.save_source(db, res, query, text)
+                        source_by_url[res.url] = source
+                        snippets.append(text)
+                known_context = org_edge.evidence_snippet or ""
+                profile = node_profiler.profile_org(org_name, snippets, known_context)
+                if profile is not None:
+                    meta = dict(org_row.meta or {})
+                    meta["profile"] = profile
+                    org_row.meta = meta
+                    if progress:
+                        progress(f"  ⓘ profiled {org_name}: size={profile['size_tier']} "
+                                 f"industry={profile['industry']} (grounded={profile['grounded']})")
+
+    # --- phase 4e: search strategy (Alpha step 6 -- "run reasoning to
+    # identify best type of search"). Only runs with a GROUNDED org profile
+    # in hand (fresh from 4d just above, or already cached from an earlier
+    # hop/run on the same org) and a known target -- deciding a strategy from
+    # an ungrounded profile would just be reasoning on top of a guess, and
+    # with no target there's nothing to reason TOWARD. The chosen angle maps
+    # to a small, FIXED set of extra queries (config.STRATEGY_ANGLE_QUERIES)
+    # -- the model picks which angle applies, it never writes query text
+    # itself, so a wrong pick costs a couple of irrelevant queries, not an
+    # ungrounded search direction.
+    check_cancel()
+    if (enhanced_professional_search and is_person and org_row is not None
+            and target_person_name and search_strategy.is_active()):
+        profile = (org_row.meta or {}).get("profile")
+        if profile and profile.get("grounded"):
+            decision = search_strategy.decide_angle(
+                subject_name, org_name, profile, target_person_name, target_context)
+            if decision is not None:
+                meta = dict(subject.meta or {})
+                meta["strategy"] = decision
+                subject.meta = meta
+                if progress:
+                    progress(f"  ➤ strategy: {decision['angle']} — {decision['why']}")
+                templates = config.STRATEGY_ANGLE_QUERIES.get(decision["angle"], [])
+                if templates:
+                    industry = profile.get("industry", "")
+                    seen_urls = {s for s in source_by_url}
+                    for template in templates:
+                        check_cancel()
+                        query = template.format(subject=subject_name, org=org_name,
+                                                industry=industry, target=target_person_name)
+                        try:
+                            results = ORCH.search(query, is_person=True)
+                        except Exception:
+                            continue
+                        for res in results[:config.SCRAPE_TOP_N]:
+                            check_cancel()
+                            if res.url in seen_urls:
+                                continue
+                            seen_urls.add(res.url)
+                            page = ORCH.fetch(res.url)
+                            text = html_to_text(page.content) if page.content else ""
+                            text = text or f"{res.title}. {res.snippet}"
+                            source = builder.save_source(db, res, query, text)
+                            source_by_url[res.url] = source
+                            out = extract(subject_name, text, COLLEAGUE_SILO, res.snippet, res.url)
+                            candidate_edges.extend(out.edges)
+
     # --- phase 5: dedup + per-node cap, then persist ----------------------
     check_cancel()
     final_edges = _dedup_and_cap(candidate_edges)
@@ -696,7 +872,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
         check_cancel()
         if edge.other_kind == "person":
             counterpart = builder.get_or_create_person(
-                db, edge.person_b, allow_create=not at_cap
+                db, edge.person_b, allow_create=not at_cap,
+                identity_text=_counterpart_identity_text(edge),
             )
             if counterpart is None:
                 continue
@@ -730,7 +907,8 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
 
 def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
-                       progress=None, prefer_reachable: Optional[bool] = None) -> List[str]:
+                       progress=None, prefer_reachable: Optional[bool] = None,
+                       top_n: Optional[int] = None) -> List[str]:
     """Choose the next hop's frontier.
 
     Two modes:
@@ -746,10 +924,18 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
     parameter it is just an argument two concurrent builds can disagree about.
     None keeps the configured default.
 
+    `top_n` overrides config.EXPAND_TOP_STRONG's final cap for THIS call only
+    (Alpha step 7's "pick 5 of the strongest," narrower than the general
+    15-wide beam) -- None keeps the configured default. Only narrows the
+    FINAL selection; the pre-filter shortlist size (candidate pool size
+    before ranking) is unaffected, so a smaller top_n still ranks over the
+    same breadth of candidates, it just keeps fewer of them.
+
     Claude filtering (when active) removes junk nodes from the frontier first.
     """
     if prefer_reachable is None:
         prefer_reachable = config.EXPAND_PREFER_REACHABLE
+    limit = top_n if top_n is not None else config.EXPAND_TOP_STRONG
     if prefer_reachable:
         # real people with at least a candidate-tier edge (not just explicit/strong),
         # since the bridge people toward a normal network are weakly-linked by design.
@@ -790,14 +976,14 @@ def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
         shortlist.sort(key=lambda c: (c.name in notable,
                                       c.demote_family(fam),
                                       len(c.sources), -c.avg_conf()))
-        chosen = shortlist[: config.EXPAND_TOP_STRONG]
+        chosen = shortlist[:limit]
         if progress:
             famous = [c.name for c in chosen if c.name in notable]
             progress(f"  ↧ reachability: expanding {len(chosen)} least-famous nodes "
                      f"({len(chosen) - len(famous)} with no Wikipedia page)")
         return [c.name for c in chosen]
 
-    return [c.name for c in shortlist[: config.EXPAND_TOP_STRONG]]
+    return [c.name for c in shortlist[:limit]]
 
 
 def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
@@ -808,7 +994,9 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  should_stop: Optional[Callable[[Session], bool]] = None,
                  prefer_reachable: Optional[bool] = None,
                  silo_weights: Optional[Dict[str, float]] = None,
-                 enhanced_professional_search: bool = False, professional_only: bool = False) -> dict:
+                 enhanced_professional_search: bool = False,
+                 professional_only: bool = False, target_person_name: str = "",
+                 target_context: str = "") -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -846,10 +1034,30 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     triggered the asymmetric depth in the first place): the family/friends
     silos are dropped from every query this call renders, so a public
     figure's limited 1-hop budget goes toward colleagues and board seats,
-    not a wasted hop on their spouse or close friends."""
+    not a wasted hop on their spouse or close friends.
+
+    `target_person_name`/`target_context` (Alpha step 6): who this walk is
+    ultimately trying to reach, and any context on them -- NOT this call's
+    own seed (`target_name` above is this expansion's own starting person,
+    an unfortunately-overlapping name kept for backward compat with every
+    other caller). connect._expand_both_concurrently passes the OTHER
+    endpoint's name/context here, so _process_person's search-strategy phase
+    can reason about who it's actually walking toward instead of picking a
+    query angle with no destination in mind. Empty for every non-/connect
+    caller (CLI, /expand, org_discovery) -- the strategy phase itself no-ops
+    without a target name, so this is inert unless explicitly supplied."""
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
+    # Alpha step 7 (per-candidate depth): a node selected for the Alpha
+    # frontier that turns out to be independently notable/famous relative to
+    # the target gets fully processed and persisted (its own "1 hop"), but
+    # its OWN discoveries are excluded from seeding the NEXT hop -- don't
+    # keep walking outward from someone already close to the target's own
+    # world; that just re-explores a famous person's huge network instead of
+    # continuing to hunt for a targeted bridge. Populated after each Alpha
+    # frontier selection below; read (as a closure) inside _process_one.
+    shallow_nodes: Set[str] = set()
 
     # Frontier nodes within one hop are independent of each other -- nothing
     # about processing candidate #3 needs candidate #2 done first -- so they
@@ -899,6 +1107,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     "silo_weights": (silo_weights if hop == 0 else None),
                     "enhanced_professional_search": enhanced_professional_search,
                     "professional_only": professional_only,
+                    "target_person_name": target_person_name,
+                    "target_context": target_context,
                 }
                 if cancel_checker:
                     kwargs["cancel_checker"] = cancel_checker
@@ -914,6 +1124,11 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                          f"({exc.__class__.__name__}) — skipped")
         finally:
             worker_db.close()
+        if person_norm_key(name) in shallow_nodes:
+            # Fully processed and persisted above -- only excluded from
+            # feeding the NEXT hop's frontier selection (see shallow_nodes'
+            # own comment above).
+            return {}
         return local_disc
 
     for hop in range(0, max_depth):
@@ -994,8 +1209,32 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             break
 
         check_cancel()
+        # Alpha step 7: the non-famous/origin side of an asymmetric /connect
+        # walk narrows to the top ALPHA_TOP_CANDIDATES (5), not the general
+        # EXPAND_TOP_STRONG beam (15) -- a reasoning-selected angle (phase
+        # 4e) already narrowed the field, so expanding as many candidates as
+        # the generic case doesn't need is wasted search budget, not thoroughness.
+        alpha_top_n = config.ALPHA_TOP_CANDIDATES if enhanced_professional_search else None
         frontier = _ranked_expandable(disc, visited, progress=progress,
-                                      prefer_reachable=prefer_reachable)
+                                      prefer_reachable=prefer_reachable,
+                                      top_n=alpha_top_n)
+        # Alpha step 7 (per-candidate depth): among the selected frontier,
+        # any independently notable/famous candidate gets marked shallow --
+        # see shallow_nodes' declaration above. Checked here (once per hop,
+        # batched) rather than per-node during processing, since notability
+        # is a property of the NAME alone and this is the one place the
+        # whole hop's frontier is already assembled in one list.
+        if enhanced_professional_search and frontier:
+            check_cancel()
+            try:
+                famous = ORCH.notable_set(frontier)
+            except Exception:
+                famous = set()
+            if famous:
+                shallow_nodes.update(person_norm_key(n) for n in famous)
+                if progress:
+                    progress(f"  ⚑ {len(famous)} frontier node(s) independently notable — "
+                             f"shallow (1 hop, not walked further): {', '.join(sorted(famous))}")
         if progress and frontier:
             progress(f"  → expanding top {len(frontier)} strong nodes to hop {hop + 1}: "
                      + ", ".join(frontier[:5]) + (" …" if len(frontier) > 5 else ""))
