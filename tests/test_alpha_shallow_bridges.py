@@ -24,7 +24,7 @@ def test_expand_graph_stops_recursing_past_an_independently_famous_bridge(db, mo
     processed = []
 
     def fake_process_person(worker_db, name, hop, local_disc, progress=None,
-                            is_person=True, context="",
+                            is_person=True, context="", silo_weights=None,
                             enhanced_professional_search=False,
                             professional_only=False,
                             target_person_name="", target_context=""):
@@ -58,7 +58,7 @@ def test_expand_graph_keeps_recursing_past_a_non_famous_bridge(db, monkeypatch):
     processed = []
 
     def fake_process_person(worker_db, name, hop, local_disc, progress=None,
-                            is_person=True, context="",
+                            is_person=True, context="", silo_weights=None,
                             enhanced_professional_search=False,
                             professional_only=False,
                             target_person_name="", target_context=""):
@@ -87,7 +87,7 @@ def test_shallow_marking_is_off_when_not_enhanced_professional_search(db, monkey
     notable_set_calls = []
 
     def fake_process_person(worker_db, name, hop, local_disc, progress=None,
-                            is_person=True, context="",
+                            is_person=True, context="", silo_weights=None,
                             enhanced_professional_search=False,
                             professional_only=False,
                             target_person_name="", target_context=""):
