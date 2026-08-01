@@ -489,8 +489,17 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
 
     # mark expanded: a later/deeper run will REUSE these neighbors instead of
     # re-searching this node (see _reuse_existing_neighbors).
-    subject.processed = 1
-    db.commit()
+    #
+    # commit_with_retry, not a bare db.commit(): every write earlier in this
+    # node's processing (save_source, add_edge_from_extraction) already went
+    # through its own SAVEPOINT retry, so by the time we get here this
+    # connection has either already secured SQLite's write lock for the rest
+    # of this transaction (this commit can't newly contend) or nothing at all
+    # was written for this node (this commit is the transaction's first write
+    # attempt, and a lock retry here is safe because there's nothing else
+    # pending to lose). Either way, re-applying just `processed = 1` on retry
+    # is correct and cheap.
+    builder.commit_with_retry(db, lambda: setattr(subject, "processed", 1))
 
 
 def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
@@ -786,20 +795,32 @@ def _retype_unknown_edges(db: Session, progress=None) -> int:
         else:
             skipped_mismatch += 1
 
-    verdicts = relation_classifier.classify(items)
-    updated = 0
-    for e, v in zip(eligible, verdicts):
-        rtype, conf = v.get("type", "unknown"), v.get("confidence", 0.0)
-        if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
-            new_conf = round(min(conf, config.RELATION_CONF_CEILING), 3)
-            e.relationship_type = rtype
-            e.confidence_raw = max(e.confidence_raw or 0.0, new_conf)
-            e.status = builder.derive_status(rtype, e.confidence_raw)
-            sig = dict(e.signals or {})
-            sig["relationship_classified_by"] = "claude"
-            e.signals = sig
-            updated += 1
-    db.commit()
+    verdicts = relation_classifier.classify(items)  # the expensive part -- never redone on retry
+
+    # commit_with_retry, not a bare db.commit(): each edge here is an
+    # ALREADY-persistent row being mutated, not a new insert -- a rollback()
+    # forced by a failed commit reverts a pending attribute change back to
+    # its last-committed value (confirmed empirically, see
+    # tests/test_commit_retry.py), so a bare commit() retry would silently
+    # commit none of these retypes. Redoing the (cheap, in-memory) mutation
+    # loop on each attempt is what makes the retry actually retype the edges
+    # instead of quietly doing nothing.
+    def _apply() -> int:
+        updated = 0
+        for e, v in zip(eligible, verdicts):
+            rtype, conf = v.get("type", "unknown"), v.get("confidence", 0.0)
+            if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
+                new_conf = round(min(conf, config.RELATION_CONF_CEILING), 3)
+                e.relationship_type = rtype
+                e.confidence_raw = max(e.confidence_raw or 0.0, new_conf)
+                e.status = builder.derive_status(rtype, e.confidence_raw)
+                sig = dict(e.signals or {})
+                sig["relationship_classified_by"] = "claude"
+                e.signals = sig
+                updated += 1
+        return updated
+
+    updated = builder.commit_with_retry(db, _apply) or 0
     if progress and (updated or skipped_mismatch):
         progress(f"  ✎ Claude typed {updated} edges "
                  f"(skipped {skipped_mismatch} with mismatched evidence)")
@@ -852,15 +873,20 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
         # One batched delete instead of one DELETE per node -- edges are the
         # only thing that needs a manual cascade (RelationshipEdge has no FK
         # cascade), and IN(...) does it in a single round trip either way.
-        db.query(RelationshipEdge).filter(
-            (RelationshipEdge.person_a_id.in_(pids))
-            | (RelationshipEdge.person_b_id.in_(pids))
-        ).delete(synchronize_session=False)
+        # Retries on a SQLite lock timeout instead of failing the whole job
+        # outright -- a large batch (hundreds of ids, e.g. after researching
+        # a very public figure) is exactly the kind of slow write likely to
+        # still be contending with the OTHER concurrent /connect side when
+        # busy_timeout's own wait runs out (see builder._is_locked).
+        builder.delete_relationship_edges_with_retry(
+            db, (RelationshipEdge.person_a_id.in_(pids))
+                | (RelationshipEdge.person_b_id.in_(pids)))
         for p in junk_people:
             db.delete(p)
         removed += len(junk_people)
 
     # --- orgs: Claude entity filter (only when configured) -----------------
+    junk_orgs: list = []
     if is_filtering_active():
         orgs = [o for o in db.execute(select(Organization)).scalars()
                 if o.id not in trusted_oids]
@@ -868,14 +894,25 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
         junk_orgs = [o for o in orgs if o.name not in valid_orgs]
         if junk_orgs:
             oids = [o.id for o in junk_orgs]
-            db.query(RelationshipEdge).filter(
-                RelationshipEdge.organization_id.in_(oids)
-            ).delete(synchronize_session=False)
-            for o in junk_orgs:
-                db.delete(o)
+            builder.delete_relationship_edges_with_retry(
+                db, RelationshipEdge.organization_id.in_(oids))
             removed += len(junk_orgs)
 
-    db.commit()
+    # commit_with_retry, not a bare db.commit(): db.delete() is itself a
+    # pending mutation like any other -- a rollback() forced by a failed
+    # commit reverts a persistent object's pending "deleted" state right back
+    # to normal, same as it reverts a pending attribute change (confirmed
+    # empirically for attribute changes, see tests/test_commit_retry.py; the
+    # delete-flag hazard is the same mechanism). Re-issuing both delete loops
+    # on retry is what actually makes a retry redo the deletion instead of
+    # silently committing a no-op.
+    def _apply_deletes() -> None:
+        for p in junk_people:
+            db.delete(p)
+        for o in junk_orgs:
+            db.delete(o)
+
+    builder.commit_with_retry(db, _apply_deletes)
     if progress and removed:
         progress(f"  ✓ pruned {removed} junk nodes from the final graph")
     return removed

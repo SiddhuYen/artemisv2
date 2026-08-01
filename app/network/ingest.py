@@ -160,15 +160,21 @@ def backfill_graph_edges(db: Session, owner_name: str) -> int:
     if owner is None:
         return 0
 
-    count = 0
-    for profile in db.execute(select(LocalProfile)).scalars():
-        contact = builder.get_or_create_person(db, profile.canonical_name)
-        if contact is None:
-            continue
-        _linkedin_edge(db, owner, contact, profile.linkedin_url or "")
-        count += 1
-    db.commit()
-    return count
+    # Whole loop wrapped as one retryable unit, not just the final commit:
+    # this function's own docstring already establishes it's safe to redo
+    # (idempotent, stable synthetic source_url), which is exactly what a
+    # retry needs -- see builder.commit_with_retry.
+    def _apply() -> int:
+        count = 0
+        for profile in db.execute(select(LocalProfile)).scalars():
+            contact = builder.get_or_create_person(db, profile.canonical_name)
+            if contact is None:
+                continue
+            _linkedin_edge(db, owner, contact, profile.linkedin_url or "")
+            count += 1
+        return count
+
+    return builder.commit_with_retry(db, _apply) or 0
 
 
 def ingest_csv(db: Session, content: str, owner_name: str = "") -> dict:
@@ -194,50 +200,63 @@ def ingest_rows(db: Session, rows: Iterable[Dict[str, str]],
     {"Name": ..., "Company": ..., "Position": ...}."""
     from ..graph import builder  # local import: avoids a network<->graph cycle
 
-    owner = builder.get_or_create_person(db, owner_name) if owner_name.strip() else None
+    rows = list(rows)  # buffered so a retry can re-iterate from the start,
+                       # not just re-read an already-exhausted CSV reader
 
-    created = updated = edges = skipped = graph_edges = 0
-    by_key: Dict[str, LocalProfile] = {}
+    # Whole ingest wrapped as one retryable unit, not just the final commit:
+    # LocalProfile/LocalEdge rows are added directly in this loop (unlike the
+    # graph module's own writes, which already retry internally via
+    # save_source/add_edge_from_extraction), and owner resolution itself can
+    # mutate an existing Person's aliases -- all of that is exactly what a
+    # forced rollback() would undo/expunge (confirmed empirically, see
+    # tests/test_commit_retry.py), so a retry redoes the whole pass rather
+    # than just re-committing an empty transaction.
+    def _apply() -> dict:
+        owner = builder.get_or_create_person(db, owner_name) if owner_name.strip() else None
+        created = updated = edges = skipped = graph_edges = 0
+        by_key: Dict[str, LocalProfile] = {}
 
-    for raw in rows:
-        parsed = _profile_from_row(raw)
-        if parsed is None:
-            skipped += 1
-            continue
-        connected_to = parsed.pop("_connected_to", "")
-        key = _dedup_key(parsed)
+        for raw in rows:
+            parsed = _profile_from_row(raw)
+            if parsed is None:
+                skipped += 1
+                continue
+            connected_to = parsed.pop("_connected_to", "")
+            key = _dedup_key(parsed)
 
-        existing = by_key.get(key)
-        if existing is None:
-            existing = db.execute(
-                select(LocalProfile).where(LocalProfile.norm_name == parsed["norm_name"])
-            ).scalar_one_or_none()
-            if existing and parsed["email"] and existing.email \
-                    and existing.email.lower() != parsed["email"].lower():
-                existing = None  # same name, different person
+            existing = by_key.get(key)
+            if existing is None:
+                existing = db.execute(
+                    select(LocalProfile).where(LocalProfile.norm_name == parsed["norm_name"])
+                ).scalar_one_or_none()
+                if existing and parsed["email"] and existing.email \
+                        and existing.email.lower() != parsed["email"].lower():
+                    existing = None  # same name, different person
 
-        if existing:
-            _merge_profile(existing, parsed)
-            updated += 1
-        else:
-            existing = LocalProfile(**parsed)
-            db.add(existing)
-            db.flush()
-            created += 1
-            # default: directly connected to "You"
-            db.add(LocalEdge(from_profile_id=None, to_profile_id=existing.id))
-            edges += 1
-        by_key[key] = existing
+            if existing:
+                _merge_profile(existing, parsed)
+                updated += 1
+            else:
+                existing = LocalProfile(**parsed)
+                db.add(existing)
+                db.flush()
+                created += 1
+                # default: directly connected to "You"
+                db.add(LocalEdge(from_profile_id=None, to_profile_id=existing.id))
+                edges += 1
+            by_key[key] = existing
 
-        if owner is not None:
-            contact = builder.get_or_create_person(db, existing.canonical_name)
-            if contact is not None:
-                _linkedin_edge(db, owner, contact, existing.linkedin_url or "")
-                graph_edges += 1
+            if owner is not None:
+                contact = builder.get_or_create_person(db, existing.canonical_name)
+                if contact is not None:
+                    _linkedin_edge(db, owner, contact, existing.linkedin_url or "")
+                    graph_edges += 1
 
-    db.commit()
-    return {"created": created, "updated": updated, "edges": edges,
-            "skipped": skipped, "graph_edges": graph_edges}
+        return {"created": created, "updated": updated, "edges": edges,
+                "skipped": skipped, "graph_edges": graph_edges}
+
+    return builder.commit_with_retry(db, _apply) or {
+        "created": 0, "updated": 0, "edges": 0, "skipped": 0, "graph_edges": 0}
 
 
 def _merge_profile(existing: LocalProfile, parsed: dict) -> None:

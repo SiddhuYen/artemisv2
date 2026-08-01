@@ -242,7 +242,67 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
     return False
 
 
-def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
+# When one side of a /connect pair is a public figure and the other isn't,
+# expanding both to the same depth is disproportionate: the famous side
+# balloons into a huge, expensive, slow-to-prune amount of data (see the
+# Larry Ellison / Prantik Chakraborty case -- Ellison's expansion alone was
+# large enough to collide with the other side's concurrent write and hit
+# SQLite's busy_timeout), almost none of which is likely to be the actual
+# bridge. A real path from an ordinary person to a public figure is far more
+# likely to run through that figure's own well-documented immediate circle
+# (leadership team, board seats, close associates) than to be found by
+# exhaustively walking their entire network hop by hop -- the same
+# "prefer_reachable" philosophy _ranked_expandable already applies when
+# picking which frontier node to expand next, just applied one level higher,
+# to which of the two starting people gets the full expansion.
+SHALLOW_FAMOUS_DEPTH = 1
+
+# A trailing "of X" / "at X" / ", X" clause some names carry baked into one
+# field instead of a separate context_a/context_b (e.g. "Larry Ellison of
+# Oracle" typed as a single board-node name -- the frontend's Route panel has
+# no separate company/context field at all, see _direct_pair_search's own
+# context_a/context_b for the field that DOES exist server-side but isn't
+# wired up from there). A raw Wikipedia title lookup on the combined string
+# fails to match ("Larry Ellison of Oracle" isn't close enough to "Larry
+# Ellison" for the notability check), silently disabling the asymmetric-depth
+# mitigation below for exactly the famous-person case it exists for.
+_TRAILING_CONTEXT_RE = re.compile(r",.*$|\s+(?:of|at|from|with)\s+.+$", re.IGNORECASE)
+
+
+def _strip_trailing_context(name: str) -> str:
+    stripped = _TRAILING_CONTEXT_RE.sub("", name).strip()
+    return stripped or name
+
+
+def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int, int]:
+    """(depth_a, depth_b) for _expand_both_concurrently.
+
+    Symmetric (both at `depth`) unless EXACTLY one of the two is notable --
+    if both are famous, or neither is, there's no clear asymmetry to
+    exploit, so today's behavior stands. Notability check failing (e.g. a
+    transient Wikipedia lookup error) degrades to symmetric too, same as
+    any other best-effort signal in this codebase.
+
+    Checks both the raw name and its context-stripped form (see
+    _strip_trailing_context) in one batched lookup -- a person counts as
+    notable if either resolves, so "Larry Ellison of Oracle" still gets
+    caught even though the exact string never has its own Wikipedia page.
+    """
+    stripped_a, stripped_b = _strip_trailing_context(name_a), _strip_trailing_context(name_b)
+    try:
+        notable = ORCH.notable_set(list({name_a, stripped_a, name_b, stripped_b}))
+    except Exception:
+        return depth, depth
+    a_notable = name_a in notable or stripped_a in notable
+    b_notable = name_b in notable or stripped_b in notable
+    if a_notable == b_notable:
+        return depth, depth
+    shallow = min(SHALLOW_FAMOUS_DEPTH, depth)
+    return (shallow, depth) if a_notable else (depth, shallow)
+
+
+def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
+                              depth_a: int, depth_b: int,
                               protected: set, progress, context_a: str, context_b: str,
                               on_step: Optional[Callable[[dict], None]] = None,
                               cancel_checker: Optional[Callable[[], None]] = None,
@@ -253,6 +313,12 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
     shared graph; nothing about A needs B done first, so there's no reason
     the old "[1/2] then [2/2]" sequencing should hold up the wall clock.
 
+    depth_a/depth_b are independent (see _resolve_expansion_depths) -- a
+    famous endpoint gets a shallow, immediate-circle-only expansion while
+    the other side gets the full requested depth, rather than both sides
+    always expanding equally regardless of how disproportionate the
+    resulting data volume would be.
+
     Either side's exception propagates via future.result() — same as an
     unhandled exception from a sequential call would have; this is not the
     place to silently swallow a genuine failure (contrast with expand_graph's
@@ -262,13 +328,13 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
     WorkerSession = sessionmaker(bind=engine, autoflush=False,
                                  expire_on_commit=False, future=True)
 
-    def _run(name: str, context: str, label: str) -> None:
+    def _run(name: str, context: str, label: str, side_depth: int) -> None:
         worker_db = WorkerSession()
         try:
             if cancel_checker:
                 cancel_checker()
             if progress:
-                progress(f"\n[{label}] building graph for {name} (depth {depth})…")
+                progress(f"\n[{label}] building graph for {name} (depth {side_depth})…")
             step_cb = (lambda evt, side=label.lower(): on_step({**evt, "side": side})) if on_step else None
             kwargs = {
                 "progress": progress,
@@ -284,14 +350,14 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str, depth: int,
                 kwargs["cancel_checker"] = cancel_checker
             if should_stop:
                 kwargs["should_stop"] = should_stop
-            expand_graph(worker_db, name, depth, **kwargs)
+            expand_graph(worker_db, name, side_depth, **kwargs)
         finally:
             worker_db.close()
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         futures = [
-            ex.submit(_run, name_a, context_a, "A"),
-            ex.submit(_run, name_b, context_b, "B"),
+            ex.submit(_run, name_a, context_a, "A", depth_a),
+            ex.submit(_run, name_b, context_b, "B", depth_b),
         ]
         for f in futures:
             f.result()
@@ -571,7 +637,12 @@ def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query:
                 and persisted.status != "weak"):
             confident = True
     if found:
-        db.commit()
+        # commit_with_retry, not a bare db.commit(): every edge above was
+        # already durably persisted via add_edge_from_extraction's own
+        # SAVEPOINT retry, so nothing new needs reapplying here -- this just
+        # covers the rare case where this commit is itself this
+        # transaction's first write (see builder.commit_with_retry).
+        builder.commit_with_retry(db)
     return found, confident
 
 
@@ -627,7 +698,12 @@ def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, quer
                 and persisted.status != "weak"):
             confident = True
     if found:
-        db.commit()
+        # commit_with_retry, not a bare db.commit(): every edge above was
+        # already durably persisted via add_edge_from_extraction's own
+        # SAVEPOINT retry, so nothing new needs reapplying here -- this just
+        # covers the rare case where this commit is itself this
+        # transaction's first write (see builder.commit_with_retry).
+        builder.commit_with_retry(db)
     return found, confident
 
 
@@ -697,7 +773,13 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
     if not route_found.is_set():
         if cancel_checker:
             cancel_checker()
-        _expand_both_concurrently(db, name_a, name_b, depth, both, progress,
+        depth_a, depth_b = _resolve_expansion_depths(name_a, name_b, depth)
+        if progress and (depth_a, depth_b) != (depth, depth):
+            shallow_side = "A" if depth_a < depth_b else "B"
+            progress(f"[reachable] side {shallow_side} is a public figure — "
+                     f"capping their expansion to depth {min(depth_a, depth_b)} "
+                     "(immediate circle only) instead of matching the other side")
+        _expand_both_concurrently(db, name_a, name_b, depth_a, depth_b, both, progress,
                                   context_a, context_b, on_step=on_step,
                                   cancel_checker=cancel_checker,
                                   should_stop=should_stop)

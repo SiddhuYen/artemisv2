@@ -124,36 +124,44 @@ def _match_profile_to_orgs(profile: LocalProfile, pg: _PublicGraph) -> List[dict
 
 def run_matching(db: Session) -> List[GraphMatch]:
     """Recompute all graph_matches against the current public graph."""
-    db.query(GraphMatch).delete()
-    db.flush()
+    from ..graph import builder  # local import: avoids a network<->graph cycle
 
-    pg = _PublicGraph(db)
-    profiles = list(db.execute(select(LocalProfile)).scalars())
-    created: List[GraphMatch] = []
+    # The whole delete-then-rebuild is wrapped as one retryable unit (not just
+    # the final commit): db.query(...).delete() is itself an unprotected
+    # write, and every GraphMatch created below is a brand-new object that a
+    # forced rollback() would expunge (confirmed empirically, see
+    # tests/test_commit_retry.py) -- so a retry has to redo the delete and
+    # rebuild the rows, not just re-commit. Cheap to redo: this is pure
+    # in-memory graph matching, no external calls.
+    def _apply() -> List[GraphMatch]:
+        db.query(GraphMatch).delete()
+        pg = _PublicGraph(db)
+        profiles = list(db.execute(select(LocalProfile)).scalars())
+        created: List[GraphMatch] = []
 
-    for profile in profiles:
-        for m in _match_profile_to_people(profile, pg):
-            gm = GraphMatch(
-                local_profile_id=profile.id,
-                public_person_id=m["person"].id,
-                public_org_id=None,
-                match_type=m["match_type"],
-                confidence=round(m["confidence"], 3),
-                explanation=m["explanation"],
-            )
-            db.add(gm)
-            created.append(gm)
-        for m in _match_profile_to_orgs(profile, pg):
-            gm = GraphMatch(
-                local_profile_id=profile.id,
-                public_person_id=None,
-                public_org_id=m["org"].id,
-                match_type=m["match_type"],
-                confidence=round(m["confidence"], 3),
-                explanation=m["explanation"],
-            )
-            db.add(gm)
-            created.append(gm)
+        for profile in profiles:
+            for m in _match_profile_to_people(profile, pg):
+                gm = GraphMatch(
+                    local_profile_id=profile.id,
+                    public_person_id=m["person"].id,
+                    public_org_id=None,
+                    match_type=m["match_type"],
+                    confidence=round(m["confidence"], 3),
+                    explanation=m["explanation"],
+                )
+                db.add(gm)
+                created.append(gm)
+            for m in _match_profile_to_orgs(profile, pg):
+                gm = GraphMatch(
+                    local_profile_id=profile.id,
+                    public_person_id=None,
+                    public_org_id=m["org"].id,
+                    match_type=m["match_type"],
+                    confidence=round(m["confidence"], 3),
+                    explanation=m["explanation"],
+                )
+                db.add(gm)
+                created.append(gm)
+        return created
 
-    db.commit()
-    return created
+    return builder.commit_with_retry(db, _apply) or []

@@ -27,7 +27,7 @@ def test_connect_no_longer_mutates_the_expansion_global(monkeypatch):
 
     seen = {}
 
-    def fake_expand_both(db, a, b, depth, protected, progress, ca, cb, **kwargs):
+    def fake_expand_both(db, a, b, depth_a, depth_b, protected, progress, ca, cb, **kwargs):
         seen["during"] = config.EXPAND_PREFER_REACHABLE
 
     monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", True)
@@ -35,6 +35,7 @@ def test_connect_no_longer_mutates_the_expansion_global(monkeypatch):
     monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
     monkeypatch.setattr(C, "_direct_pair_search", lambda *a, **k: (False, False))
     monkeypatch.setattr(C, "_route_exists", lambda *a, **k: False)
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: set())
 
     class _Db:
         def execute(self, *_a, **_k):
@@ -71,7 +72,7 @@ def test_connect_requests_strongest_expansion_per_call(monkeypatch):
     class _Db:
         def get_bind(self): return object()
 
-    C._expand_both_concurrently(_Db(), "Alpha", "Beta", 2, set(), None, "", "")
+    C._expand_both_concurrently(_Db(), "Alpha", "Beta", 2, 2, set(), None, "", "")
     assert captured == {"Alpha": False, "Beta": False}
 
 

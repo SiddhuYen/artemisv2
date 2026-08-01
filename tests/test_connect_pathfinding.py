@@ -288,3 +288,84 @@ def test_connect_people_skips_search_when_a_route_already_exists(db, monkeypatch
     result = C.connect_people(db, "Alpha Person", "Beta Person", depth=2)
 
     assert result["connected"] is True
+
+
+# --- fame-asymmetric expansion depth ----------------------------------------
+
+def test_strip_trailing_context_removes_of_at_and_comma_clauses():
+    assert C._strip_trailing_context("Larry Ellison of Oracle") == "Larry Ellison"
+    assert C._strip_trailing_context("Larry Ellison at Oracle") == "Larry Ellison"
+    assert C._strip_trailing_context("Larry Ellison, Oracle") == "Larry Ellison"
+    assert C._strip_trailing_context("Larry Ellison") == "Larry Ellison"
+
+
+def test_resolve_expansion_depths_shallows_the_notable_side_even_with_context_baked_in(monkeypatch):
+    """The exact failure mode that motivated this: the frontend's Route panel
+    has no separate context field, so a famous person's name often arrives
+    as one combined string ("Larry Ellison of Oracle"), which has no
+    Wikipedia page of its own -- only the stripped form does."""
+    def fake_notable_set(names):
+        return {n for n in names if n in ("Larry Ellison",)}
+
+    monkeypatch.setattr(C.ORCH, "notable_set", fake_notable_set)
+
+    depth_a, depth_b = C._resolve_expansion_depths(
+        "Prantik Chakraborty of Trinamix", "Larry Ellison of Oracle", 2)
+    assert depth_a == 2
+    assert depth_b == C.SHALLOW_FAMOUS_DEPTH
+
+
+def test_resolve_expansion_depths_shallows_the_notable_side(monkeypatch):
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
+
+    depth_a, depth_b = C._resolve_expansion_depths("Famous Person", "Obscure Person", 3)
+    assert depth_a == C.SHALLOW_FAMOUS_DEPTH
+    assert depth_b == 3
+
+    depth_a, depth_b = C._resolve_expansion_depths("Obscure Person", "Famous Person", 3)
+    assert depth_a == 3
+    assert depth_b == C.SHALLOW_FAMOUS_DEPTH
+
+
+def test_resolve_expansion_depths_symmetric_when_both_notable(monkeypatch):
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Alpha", "Beta"})
+    assert C._resolve_expansion_depths("Alpha", "Beta", 3) == (3, 3)
+
+
+def test_resolve_expansion_depths_symmetric_when_neither_notable(monkeypatch):
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: set())
+    assert C._resolve_expansion_depths("Alpha", "Beta", 3) == (3, 3)
+
+
+def test_resolve_expansion_depths_never_deepens_past_the_requested_depth(monkeypatch):
+    """A shallow depth-1 request must stay depth 1 for the famous side, not
+    get rounded up to SHALLOW_FAMOUS_DEPTH if that's somehow larger."""
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
+    depth_a, depth_b = C._resolve_expansion_depths("Famous Person", "Obscure Person", 1)
+    assert depth_a == 1
+    assert depth_b == 1
+
+
+def test_resolve_expansion_depths_degrades_to_symmetric_on_lookup_failure(monkeypatch):
+    def _boom(names):
+        raise RuntimeError("network hiccup")
+
+    monkeypatch.setattr(C.ORCH, "notable_set", _boom)
+    assert C._resolve_expansion_depths("Alpha", "Beta", 3) == (3, 3)
+
+
+def test_connect_people_passes_asymmetric_depths_to_expansion(db, monkeypatch):
+    monkeypatch.setattr(C, "_route_exists", lambda *a, **k: False)
+    monkeypatch.setattr(C, "_direct_pair_search", lambda *a, **k: (False, False))
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
+
+    captured = {}
+
+    def fake_expand_both(db_arg, name_a, name_b, depth_a, depth_b, *rest, **kwargs):
+        captured["depths"] = (depth_a, depth_b)
+
+    monkeypatch.setattr(C, "_expand_both_concurrently", fake_expand_both)
+
+    C.connect_people(db, "Famous Person", "Obscure Person", depth=3)
+
+    assert captured["depths"] == (C.SHALLOW_FAMOUS_DEPTH, 3)
