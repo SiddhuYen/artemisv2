@@ -100,11 +100,44 @@ def host_of(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+# Two-label public suffixes, where the registrable domain is the THIRD label
+# from the right ("firm.co.uk" -> "firm"). Not the full Public Suffix List --
+# that needs a dependency and monthly updates -- just the ones a company team
+# page realistically sits on.
+_MULTI_PART_SUFFIXES = {
+    "co.uk", "ac.uk", "org.uk", "gov.uk", "me.uk", "co.jp", "or.jp", "ne.jp",
+    "co.in", "co.nz", "co.za", "co.kr", "com.au", "net.au", "org.au", "edu.au",
+    "com.br", "com.mx", "com.sg", "com.hk", "com.tw", "com.cn", "edu.cn",
+}
+
+
+def host_labels(url: str) -> List[str]:
+    """Every label of the host, cleaned ("www.gtri.gatech.edu" -> [gtri, gatech, edu])."""
+    return [re.sub(r"[^a-z0-9]", "", p) for p in host_of(url).split(".") if p]
+
+
 def domain_stem(url: str) -> str:
-    """"www.hustlefund.vc" -> "hustlefund"; "btv.vc" -> "btv"."""
-    host = host_of(url)
-    parts = [p for p in host.split(".") if p]
-    return re.sub(r"[^a-z0-9]", "", parts[0]) if parts else ""
+    """The REGISTRABLE domain's own label.
+
+    "www.hustlefund.vc" -> "hustlefund"; "btv.vc" -> "btv";
+    "research.gatech.edu" -> "gatech"; "team.firm.co.uk" -> "firm".
+
+    This used to return the FIRST label, which is correct only for a bare
+    two-label host and silently wrong for every subdomain: "research.gatech.
+    edu" yielded "research", "af.gatech.edu" yielded "af". Guard 2 compares
+    this against the org's own name tokens, so any organization serving its
+    team page from a subdomain -- which large ones usually do -- could never
+    verify. Live, all three of Georgia Tech's legitimate leadership pages
+    were rejected this way.
+    """
+    parts = host_labels(url)
+    if not parts:
+        return ""
+    if len(parts) <= 2:
+        return parts[0]
+    if ".".join(parts[-2:]) in _MULTI_PART_SUFFIXES:
+        return parts[-3]
+    return parts[-2]
 
 
 def is_roster_url(url: str, extra_hints: Iterable[str] = ()) -> bool:
@@ -160,7 +193,7 @@ def page_title(html: str) -> str:
     return title.get_text(" ", strip=True) if title else ""
 
 
-def org_name_from_page(html: str, url: str) -> str:
+def org_name_from_page(html: str, url: str, allow_stem_fallback: bool = True) -> str:
     """Display name of the organization behind a roster page, VERIFIED by the
     domain.
 
@@ -183,6 +216,14 @@ def org_name_from_page(html: str, url: str) -> str:
             display = re.sub(r"\.(co|com|vc|io|ai|net|org)$", "", segment,
                              flags=re.I).strip(" .")
             return display or segment.strip()
+    # Falling back to the domain stem is fine for display, but a CALLER
+    # verifying identity must be able to opt out: "the name this page
+    # declares" would otherwise just be the domain again, and comparing that
+    # to the org name re-runs the domain check under another name. That
+    # circularity is how org "GA" verified against doas.ga.gov even after
+    # the domain branch was length-guarded against exactly that match.
+    if not allow_stem_fallback:
+        return ""
     return stem.title() if stem else ""
 
 
@@ -211,14 +252,25 @@ def page_belongs_to_org(url: str, html: str, org_name: str) -> bool:
         #
         # Fail closed instead: with nothing distinctive to match on, only an
         # EXACT identity match is good enough.
+        # A 3-character minimum, because this branch exists for names with
+        # nothing distinctive about them and a 2-character "identity" is
+        # coincidence, not evidence: org "GA" exact-matches the registrable
+        # label of ga.gov, which is how the Georgia state government's
+        # leadership council attached to it in the first place.
         compact = normalize(org_name).replace(" ", "")
-        if compact and stem and compact == stem:
+        if compact and stem and compact == stem and len(compact) >= 3:
             return True
-        declared = org_name_from_page(html, url)
+        declared = org_name_from_page(html, url, allow_stem_fallback=False)
         return bool(declared) and org_norm_key(declared) == org_norm_key(org_name)
 
-    domain_hit = bool(stem) and any(stem.startswith(tok) or tok.startswith(stem)
-                                    for tok in tokens)
+    # Match against the registrable domain AND every other host label, so a
+    # business unit that IS the subdomain verifies too ("gtri.gatech.edu" for
+    # GTRI, not only for its parent). Still bounded by `tokens` being
+    # distinctive: "calmstorm.vc" does not match "Storm Ventures", since
+    # neither string is a prefix of the other.
+    labels = [lbl for lbl in host_labels(url) if lbl and lbl not in TLD_TOKENS]
+    domain_hit = any(lbl.startswith(tok) or tok.startswith(lbl)
+                     for lbl in labels for tok in tokens)
     # A bare domain match settles a single-token org ("Homebrew" -> homebrew.co).
     # It does NOT settle a multi-word one -- a business unit of a much bigger
     # company can share the parent's domain stem while being a different desk.

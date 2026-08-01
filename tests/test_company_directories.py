@@ -58,6 +58,39 @@ def test_guard2_fails_closed_when_the_org_name_has_no_distinctive_tokens():
         "<html><head><title>Some Unrelated Firm</title></head></html>", "The Fund")
 
 
+def test_domain_stem_uses_the_registrable_domain_not_the_first_label():
+    """It used to return the FIRST host label, correct only for a bare
+    two-label host and silently wrong for every subdomain. Guard 2 compares
+    this against the org's name tokens, so any org serving its team page from
+    a subdomain -- which large ones usually do -- could never verify. Live,
+    all three of Georgia Tech's legitimate leadership pages were rejected."""
+    assert rosters.domain_stem("https://www.hustlefund.vc/team") == "hustlefund"
+    assert rosters.domain_stem("https://btv.vc/team") == "btv"
+    assert rosters.domain_stem("https://research.gatech.edu/leadership") == "gatech"
+    assert rosters.domain_stem("https://www.gtri.gatech.edu/about/leadership") == "gatech"
+    assert rosters.domain_stem("https://team.firm.co.uk/people") == "firm"
+
+
+def test_guard2_verifies_a_team_page_on_a_subdomain():
+    plain = "<html><head><title>x</title></head></html>"
+    assert rosters.page_belongs_to_org(
+        "https://careers.thoughtbot.com/team", plain, "Thoughtbot")
+    assert rosters.page_belongs_to_org(
+        "https://people.uncorkcapital.com/team", plain, "Uncork Capital")
+
+
+def test_org_name_from_page_can_refuse_the_domain_stem_fallback():
+    """The fallback returns the domain stem when the title yields nothing --
+    fine for display, circular for identity. Comparing that "declared name"
+    to the org name just re-runs the domain check, which is how org "GA"
+    verified against doas.ga.gov even after the domain branch was length-
+    guarded against that exact match."""
+    plain = "<html><head><title>x</title></head></html>"
+    assert rosters.org_name_from_page(plain, "https://doas.ga.gov/x") == "Ga"
+    assert rosters.org_name_from_page(
+        plain, "https://doas.ga.gov/x", allow_stem_fallback=False) == ""
+
+
 def test_org_chart_labels_are_not_scraped_as_people():
     """A directory interleaves section headings with actual people, and two
     capitalised words is all looks_like_person_name needs -- so "Executive
