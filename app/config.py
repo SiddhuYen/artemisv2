@@ -279,6 +279,23 @@ EXPAND_TOP_STRONG = int(os.environ.get("ARTEMIS_EXPAND_TOP_STRONG", "15"))
 # fix for the self-inflicted request storm is the global cap + jittered
 # backoff, not a low number here.
 EXPAND_NODE_CONCURRENCY = int(os.environ.get("ARTEMIS_EXPAND_NODE_CONCURRENCY", "4"))
+# How many times to redo a whole node whose transaction died on a lock or
+# deadlock (expansion._process_one). Distinct from the statement-level retries
+# in graph.builder, which cannot fix a Postgres deadlock: there both workers
+# hold locks the other needs, so only discarding the entire transaction breaks
+# the cycle.
+#
+# 5, not a token 2, because the retries have to OUTLAST the transaction that
+# won the deadlock. The loser can only get through once the winner commits and
+# releases its locks, and a node's transaction runs for seconds (extraction
+# plus a round trip per write). Measured against a real Postgres with two
+# workers inserting the same 40 people in opposite orders: at 2 attempts every
+# round still lost a worker, because all its retries fired before the winner
+# finished; at 5 -- whose backoff spreads ~0.3s to ~4.8s -- nothing was lost
+# across four rounds. Retries are cheap relative to losing the node: the
+# searches behind one are served from the provider cache, so the cost is
+# re-extraction, not re-buying data.
+NODE_DB_RETRY_ATTEMPTS = int(os.environ.get("ARTEMIS_NODE_DB_RETRY_ATTEMPTS", "5"))
 # Reachability mode: when expanding, prefer the LEAST-famous real connections
 # (no Wikipedia page, fewer sources) instead of the strongest/most-famous ones.
 # This walks the graph DOWN the fame gradient toward a normal person's network,

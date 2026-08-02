@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -1251,11 +1251,41 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         return bool(should_stop and should_stop(session))
 
     def _process_one(name: str, hop: int) -> Dict[str, "_Candidate"]:
+        """Process one frontier node, retrying the WHOLE node on a transient
+        DB error.
+
+        The retry has to live here, not deeper. Every write helper in builder
+        already retries the failing STATEMENT inside a SAVEPOINT, and that is
+        enough for a SQLite lock -- the contending writer finishes and the
+        next attempt goes through. It cannot fix a Postgres deadlock. There,
+        two workers each hold locks the other needs (both are mid-transaction,
+        having already inserted overlapping people/orgs in different orders),
+        so retrying the same statement inside a transaction that STILL HOLDS
+        the conflicting locks can never succeed. Confirmed against a real
+        Postgres: every one of the six statement-level attempts deadlocked,
+        then the node was dropped -- which is what lost a node from a live
+        /connect walk.
+
+        Breaking the cycle needs the whole transaction gone, so each attempt
+        gets a FRESH session. Re-doing the node is cheap relative to losing
+        it: the searches behind it are served from the provider cache, so a
+        retry mostly re-runs extraction and the writes.
+        """
+        attempts = max(0, config.NODE_DB_RETRY_ATTEMPTS)
+        for attempt in range(attempts + 1):
+            result, retry = _process_one_attempt(name, hop, attempt, attempts)
+            if not retry:
+                return result
+        return {}
+
+    def _process_one_attempt(name: str, hop: int, attempt: int,
+                             attempts: int) -> Tuple[Dict[str, "_Candidate"], bool]:
+        """One attempt at a node. Returns (discoveries, should_retry)."""
         local_disc: Dict[str, _Candidate] = {}
         worker_db = WorkerSession()
         try:
             if stop_requested(worker_db):
-                return local_disc
+                return local_disc, False
             check_cancel()
             # If this node was already expanded (this run, a prior run, or by
             # another teammate in the shared map), REUSE its persisted
@@ -1292,6 +1322,18 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 check_cancel()
             except Exception:
                 raise
+            # A lock/deadlock is worth redoing from a clean transaction; a
+            # genuine bug is not -- retrying that just burns the budget and
+            # delays the same failure.
+            if builder.is_transient_db_error(exc) and attempt < attempts:
+                if progress:
+                    progress(f"  ↻ {name!r} at hop {hop} hit a transient DB "
+                             f"error ({exc.__class__.__name__}) — retrying "
+                             f"({attempt + 1}/{attempts})")
+                # let the contending worker commit and release its locks
+                # before we take the same ones again
+                builder._deadlock_backoff(attempt)
+                return {}, True
             if progress:
                 # str(exc), not just the class name: a dropped node is silent
                 # data loss (it can turn a real /connect route into "NO PATH"),
@@ -1309,8 +1351,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             # Fully processed and persisted above -- only excluded from
             # feeding the NEXT hop's frontier selection (see shallow_nodes'
             # own comment above).
-            return {}
-        return local_disc
+            return {}, False
+        return local_disc, False
 
     for hop in range(0, max_depth):
         if stop_requested(db):

@@ -352,6 +352,58 @@ def _is_transient(exc: Exception) -> bool:
     return _is_locked(exc) or _is_deadlock(exc)
 
 
+# How many times a DEADLOCK may be retried in place, before it is left to the
+# transaction-level retry (expansion._process_one). Deliberately tiny, and not
+# the same budget a SQLite lock gets: see _should_retry_in_place.
+_DEADLOCK_INPLACE_RETRIES = 1
+
+
+def _should_retry_in_place(exc: Exception, attempt: int) -> bool:
+    """Whether retrying THIS STATEMENT, inside the current transaction, has a
+    real chance -- as opposed to needing the whole transaction thrown away.
+
+    The two transient errors this file handles are not equivalent, and
+    treating them as one budget (which _is_transient does, correctly, for the
+    question "is this worth retrying at all") is what made a real deadlock
+    take minutes to fail:
+
+    - A SQLite lock is pure contention. The transaction is intact; the other
+      writer finishes and the next attempt goes through. Retry in place is the
+      cure, and it gets the full budget.
+
+    - A Postgres deadlock means the server already ABORTED this transaction to
+      break a cycle. Retrying in place only works if the other side commits in
+      the meantime -- and when both transactions are long and hold overlapping
+      keys (two expansion workers inserting the same counterparts in different
+      orders), the retry re-takes the same locks and re-collides. Confirmed
+      against a real Postgres: all 5 in-place attempts deadlocked, every
+      round. With exponential backoff that is ~10s per row wasted, minutes
+      across a node, purely to arrive at the same failure.
+
+    So a deadlock gets one quick attempt (cheap, and it does sometimes win)
+    and is then propagated to whoever owns the transaction. That caller can
+    discard it and redo the work on a fresh session, which actually breaks the
+    cycle.
+    """
+    if _is_locked(exc):
+        return True
+    if _is_deadlock(exc):
+        return attempt < _DEADLOCK_INPLACE_RETRIES
+    return False
+
+
+def is_transient_db_error(exc: Exception) -> bool:
+    """Public form of _is_transient: is this a lock/deadlock worth redoing?
+
+    Exists for callers OUTSIDE this module that own a whole unit of work --
+    specifically expansion._process_one, which is the only level that can
+    actually recover from a Postgres deadlock. See _is_transient for what
+    counts, and expansion._process_one for why statement-level retries are
+    not enough.
+    """
+    return _is_transient(exc)
+
+
 def flush_in_savepoint(db: Session, mutate: Callable[[], None],
                        _retries: int = 5) -> None:
     """Apply `mutate` and flush it INSIDE a SAVEPOINT, retrying on a transient
@@ -388,7 +440,7 @@ def flush_in_savepoint(db: Session, mutate: Callable[[], None],
                 db.flush()
             return
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
 
@@ -426,7 +478,7 @@ def commit_with_retry(db: Session, apply: Optional[Callable[[], _T]] = None,
             return result
         except (OperationalError, PendingRollbackError) as exc:
             db.rollback()
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     return None  # unreachable (loop either returns or raises)
@@ -454,7 +506,7 @@ def delete_relationship_edges_with_retry(db: Session, condition, _retries: int =
                     synchronize_session=False)
             return result
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     return 0  # unreachable (loop either returns or raises), keeps type checkers happy
@@ -501,7 +553,7 @@ def _new_person_or_existing(db: Session, name: str, norm: str,
         _merge_aliases(existing, name)
         return existing
     except (OperationalError, PendingRollbackError) as exc:
-        if not _is_transient(exc) or _retries <= 0:
+        if not _should_retry_in_place(exc, 5 - _retries) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
         return _new_person_or_existing(db, name, norm, qid, _retries - 1)
@@ -581,7 +633,7 @@ def get_or_create_org(
         # deadlock between two DIFFERENT norm_names on the same index page
         # (a re-select can legitimately still miss, so retry the whole
         # attempt) or a SQLite lock timeout -- bounded either way.
-        if not _is_transient(exc) or _retries <= 0:
+        if not _should_retry_in_place(exc, 5 - _retries) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
         return get_or_create_org(db, name, org_type, allow_create, _retries - 1)
@@ -646,7 +698,7 @@ def save_source(
                 db.flush()
             return source
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     raise AssertionError("unreachable")  # loop either returns or raises
@@ -767,7 +819,7 @@ def add_edge_from_extraction(
                 db.flush()
             return row
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     raise AssertionError("unreachable")  # loop either returns or raises
