@@ -2095,12 +2095,22 @@ function layoutPathViz(graph, width, height) {
   });
 }
 
+function _pvEmpty(svg, message) {
+  // Renders the empty state AS an SVG child (a <text>, via foreignObject
+  // for the styled div) rather than replacing svg.parentElement.innerHTML --
+  // doing that would delete #pathVizSvg itself from the DOM, breaking every
+  // subsequent render() call that looks it up by id.
+  svg.setAttribute('viewBox', '0 0 900 200');
+  svg.innerHTML = `<foreignObject x="0" y="0" width="900" height="200">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="pv-empty">${esc(message)}</div>
+  </foreignObject>`;
+}
+
 function renderPathVisualization(routes, startName, targetName) {
   const svg = document.getElementById('pathVizSvg');
   if (!svg) return;
   if (!routes || !routes.length) {
-    svg.innerHTML = '';
-    svg.parentElement.innerHTML = `<div class="pv-empty">// No routes to visualize.</div>`;
+    _pvEmpty(svg, '// No routes to visualize.');
     return;
   }
   const W = 900, H = 520;
@@ -2142,9 +2152,98 @@ function renderPathVisualization(routes, startName, targetName) {
   svg.innerHTML = altEdges.join('') + bestEdges.join('') + nodeSvg;
 }
 
+// ══════════════════════════════════════════════════════
+// EXPLORED-BUT-UNCONNECTED VISUALIZATION -- no route exists, so there's no
+// start-to-target chain to draw at all. Instead, show each side's own
+// search as a separate column tree growing toward the middle, with a
+// visible gap between them: this IS the honest picture ("here's what
+// Artemis looked at on each side, and they never met"), not an
+// approximation of a connection that doesn't exist.
+//
+// Only the seed -> hop-1 fan is drawn as real edges (a side's hop 0 is
+// always exactly one node -- the seed itself -- so every hop-1 name in
+// visited_by_hop genuinely came directly from it). Hop 1 -> hop 2+ links
+// are NOT drawn: multiple hop-1 nodes could each have contributed
+// different hop-2 candidates, and connect.py's explored data doesn't
+// track that finer-grained lineage -- drawing a guessed mesh there would
+// fabricate precision that isn't real, exactly what this whole feature
+// exists to avoid doing with paths themselves.
+// ══════════════════════════════════════════════════════
+function buildExploredLayout(explored, W, H) {
+  const gap = 70;                    // empty strip in the middle
+  const halfW = (W - gap) / 2;
+  const hopsOf = (side) => Object.keys(side.by_hop || {}).map(Number);
+  const maxHop = Math.max(1, ...hopsOf(explored.a), ...hopsOf(explored.b));
+  const colGap = halfW / (maxHop + 1);
+
+  const layoutSide = (side, fromLeft) => {
+    const nodes = [];
+    Object.keys(side.by_hop || {}).forEach(hopStr => {
+      const hop = Number(hopStr);
+      const names = side.by_hop[hopStr] || [];
+      const rowGap = H / (names.length + 1);
+      names.forEach((label, i) => {
+        const xOffset = colGap * (hop + 1);
+        nodes.push({
+          label, hop, isSeed: hop === 0,
+          x: fromLeft ? xOffset : (W - xOffset),
+          y: rowGap * (i + 1),
+        });
+      });
+    });
+    return nodes;
+  };
+
+  return { nodesA: layoutSide(explored.a, true), nodesB: layoutSide(explored.b, false), maxHop };
+}
+
+function renderExploredVisualization(explored, startName, targetName) {
+  const svg = document.getElementById('pathVizSvg');
+  if (!svg) return;
+  const W = 900, H = 520;
+  const { nodesA, nodesB } = buildExploredLayout(explored, W, H);
+
+  const fan = (nodes) => {
+    const seed = nodes.find(n => n.isSeed);
+    if (!seed) return '';
+    return nodes.filter(n => n.hop === 1).map(n => {
+      const mx = (seed.x + n.x) / 2;
+      return `<path class="pv-edge-alt" d="M ${seed.x} ${seed.y} C ${mx} ${seed.y}, ${mx} ${n.y}, ${n.x} ${n.y}"></path>`;
+    }).join('');
+  };
+
+  const nodeSvg = (nodes) => nodes.map(n => {
+    const r = n.isSeed ? 9 : 6;
+    return `<g>
+      <circle class="pv-node-circle ${n.isSeed ? 'pv-endpoint' : ''}" cx="${n.x}" cy="${n.y}" r="${r}"></circle>
+      <text class="pv-node-label" x="${n.x}" y="${n.y - r - 6}" text-anchor="middle">${esc(n.label)}</text>
+    </g>`;
+  }).join('');
+
+  const midX = W / 2;
+  const divider = `
+    <line x1="${midX}" y1="24" x2="${midX}" y2="${H - 12}" stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="4 4"></line>
+    <text x="${midX}" y="16" text-anchor="middle" class="pv-edge-label" font-size="10">✕ NO OVERLAP FOUND</text>
+  `;
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = fan(nodesA) + fan(nodesB) + divider + nodeSvg(nodesA) + nodeSvg(nodesB);
+}
+
 function openPathVisualization() {
-  if (!_bvrLastRoutes || !_bvrLastRoutes.length) return;
-  renderPathVisualization(_bvrLastRoutes, _bvrLastStartName, _bvrLastTargetName);
+  const legendEl = document.getElementById('pathVizLegend');
+  if (_bvrLastRoutes && _bvrLastRoutes.length) {
+    renderPathVisualization(_bvrLastRoutes, _bvrLastStartName, _bvrLastTargetName);
+    if (legendEl) legendEl.innerHTML = `
+      <span class="pv-leg-item"><span class="pv-swatch pv-best"></span>Best route</span>
+      <span class="pv-leg-item"><span class="pv-swatch pv-alt"></span>Other route considered</span>`;
+  } else if (_bvrLastExplored) {
+    renderExploredVisualization(_bvrLastExplored, _bvrLastStartName, _bvrLastTargetName);
+    if (legendEl) legendEl.innerHTML = `
+      <span class="pv-leg-item">No connecting route was found — showing what Artemis explored on each side instead</span>`;
+  } else {
+    return;
+  }
   document.getElementById('pathVizModal')?.classList.add('open');
   document.getElementById('pathVizScrim')?.classList.add('open');
 }
@@ -2217,6 +2316,7 @@ function showBoardRouteFinder() {
   document.getElementById('bvrResultLbl').style.display = 'none';
   document.getElementById('bvrVizBtn').style.display = 'none';
   _bvrLastRoutes = null;
+  _bvrLastExplored = null;
   document.getElementById('bvrProgress')?.classList.remove('on');
   const bvrFill = document.getElementById('bvrProgressFill'); if (bvrFill) bvrFill.style.width = '0%';
   // Pre-filled from the CURRENTLY tagged person's own saved Affiliation/
@@ -2256,6 +2356,12 @@ let _bvrRunSeq = 0;
 // search (not just the winning one) -- kept so the "VISUALIZE PATHS TRIED"
 // button can render the diagram without a second fetch.
 let _bvrLastRoutes = null;
+// When the search found NO connecting route at all, there's no route data
+// to fall back to -- but connect_people's "explored" field (present
+// whenever a fresh two-sided expansion actually ran, even without a
+// resulting path) still shows what Artemis looked at on each side. Mutually
+// exclusive with _bvrLastRoutes: exactly one of the two is set per search.
+let _bvrLastExplored = null;
 let _bvrLastStartName = '';
 let _bvrLastTargetName = '';
 
@@ -2329,6 +2435,7 @@ async function execBoardRoute() {
   const vizBtn = document.getElementById('bvrVizBtn');
   if (vizBtn) vizBtn.style.display = 'none';
   _bvrLastRoutes = null;
+  _bvrLastExplored = null;
   try {
     const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
@@ -2366,6 +2473,15 @@ async function execBoardRoute() {
     if (!data.connected) {
       lbl.textContent = '// NO ROUTE';
       resultEl.innerHTML = `<div class="bvr-no-path">No public path found between "${esc(start.name)}" and "${esc(target.name)}" — ${esc(data.reason||'')}. Try a higher depth.</div>`;
+      // "explored" is only present when a fresh two-sided expansion actually
+      // ran (see connect._build_explored) -- absent when the cheap known-
+      // route/direct-pair checks already decided nothing further needed to
+      // search. When present, it's what Artemis looked at on each side even
+      // though the two never met -- still worth visualizing.
+      if (data.explored && vizBtn) {
+        _bvrLastExplored = data.explored;
+        vizBtn.style.display = 'block';
+      }
       return;
     }
     const routes = (data.paths && data.paths.length) ? data.paths : [{ path: data.path, hops: data.hops, score: data.score }];

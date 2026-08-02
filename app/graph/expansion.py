@@ -1049,6 +1049,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
+    visited_by_hop: Dict[int, List[str]] = {}  # hop -> node names selected for it
     # Alpha step 7 (per-candidate depth): a node selected for the Alpha
     # frontier that turns out to be independently notable/famous relative to
     # the target gets fully processed and persisted (its own "1 hop"), but
@@ -1144,6 +1145,14 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 continue
             visited.add(norm)
             to_process.append(name)
+        # Who Artemis actually looked at, hop by hop -- kept so a caller
+        # (connect_people) can show "what did Artemis explore" even when no
+        # connecting path was ever found between the two sides. Captured up
+        # front (the intended frontier for this hop), not narrowed to
+        # whatever finished before a cancellation -- a node that was
+        # SELECTED for this hop is still something the search "tried",
+        # whether or not it got to finish.
+        visited_by_hop[hop] = list(to_process)
 
         if on_step:
             check_cancel()
@@ -1248,7 +1257,9 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     _prune_invalid_nodes(db, protected, progress=progress)
     check_cancel()
     _retype_unknown_edges(db, progress=progress)
-    return _stats(db, per_depth)
+    stats = _stats(db, per_depth)
+    stats["visited_by_hop"] = visited_by_hop
+    return stats
 
 
 def _retype_unknown_edges(db: Session, progress=None) -> int:
