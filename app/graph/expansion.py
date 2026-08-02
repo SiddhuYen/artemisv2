@@ -1210,6 +1210,9 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 break
         per_depth.append(len(to_process))
 
+        if progress:
+            progress(f"  ✓ hop {hop + 1}/{max_depth} complete — {len(to_process)} node(s) expanded")
+
         if hop == max_depth - 1:
             break
         if builder.at_node_cap(db):
