@@ -2030,6 +2030,130 @@ function renderRoutePath(path) {
   }).join('')}</div>`;
 }
 
+// ══════════════════════════════════════════════════════
+// PATHS-TRIED VISUALIZATION -- every route _diverse_paths considered, not
+// just the one that won, merged into one node-link diagram. Every route
+// shares the same start/target (bidirectional meet-in-the-middle search
+// always resolves to those same two endpoints), so only the bridge nodes
+// in between actually differ route to route -- that's what makes a shared
+// column layout meaningful instead of arbitrary.
+// ══════════════════════════════════════════════════════
+function buildPathVizGraph(routes) {
+  const nodes = new Map();   // label -> node
+  const edges = new Map();   // "a||b" (sorted) -> edge
+  const maxHops = Math.max(0, ...routes.map(r => Math.max((r.path || []).length - 1, 0)));
+
+  routes.forEach((route, ri) => {
+    const path = route.path || [];
+    path.forEach((n, idx) => {
+      const label = n.label;
+      const isStart = idx === 0;
+      const isTarget = idx === path.length - 1;
+      // Every route's target is pinned to the SAME rightmost column even
+      // when routes differ in hop count -- otherwise a 2-hop route's
+      // target and a 3-hop route's target (the same person!) would land
+      // in different columns and the diagram would show two target nodes.
+      const col = isTarget ? maxHops : (isStart ? 0 : idx);
+      let node = nodes.get(label);
+      if (!node) {
+        node = { label, col, isStart: false, isTarget: false, routeIdxs: new Set() };
+        nodes.set(label, node);
+      } else if (!node.isStart && !node.isTarget) {
+        node.col = Math.min(node.col, col);
+      }
+      if (isStart) { node.isStart = true; node.col = 0; }
+      if (isTarget) { node.isTarget = true; node.col = maxHops; }
+      node.routeIdxs.add(ri);
+    });
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1].label, b = path[i].label;
+      const key = [a, b].sort().join('||');
+      let edge = edges.get(key);
+      if (!edge) {
+        edge = { a, b, routeIdxs: new Set(), relType: path[i].relationship_from_previous || '' };
+        edges.set(key, edge);
+      }
+      edge.routeIdxs.add(ri);
+    }
+  });
+
+  return { nodes: [...nodes.values()], edges: [...edges.values()], maxHops };
+}
+
+function layoutPathViz(graph, width, height) {
+  const cols = graph.maxHops + 1;
+  const byCol = {};
+  graph.nodes.forEach(n => { (byCol[n.col] = byCol[n.col] || []).push(n); });
+  const colGap = width / (cols + 1);
+  Object.keys(byCol).forEach(colStr => {
+    const list = byCol[colStr];
+    const rowGap = height / (list.length + 1);
+    list.forEach((n, i) => {
+      n.x = colGap * (Number(colStr) + 1);
+      n.y = rowGap * (i + 1);
+    });
+  });
+}
+
+function renderPathVisualization(routes, startName, targetName) {
+  const svg = document.getElementById('pathVizSvg');
+  if (!svg) return;
+  if (!routes || !routes.length) {
+    svg.innerHTML = '';
+    svg.parentElement.innerHTML = `<div class="pv-empty">// No routes to visualize.</div>`;
+    return;
+  }
+  const W = 900, H = 520;
+  const graph = buildPathVizGraph(routes);
+  layoutPathViz(graph, W, H);
+  const byLabel = new Map(graph.nodes.map(n => [n.label, n]));
+
+  // best route (index 0 -- the backend already returns `paths` sorted by
+  // score, best first) drawn LAST in DOM order (on top), so it never sits
+  // visually under a dimmer alternate-route line.
+  const bestEdges = [], altEdges = [];
+  graph.edges.forEach(e => {
+    const a = byLabel.get(e.a), b = byLabel.get(e.b);
+    if (!a || !b) return;
+    const onBest = e.routeIdxs.has(0);
+    const mx = (a.x + b.x) / 2;
+    const d = `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}`;
+    const cls = onBest ? 'pv-edge-best' : 'pv-edge-alt';
+    const title = e.relType ? `<title>${esc(humanizeRelType(e.relType))}</title>` : '';
+    const markup = `<path class="${cls}" d="${d}">${title}</path>`;
+    (onBest ? bestEdges : altEdges).push(markup);
+  });
+
+  const nodeSvg = graph.nodes.map(n => {
+    const onBest = n.routeIdxs.has(0);
+    const isEndpoint = n.isStart || n.isTarget;
+    const circleCls = isEndpoint ? 'pv-endpoint' : (onBest ? 'pv-onbest' : '');
+    const labelCls = onBest ? '' : 'pv-dim';
+    const r = isEndpoint ? 9 : 6;
+    const sym = n.isStart ? '●' : n.isTarget ? '◆' : '○';
+    return `<g>
+      <circle class="pv-node-circle ${circleCls}" cx="${n.x}" cy="${n.y}" r="${r}"></circle>
+      <text class="pv-node-label ${labelCls}" x="${n.x}" y="${n.y - r - 6}" text-anchor="middle">${esc(n.label)}</text>
+      <text class="pv-node-label ${labelCls}" x="${n.x}" y="${n.y + 4}" text-anchor="middle" font-size="9">${sym}</text>
+    </g>`;
+  }).join('');
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = altEdges.join('') + bestEdges.join('') + nodeSvg;
+}
+
+function openPathVisualization() {
+  if (!_bvrLastRoutes || !_bvrLastRoutes.length) return;
+  renderPathVisualization(_bvrLastRoutes, _bvrLastStartName, _bvrLastTargetName);
+  document.getElementById('pathVizModal')?.classList.add('open');
+  document.getElementById('pathVizScrim')?.classList.add('open');
+}
+
+function closePathVisualization() {
+  document.getElementById('pathVizModal')?.classList.remove('open');
+  document.getElementById('pathVizScrim')?.classList.remove('open');
+}
+
 function candidatePathToSteps(cp) {
   const nodes = (cp.path && cp.path.path) || [];
   return nodes.map((n,i) => ({
@@ -2091,6 +2215,8 @@ function showBoardRouteFinder() {
   if (!_bvrActiveJobId) document.getElementById('bvrRunBtn').disabled = !(start && target);
   document.getElementById('bvrResult').innerHTML = '';
   document.getElementById('bvrResultLbl').style.display = 'none';
+  document.getElementById('bvrVizBtn').style.display = 'none';
+  _bvrLastRoutes = null;
   document.getElementById('bvrProgress')?.classList.remove('on');
   const bvrFill = document.getElementById('bvrProgressFill'); if (bvrFill) bvrFill.style.width = '0%';
   // Pre-filled from the CURRENTLY tagged person's own saved Affiliation/
@@ -2126,6 +2252,12 @@ function closeBoardRouteFinder() {
 let _bvrActiveJobId = null;
 let _bvrCancelRequested = false;
 let _bvrRunSeq = 0;
+// The full set of routes _diverse_paths considered for the most recent
+// search (not just the winning one) -- kept so the "VISUALIZE PATHS TRIED"
+// button can render the diagram without a second fetch.
+let _bvrLastRoutes = null;
+let _bvrLastStartName = '';
+let _bvrLastTargetName = '';
 
 function setBoardRouteRunning(running) {
   const runBtn = document.getElementById('bvrRunBtn');
@@ -2194,6 +2326,9 @@ async function execBoardRoute() {
   if (fillEl) fillEl.style.width = '0%';
   if (thinkingLogEl) thinkingLogEl.innerHTML = '';
   if (thinkingEl) thinkingEl.style.display = 'block';
+  const vizBtn = document.getElementById('bvrVizBtn');
+  if (vizBtn) vizBtn.style.display = 'none';
+  _bvrLastRoutes = null;
   try {
     const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
@@ -2244,6 +2379,10 @@ async function execBoardRoute() {
       }));
       return `<div style="margin-bottom:16px"><div class="bvr-flbl">ROUTE ${i+1} · ${route.hops} HOPS · SCORE ${route.score}</div>${renderRoutePath(steps)}</div>`;
     }).join('');
+    _bvrLastRoutes = routes;
+    _bvrLastStartName = start.name;
+    _bvrLastTargetName = target.name;
+    if (vizBtn) vizBtn.style.display = 'block';
     mergeConnectResultIntoBoard(data);
   } catch(e) {
     if (runSeq !== _bvrRunSeq) return;

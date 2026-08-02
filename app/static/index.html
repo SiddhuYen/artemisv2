@@ -838,6 +838,58 @@ body {
 .bvr-thinking-line { font-size:10px;line-height:1.65;color:var(--ink-mute);letter-spacing:0.01em;white-space:pre-wrap;word-break:break-word; }
 .bvr-thinking-line:last-child { color:var(--ink-dim); }
 
+.bvr-viz-btn {
+  width:100%;margin:2px 0 14px;padding:9px 12px;background:transparent;
+  border:1px solid var(--accent-line);color:var(--ink-mute);font-family:inherit;
+  font-size:10px;letter-spacing:0.18em;cursor:pointer;transition:all .16s;
+}
+.bvr-viz-btn:hover { border-color:var(--accent);color:var(--accent-bright);box-shadow:0 0 12px var(--accent-glow); }
+
+/* ── PATHS-TRIED VISUALIZATION (expand button on the route sidebar) ──
+   Every route _diverse_paths returned, merged into one node-link diagram --
+   not just the single winning path. Columns = hop distance from the start
+   person; every route shares the same start/target node, so those two
+   columns are pinned (start at column 0, target always at the LAST column
+   even when routes differ in hop count) and only the bridge nodes in
+   between vary route to route. The best (highest-scoring) route's edges/
+   nodes are highlighted; nodes/edges that only exist on a route that
+   wasn't chosen are dimmed but still shown -- the whole point is to make
+   the paths NOT taken visible too, not just the winner. */
+#pathVizScrim { position:fixed;inset:0;z-index:160;background:oklch(0.06 0.02 22/0.6);backdrop-filter:blur(2px);display:none; }
+#pathVizScrim.open { display:block; }
+#pathVizModal {
+  position:fixed;top:4vh;left:50%;transform:translateX(-50%);z-index:165;
+  width:min(940px,94vw);max-height:92vh;display:none;flex-direction:column;
+  background:linear-gradient(180deg,oklch(0.185 0.016 22),oklch(0.13 0.012 22));
+  border:1px solid oklch(0.635 0.205 22/0.4);box-shadow:0 30px 80px oklch(0 0 0/0.6);
+  font-family:"Share Tech Mono","JetBrains Mono",monospace;
+  --accent:oklch(0.635 0.205 22);--accent-bright:oklch(0.72 0.205 22);
+  --accent-line:oklch(0.635 0.205 22/0.30);--accent-glow:oklch(0.66 0.21 22/0.55);
+  --ink:oklch(0.93 0.02 22);--ink-dim:oklch(0.74 0.04 22);--ink-mute:oklch(0.58 0.045 22);--ink-faint:oklch(0.44 0.04 22);
+  color:var(--ink);
+}
+#pathVizModal.open { display:flex; }
+.pv-top { display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--accent-line); }
+.pv-lbl { font-size:10px;letter-spacing:0.3em;color:var(--ink-mute); }
+.pv-x { width:28px;height:28px;border:1px solid var(--accent-line);background:transparent;color:var(--ink-dim);cursor:pointer;font-family:inherit;font-size:13px;transition:all .16s; }
+.pv-x:hover { border-color:var(--accent);color:var(--accent-bright); }
+.pv-legend { display:flex;gap:20px;padding:12px 20px 0;font-size:9px;letter-spacing:0.14em;color:var(--ink-faint); }
+.pv-leg-item { display:flex;align-items:center;gap:6px; }
+.pv-swatch { width:16px;height:2px;display:inline-block; }
+.pv-swatch.pv-best { background:var(--accent-bright);box-shadow:0 0 6px var(--accent-glow); }
+.pv-swatch.pv-alt { background:var(--ink-faint); }
+.pv-canvas-wrap { padding:8px 12px 20px;overflow:auto;flex:1; }
+.pv-svg { width:100%;height:auto;min-height:360px;display:block; }
+.pv-edge-best { stroke:var(--accent-bright);stroke-width:2;fill:none;filter:drop-shadow(0 0 4px var(--accent-glow)); }
+.pv-edge-alt { stroke:var(--ink-faint);stroke-width:1;fill:none;stroke-dasharray:3 3; }
+.pv-node-circle { fill:var(--bg1, oklch(0.185 0.016 22));stroke:var(--ink-faint);stroke-width:1.4; }
+.pv-node-circle.pv-endpoint { stroke:var(--accent-bright);stroke-width:2;filter:drop-shadow(0 0 6px var(--accent-glow)); }
+.pv-node-circle.pv-onbest { stroke:var(--ink-dim); }
+.pv-node-label { fill:var(--ink-dim);font-family:"Share Tech Mono",monospace;font-size:11px; }
+.pv-node-label.pv-dim { fill:var(--ink-faint); }
+.pv-edge-label { fill:var(--ink-faint);font-family:"Share Tech Mono",monospace;font-size:8px;letter-spacing:0.06em; }
+.pv-empty { padding:40px 20px;text-align:center;color:var(--ink-faint);font-size:11px;letter-spacing:0.08em; }
+
 /* ── LINKEDIN IMPORT MODAL ── */
 #liScrim { position:fixed;inset:0;z-index:150;display:none;place-items:center;background:oklch(0.06 0.02 22/0.7);backdrop-filter:blur(2px);padding:20px; }
 #liScrim.open { display:grid; }
@@ -1733,7 +1785,24 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
       <div class="bvr-thinking-log" id="bvrThinkingLog"></div>
     </div>
     <div class="bvr-result-lbl" id="bvrResultLbl" style="display:none">// PATH FOUND</div>
+    <button class="bvr-viz-btn" id="bvrVizBtn" onclick="openPathVisualization()" style="display:none">⛶ VISUALIZE PATHS TRIED</button>
     <div id="bvrResult"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ PATHS-TRIED VISUALIZATION (expanded from the route sidebar) ═══════════════════ -->
+<div id="pathVizScrim" onclick="closePathVisualization()"></div>
+<div id="pathVizModal">
+  <div class="pv-top">
+    <span class="pv-lbl">// PATHS ARTEMIS TRIED</span>
+    <button class="pv-x" onclick="closePathVisualization()">✕</button>
+  </div>
+  <div class="pv-legend">
+    <span class="pv-leg-item"><span class="pv-swatch pv-best"></span>Best route</span>
+    <span class="pv-leg-item"><span class="pv-swatch pv-alt"></span>Other route considered</span>
+  </div>
+  <div class="pv-canvas-wrap">
+    <svg id="pathVizSvg" class="pv-svg" viewBox="0 0 900 520" preserveAspectRatio="xMidYMid meet"></svg>
   </div>
 </div>
 
