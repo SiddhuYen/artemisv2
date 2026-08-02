@@ -1292,8 +1292,16 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             except Exception:
                 raise
             if progress:
+                # str(exc), not just the class name: a dropped node is silent
+                # data loss (it can turn a real /connect route into "NO PATH"),
+                # and the class name alone is useless for telling a transient
+                # DB lock apart from a genuine bug -- diagnosing one such drop
+                # cost a full instrumented re-run purely because the message
+                # was discarded here. Truncated: some DBAPI errors embed the
+                # entire offending statement plus parameters.
+                detail = " ".join(str(exc).split())[:300]
                 progress(f"  ⚠ {name!r} at hop {hop} failed "
-                         f"({exc.__class__.__name__}) — skipped")
+                         f"({exc.__class__.__name__}: {detail}) — skipped")
         finally:
             worker_db.close()
         if person_norm_key(name) in shallow_nodes:

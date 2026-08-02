@@ -1,12 +1,14 @@
 # Fly.io config for Artemis V2.
-# A persistent volume (mounted at /data) holds all SQLite state — the search
-# cache, per-session graphs, and the persistent Brave quota counter — so it
-# survives restarts and redeploys. Secrets are set via `fly secrets`, NOT here.
+# A persistent volume (mounted at /data) holds the file-backed state — the
+# search cache, per-session graphs, and the persistent Brave quota counter — so
+# it survives restarts and redeploys. Secrets are set via `fly secrets`, NOT
+# here. The GRAPH lives in Postgres (DATABASE_URL), not on that volume: see
+# DEPLOY.md for why SQLite is not safe for a deployed instance.
 #
 # First-time setup (see DEPLOY.md for the full walkthrough):
 #   fly launch --no-deploy --name artemisv2
 #   fly volumes create artemis_data --size 3 --region sjc
-#   fly secrets set BRAVE_API_KEY=xxxx OPENCORPORATES_API_TOKEN=xxxx
+#   fly secrets set DATABASE_URL=postgresql://... BRAVE_API_KEY=xxxx
 #   fly deploy
 
 app = "artemisv2"
@@ -15,13 +17,15 @@ primary_region = "sjc"   # change to a region near you (e.g. iad, lhr, ord)
 [build]
 
 [env]
+  # ARTEMIS_DB_URL is intentionally absent — it outranks DATABASE_URL
+  # (config._resolve_db_url), so setting it here would override the Postgres
+  # database set via `fly secrets` without any visible error.
   PORT = "8080"
-  ARTEMIS_DB_URL = "sqlite:////data/artemis.db"
   ARTEMIS_CACHE_DB = "/data/artemis_cache.db"
   ARTEMIS_GRAPH_DIR = "/data/graphs"
   ARTEMIS_CACHED_GRAPHS_DIR = "/data/cached_graphs"
 
-# persistent disk for all SQLite state
+# persistent disk for the file-backed state (cache, quota counter)
 [mounts]
   source = "artemis_data"
   destination = "/data"

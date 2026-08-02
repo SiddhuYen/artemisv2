@@ -9,10 +9,19 @@
 #      in-process. A second instance would have its own copy of each, so
 #      concurrency caps and rate limits would silently double and jobs would
 #      404 for whichever instance didn't run them.
-#   2. A persistent disk at /data. All SQLite state lives there — the search
-#      cache, the graph, the Brave quota counter. Without it every restart
-#      loses the graph and re-pays for search results already bought.
-#      NOTE: disks require a paid instance type. The free tier has no disk.
+#   2. A persistent disk at /data. The search cache and the Brave quota counter
+#      live there. Without it every restart re-pays for search results already
+#      bought. NOTE: disks require a paid instance type; the free tier has none.
+#
+# The GRAPH itself lives in Postgres (DATABASE_URL), not on that disk. Two
+# reasons, both learned the hard way:
+#   - Concurrency. Expansion runs several writers at once and SQLite serializes
+#     them behind a single write lock; losing that race silently DROPPED
+#     discovered nodes, which shows up as a /connect that reports "no path"
+#     between two people who are in fact connected.
+#   - Durability. A Render disk is tied to one paid instance. Postgres survives
+#     instance replacement, plan changes and redeploys, and can be backed up
+#     and inspected independently of the app.
 services:
   - type: web
     name: artemis
@@ -44,11 +53,24 @@ services:
       - key: BRAVE_API_KEY
         sync: false
 
+      # The graph database. Paste your Supabase connection string here when
+      # the dashboard prompts (Project → Connect → URI). Notes that matter:
+      #   - Use the DIRECT connection on port 5432, not the transaction pooler
+      #     on 6543. Graph writes rely on SAVEPOINTs inside multi-statement
+      #     transactions, which is session-level behaviour.
+      #   - A `postgres://` string is fine; the app rewrites the scheme that
+      #     SQLAlchemy dropped (see config._normalize_db_url).
+      #   - The schema builds itself on first boot. There is no migration step.
+      # Leave this unset and the app falls back to a SQLite file in the
+      # container — which works, but is ephemeral and loses the concurrency
+      # guarantees above. Do not ship that.
+      - key: DATABASE_URL
+        sync: false
+
       # --- state paths: must point at the mounted disk ---------------------
-      - key: ARTEMIS_DB_URL
-        value: sqlite:////data/artemis.db
-      - key: ARTEMIS_BOARDS_DB_URL
-        value: sqlite:////data/artemis_boards.db
+      # Cache + quota counter only. ARTEMIS_BOARDS_DB_URL is deliberately
+      # absent: on Postgres, boards default to the same database as the graph
+      # (see config.BOARDS_DB_URL), so they inherit the same durability.
       - key: ARTEMIS_CACHE_DB
         value: /data/artemis_cache.db
       - key: ARTEMIS_GRAPH_DIR

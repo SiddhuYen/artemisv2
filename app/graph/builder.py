@@ -55,9 +55,41 @@ def _strip_nul(s: Optional[str]) -> Optional[str]:
     return s.replace("\x00", "") if s else s
 
 
-def reset_public_graph(db: Session) -> None:
+class SharedGraphResetError(RuntimeError):
+    """Raised when something tries to wipe a graph that isn't private."""
+
+
+def graph_is_shared() -> bool:
+    """True when the graph lives in a server database rather than a private
+    local SQLite file.
+
+    The whole codebase was written when the graph was a file on one laptop,
+    where wiping it costs its owner a rebuild and nobody else anything. On a
+    team's shared Postgres the same call destroys everyone's work at once, so
+    the destructive paths below ask this first.
+    """
+    return config.IS_POSTGRES
+
+
+def reset_public_graph(db: Session, force: bool = False) -> None:
     """Clear the PUBLIC graph + derived matches/paths, preserving the uploaded
-    local network (local_profiles / local_edges). Children first for FK safety."""
+    local network (local_profiles / local_edges). Children first for FK safety.
+
+    Refuses to run against a SHARED graph unless `force` is passed. This is a
+    deliberate chokepoint: every destructive path in the app funnels through
+    here, and two of them are easy to trigger without meaning to --
+    `python -m app.cli "Some Name"` resets by default (--keep is opt-IN), and
+    org_discovery calls this as routine scratch cleanup. Against a private
+    SQLite file both are harmless; against a team database either one silently
+    deletes every collaborator's graph, including whatever the deployment
+    accumulated. Callers that genuinely mean it pass force=True.
+    """
+    if graph_is_shared() and not force:
+        raise SharedGraphResetError(
+            "refusing to wipe a shared graph database — this would delete "
+            "every collaborator's data, not just yours. Accumulate instead "
+            "(the CLI's --keep), or pass force=True if you really mean it."
+        )
     db.query(CandidatePath).delete()
     db.query(GraphMatch).delete()
     db.query(RelationshipEdge).delete()
@@ -222,7 +254,12 @@ def _homonym_conflict(db: Session, existing: Person,
         return False
     meta = dict(existing.meta or {})
     meta["homonym_rejected"] = {"identity_text": identity_text[:300]}
-    existing.meta = meta
+    # flush_in_savepoint, not a bare `existing.meta = meta`: leaving this
+    # mutation pending is what made the NEXT savepoint entry (usually
+    # _new_person_or_existing's, a few lines later in both callers) flush it
+    # pre-SAVEPOINT, where a lock is unrecoverable and costs the whole node.
+    # See flush_in_savepoint's docstring for the full failure shape.
+    flush_in_savepoint(db, lambda: setattr(existing, "meta", meta))
     return True
 
 
@@ -313,6 +350,47 @@ def _is_transient(exc: Exception) -> bool:
     PendingRollbackError, not OperationalError, and every retry site here was
     (at the time) only catching the latter."""
     return _is_locked(exc) or _is_deadlock(exc)
+
+
+def flush_in_savepoint(db: Session, mutate: Callable[[], None],
+                       _retries: int = 5) -> None:
+    """Apply `mutate` and flush it INSIDE a SAVEPOINT, retrying on a transient
+    lock/deadlock (see _is_transient).
+
+    Exists because of a specific, confirmed failure shape: `Session.begin_nested()`
+    flushes any PENDING state BEFORE it establishes the SAVEPOINT (SQLAlchemy's
+    SessionTransaction._take_snapshot), and it does so regardless of
+    autoflush=False. So an uncommitted ORM mutation left lying in the session
+    gets written by the NEXT unrelated savepoint entry -- and if that write hits
+    a lock, the savepoint never gets created, SQLAlchemy deactivates the
+    transaction, and every retry that follows dies instantly on
+    PendingRollbackError ("first issue Session.rollback()"). Worse, that error's
+    text embeds the original "database is locked", so _is_locked keeps calling
+    it transient and the caller burns its whole retry budget in milliseconds
+    before dropping the node. Observed live: a lock on _homonym_conflict's
+    leftover `people.metadata` UPDATE, flushed by _new_person_or_existing's
+    savepoint, silently dropped nodes from a /connect walk.
+
+    The cure is to never LEAVE a mutation pending. Applying it inside the
+    savepoint means a lock rolls back only to the savepoint -- the recoverable
+    shape that save_source and add_edge_from_extraction already survive
+    routinely -- instead of poisoning the whole session.
+
+    NOT a substitute for commit_with_retry: this leaves the change uncommitted
+    (flushed only), so it still belongs to the caller's transaction and is
+    still discarded if that transaction rolls back. That's deliberate -- these
+    are advisory writes that should follow the fate of the work around them.
+    """
+    for attempt in range(_retries + 1):
+        try:
+            with db.begin_nested():
+                mutate()
+                db.flush()
+            return
+        except (OperationalError, PendingRollbackError) as exc:
+            if not _is_transient(exc) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
 
 
 _T = TypeVar("_T")
