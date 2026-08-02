@@ -70,6 +70,52 @@ def test_expand_graph_visited_by_hop_reflects_the_selected_frontier_only(db, mon
 
 
 # ---------------------------------------------------------------------------
+# expand_graph: boundary (candidates the LAST processed hop turned up but
+# never got to walk itself, e.g. the famous-side depth-1 cap)
+# ---------------------------------------------------------------------------
+def test_expand_graph_boundary_captures_last_hop_unwalked_candidates(db, monkeypatch):
+    """max_depth=1 means the hop loop ends right after processing the seed --
+    same shape as SHALLOW_FAMOUS_DEPTH. The seed's own search still finds and
+    persists real candidates; `boundary` is how a caller learns about them
+    even though visited_by_hop never gets a hop-1 entry for this run."""
+    def fake_process_person(worker_db, name, hop, local_disc, progress=None,
+                            is_person=True, context="", silo_weights=None,
+                            enhanced_professional_search=False,
+                            professional_only=False,
+                            target_person_name="", target_context=""):
+        subject = builder.get_or_create_person(worker_db, name)
+        subject.processed = 1
+        if name == "Seed":
+            expansion._record(local_disc, _edge("Seed", "Bridge1"))
+            expansion._record(local_disc, _edge("Seed", "Bridge2"))
+
+    monkeypatch.setattr(expansion, "_process_person", fake_process_person)
+    monkeypatch.setattr(expansion, "is_filtering_active", lambda: False)
+
+    stats = expansion.expand_graph(db, "Seed", max_depth=1, prefer_reachable=False)
+
+    assert list(stats["visited_by_hop"].keys()) == [0]
+    assert sorted(stats["boundary"]) == ["Bridge1", "Bridge2"]
+
+
+def test_expand_graph_boundary_empty_when_nothing_further_found(db, monkeypatch):
+    def fake_process_person(worker_db, name, hop, local_disc, progress=None,
+                            is_person=True, context="", silo_weights=None,
+                            enhanced_professional_search=False,
+                            professional_only=False,
+                            target_person_name="", target_context=""):
+        subject = builder.get_or_create_person(worker_db, name)
+        subject.processed = 1
+
+    monkeypatch.setattr(expansion, "_process_person", fake_process_person)
+    monkeypatch.setattr(expansion, "is_filtering_active", lambda: False)
+
+    stats = expansion.expand_graph(db, "Seed", max_depth=1, prefer_reachable=False)
+
+    assert stats["boundary"] == []
+
+
+# ---------------------------------------------------------------------------
 # connect._expand_both_concurrently: returns both sides' stats
 # ---------------------------------------------------------------------------
 def test_expand_both_concurrently_returns_visited_by_hop_for_both_sides(db, monkeypatch):
@@ -102,8 +148,8 @@ def test_build_explored_shapes_both_sides():
     result = C._build_explored(stats, "Alpha", "Beta")
 
     assert result == {
-        "a": {"seed": "Alpha", "by_hop": {0: ["Alpha"], 1: ["Bridge"]}},
-        "b": {"seed": "Beta", "by_hop": {0: ["Beta"]}},
+        "a": {"seed": "Alpha", "by_hop": {0: ["Alpha"], 1: ["Bridge"]}, "boundary": []},
+        "b": {"seed": "Beta", "by_hop": {0: ["Beta"]}, "boundary": []},
     }
 
 
@@ -130,8 +176,8 @@ def test_connect_people_includes_explored_when_no_route_found(db, monkeypatch):
 
     assert result["connected"] is False
     assert result["explored"] == {
-        "a": {"seed": "Alpha", "by_hop": {0: ["Alpha"], 1: ["Alpha Bridge"]}},
-        "b": {"seed": "Beta", "by_hop": {0: ["Beta"], 1: ["Beta Bridge"]}},
+        "a": {"seed": "Alpha", "by_hop": {0: ["Alpha"], 1: ["Alpha Bridge"]}, "boundary": []},
+        "b": {"seed": "Beta", "by_hop": {0: ["Beta"], 1: ["Beta Bridge"]}, "boundary": []},
     }
 
 

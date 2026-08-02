@@ -1432,6 +1432,20 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 progress("  → no strong nodes to expand; stopping")
             break
 
+    # Whatever candidates the last processed hop turned up are real,
+    # persisted data (see _process_one/_merge_disc) -- the loop just never
+    # got to walk them as their own hop (max_depth reached, the node cap hit,
+    # or a cancellation). Recomputing the ranking once more here doesn't
+    # process/persist anything new; it only tells a caller what WOULD have
+    # been expanded next, so the no-route visualization can show "found, not
+    # walked" instead of silently implying Artemis found nothing further --
+    # see connect_people's "explored" field. When the loop instead ended
+    # because ranking already came back empty, this repeats that same
+    # (cheap, eligible-list-empty) call and correctly yields nothing.
+    alpha_top_n = config.ALPHA_TOP_CANDIDATES if enhanced_professional_search else None
+    boundary = _ranked_expandable(disc, visited, prefer_reachable=prefer_reachable,
+                                  top_n=alpha_top_n)
+
     protected = {person_norm_key(target_name)} | (protected_norms or set())
     check_cancel()
     _prune_invalid_nodes(db, protected, progress=progress)
@@ -1439,6 +1453,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     _retype_unknown_edges(db, progress=progress)
     stats = _stats(db, per_depth)
     stats["visited_by_hop"] = visited_by_hop
+    stats["boundary"] = boundary
     return stats
 
 

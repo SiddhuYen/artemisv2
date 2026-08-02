@@ -2173,11 +2173,23 @@ function buildExploredLayout(explored, W, H) {
   const gap = 70;                    // empty strip in the middle
   const halfW = (W - gap) / 2;
   const hopsOf = (side) => Object.keys(side.by_hop || {}).map(Number);
-  const maxHop = Math.max(1, ...hopsOf(explored.a), ...hopsOf(explored.b));
+  // The boundary layer (see expand_graph's `boundary` stat) sits one column
+  // past whatever hop this side actually reached -- candidates its last
+  // processed hop turned up but never got to walk itself. Only occupies a
+  // column when there's something in it, so a side with no boundary data
+  // doesn't leave a dead empty column.
+  const boundaryHopOf = (side) => {
+    const hops = hopsOf(side);
+    const maxReal = hops.length ? Math.max(...hops) : 0;
+    return (side.boundary && side.boundary.length) ? maxReal + 1 : maxReal;
+  };
+  const maxHop = Math.max(1, boundaryHopOf(explored.a), boundaryHopOf(explored.b));
   const colGap = halfW / (maxHop + 1);
 
   const layoutSide = (side, fromLeft) => {
     const nodes = [];
+    const hops = hopsOf(side);
+    const maxReal = hops.length ? Math.max(...hops) : 0;
     Object.keys(side.by_hop || {}).forEach(hopStr => {
       const hop = Number(hopStr);
       const names = side.by_hop[hopStr] || [];
@@ -2185,12 +2197,25 @@ function buildExploredLayout(explored, W, H) {
       names.forEach((label, i) => {
         const xOffset = colGap * (hop + 1);
         nodes.push({
-          label, hop, isSeed: hop === 0,
+          label, hop, isSeed: hop === 0, isBoundary: false,
           x: fromLeft ? xOffset : (W - xOffset),
           y: rowGap * (i + 1),
         });
       });
     });
+    const boundaryNames = side.boundary || [];
+    if (boundaryNames.length) {
+      const hop = maxReal + 1;
+      const xOffset = colGap * (hop + 1);
+      const rowGap = H / (boundaryNames.length + 1);
+      boundaryNames.forEach((label, i) => {
+        nodes.push({
+          label, hop, isSeed: false, isBoundary: true,
+          x: fromLeft ? xOffset : (W - xOffset),
+          y: rowGap * (i + 1),
+        });
+      });
+    }
     return nodes;
   };
 
@@ -2203,20 +2228,47 @@ function renderExploredVisualization(explored, startName, targetName) {
   const W = 900, H = 520;
   const { nodesA, nodesB } = buildExploredLayout(explored, W, H);
 
+  // Connects each hop level to the PREVIOUS hop's anchor -- the single node
+  // there if unambiguous, otherwise that hop's centroid (there's no per-node
+  // parent lineage tracked backend-side, so a shared anchor is the honest
+  // choice over fabricating a specific parent). Generalizes what used to be
+  // a seed-to-hop-1-only fan to any real depth, plus the boundary layer.
+  const anchorAt = (nodes, hop) => {
+    const atHop = nodes.filter(n => n.hop === hop);
+    if (!atHop.length) return null;
+    if (atHop.length === 1) return atHop[0];
+    return {
+      x: atHop.reduce((s, n) => s + n.x, 0) / atHop.length,
+      y: atHop.reduce((s, n) => s + n.y, 0) / atHop.length,
+    };
+  };
+
   const fan = (nodes) => {
-    const seed = nodes.find(n => n.isSeed);
-    if (!seed) return '';
-    return nodes.filter(n => n.hop === 1).map(n => {
-      const mx = (seed.x + n.x) / 2;
-      return `<path class="pv-edge-alt" d="M ${seed.x} ${seed.y} C ${mx} ${seed.y}, ${mx} ${n.y}, ${n.x} ${n.y}"></path>`;
-    }).join('');
+    if (!nodes.length) return '';
+    const maxHopHere = Math.max(...nodes.map(n => n.hop));
+    let out = '';
+    for (let hop = 1; hop <= maxHopHere; hop++) {
+      const atHop = nodes.filter(n => n.hop === hop);
+      if (!atHop.length) continue;
+      const anchor = anchorAt(nodes, hop - 1);
+      if (!anchor) continue;
+      const boundaryLevel = atHop.every(n => n.isBoundary);
+      const cls = boundaryLevel ? 'pv-edge-boundary' : 'pv-edge-alt';
+      atHop.forEach(n => {
+        const mx = (anchor.x + n.x) / 2;
+        out += `<path class="${cls}" d="M ${anchor.x} ${anchor.y} C ${mx} ${anchor.y}, ${mx} ${n.y}, ${n.x} ${n.y}"></path>`;
+      });
+    }
+    return out;
   };
 
   const nodeSvg = (nodes) => nodes.map(n => {
-    const r = n.isSeed ? 9 : 6;
+    const r = n.isSeed ? 9 : (n.isBoundary ? 5 : 6);
+    const circleCls = n.isSeed ? 'pv-endpoint' : (n.isBoundary ? 'pv-node-boundary' : '');
+    const labelCls = n.isBoundary ? 'pv-node-label-boundary' : '';
     return `<g>
-      <circle class="pv-node-circle ${n.isSeed ? 'pv-endpoint' : ''}" cx="${n.x}" cy="${n.y}" r="${r}"></circle>
-      <text class="pv-node-label" x="${n.x}" y="${n.y - r - 6}" text-anchor="middle">${esc(n.label)}</text>
+      <circle class="pv-node-circle ${circleCls}" cx="${n.x}" cy="${n.y}" r="${r}"></circle>
+      <text class="pv-node-label ${labelCls}" x="${n.x}" y="${n.y - r - 6}" text-anchor="middle">${esc(n.label)}</text>
     </g>`;
   }).join('');
 
@@ -2240,7 +2292,9 @@ function openPathVisualization() {
   } else if (_bvrLastExplored) {
     renderExploredVisualization(_bvrLastExplored, _bvrLastStartName, _bvrLastTargetName);
     if (legendEl) legendEl.innerHTML = `
-      <span class="pv-leg-item">No connecting route was found — showing what Artemis explored on each side instead</span>`;
+      <span class="pv-leg-item">No connecting route was found — showing what Artemis explored on each side instead</span>
+      <span class="pv-leg-item"><span class="pv-swatch pv-alt"></span>Walked</span>
+      <span class="pv-leg-item"><span class="pv-swatch pv-boundary"></span>Found, not walked further</span>`;
   } else {
     return;
   }
