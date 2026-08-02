@@ -2030,6 +2030,229 @@ function renderRoutePath(path) {
   }).join('')}</div>`;
 }
 
+// ══════════════════════════════════════════════════════
+// PATHS-TRIED VISUALIZATION -- every route _diverse_paths considered, not
+// just the one that won, merged into one node-link diagram. Every route
+// shares the same start/target (bidirectional meet-in-the-middle search
+// always resolves to those same two endpoints), so only the bridge nodes
+// in between actually differ route to route -- that's what makes a shared
+// column layout meaningful instead of arbitrary.
+// ══════════════════════════════════════════════════════
+function buildPathVizGraph(routes) {
+  const nodes = new Map();   // label -> node
+  const edges = new Map();   // "a||b" (sorted) -> edge
+  const maxHops = Math.max(0, ...routes.map(r => Math.max((r.path || []).length - 1, 0)));
+
+  routes.forEach((route, ri) => {
+    const path = route.path || [];
+    path.forEach((n, idx) => {
+      const label = n.label;
+      const isStart = idx === 0;
+      const isTarget = idx === path.length - 1;
+      // Every route's target is pinned to the SAME rightmost column even
+      // when routes differ in hop count -- otherwise a 2-hop route's
+      // target and a 3-hop route's target (the same person!) would land
+      // in different columns and the diagram would show two target nodes.
+      const col = isTarget ? maxHops : (isStart ? 0 : idx);
+      let node = nodes.get(label);
+      if (!node) {
+        node = { label, col, isStart: false, isTarget: false, routeIdxs: new Set() };
+        nodes.set(label, node);
+      } else if (!node.isStart && !node.isTarget) {
+        node.col = Math.min(node.col, col);
+      }
+      if (isStart) { node.isStart = true; node.col = 0; }
+      if (isTarget) { node.isTarget = true; node.col = maxHops; }
+      node.routeIdxs.add(ri);
+    });
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1].label, b = path[i].label;
+      const key = [a, b].sort().join('||');
+      let edge = edges.get(key);
+      if (!edge) {
+        edge = { a, b, routeIdxs: new Set(), relType: path[i].relationship_from_previous || '' };
+        edges.set(key, edge);
+      }
+      edge.routeIdxs.add(ri);
+    }
+  });
+
+  return { nodes: [...nodes.values()], edges: [...edges.values()], maxHops };
+}
+
+function layoutPathViz(graph, width, height) {
+  const cols = graph.maxHops + 1;
+  const byCol = {};
+  graph.nodes.forEach(n => { (byCol[n.col] = byCol[n.col] || []).push(n); });
+  const colGap = width / (cols + 1);
+  Object.keys(byCol).forEach(colStr => {
+    const list = byCol[colStr];
+    const rowGap = height / (list.length + 1);
+    list.forEach((n, i) => {
+      n.x = colGap * (Number(colStr) + 1);
+      n.y = rowGap * (i + 1);
+    });
+  });
+}
+
+function _pvEmpty(svg, message) {
+  // Renders the empty state AS an SVG child (a <text>, via foreignObject
+  // for the styled div) rather than replacing svg.parentElement.innerHTML --
+  // doing that would delete #pathVizSvg itself from the DOM, breaking every
+  // subsequent render() call that looks it up by id.
+  svg.setAttribute('viewBox', '0 0 900 200');
+  svg.innerHTML = `<foreignObject x="0" y="0" width="900" height="200">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="pv-empty">${esc(message)}</div>
+  </foreignObject>`;
+}
+
+function renderPathVisualization(routes, startName, targetName) {
+  const svg = document.getElementById('pathVizSvg');
+  if (!svg) return;
+  if (!routes || !routes.length) {
+    _pvEmpty(svg, '// No routes to visualize.');
+    return;
+  }
+  const W = 900, H = 520;
+  const graph = buildPathVizGraph(routes);
+  layoutPathViz(graph, W, H);
+  const byLabel = new Map(graph.nodes.map(n => [n.label, n]));
+
+  // best route (index 0 -- the backend already returns `paths` sorted by
+  // score, best first) drawn LAST in DOM order (on top), so it never sits
+  // visually under a dimmer alternate-route line.
+  const bestEdges = [], altEdges = [];
+  graph.edges.forEach(e => {
+    const a = byLabel.get(e.a), b = byLabel.get(e.b);
+    if (!a || !b) return;
+    const onBest = e.routeIdxs.has(0);
+    const mx = (a.x + b.x) / 2;
+    const d = `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}`;
+    const cls = onBest ? 'pv-edge-best' : 'pv-edge-alt';
+    const title = e.relType ? `<title>${esc(humanizeRelType(e.relType))}</title>` : '';
+    const markup = `<path class="${cls}" d="${d}">${title}</path>`;
+    (onBest ? bestEdges : altEdges).push(markup);
+  });
+
+  const nodeSvg = graph.nodes.map(n => {
+    const onBest = n.routeIdxs.has(0);
+    const isEndpoint = n.isStart || n.isTarget;
+    const circleCls = isEndpoint ? 'pv-endpoint' : (onBest ? 'pv-onbest' : '');
+    const labelCls = onBest ? '' : 'pv-dim';
+    const r = isEndpoint ? 9 : 6;
+    const sym = n.isStart ? '●' : n.isTarget ? '◆' : '○';
+    return `<g>
+      <circle class="pv-node-circle ${circleCls}" cx="${n.x}" cy="${n.y}" r="${r}"></circle>
+      <text class="pv-node-label ${labelCls}" x="${n.x}" y="${n.y - r - 6}" text-anchor="middle">${esc(n.label)}</text>
+      <text class="pv-node-label ${labelCls}" x="${n.x}" y="${n.y + 4}" text-anchor="middle" font-size="9">${sym}</text>
+    </g>`;
+  }).join('');
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = altEdges.join('') + bestEdges.join('') + nodeSvg;
+}
+
+// ══════════════════════════════════════════════════════
+// EXPLORED-BUT-UNCONNECTED VISUALIZATION -- no route exists, so there's no
+// start-to-target chain to draw at all. Instead, show each side's own
+// search as a separate column tree growing toward the middle, with a
+// visible gap between them: this IS the honest picture ("here's what
+// Artemis looked at on each side, and they never met"), not an
+// approximation of a connection that doesn't exist.
+//
+// Only the seed -> hop-1 fan is drawn as real edges (a side's hop 0 is
+// always exactly one node -- the seed itself -- so every hop-1 name in
+// visited_by_hop genuinely came directly from it). Hop 1 -> hop 2+ links
+// are NOT drawn: multiple hop-1 nodes could each have contributed
+// different hop-2 candidates, and connect.py's explored data doesn't
+// track that finer-grained lineage -- drawing a guessed mesh there would
+// fabricate precision that isn't real, exactly what this whole feature
+// exists to avoid doing with paths themselves.
+// ══════════════════════════════════════════════════════
+function buildExploredLayout(explored, W, H) {
+  const gap = 70;                    // empty strip in the middle
+  const halfW = (W - gap) / 2;
+  const hopsOf = (side) => Object.keys(side.by_hop || {}).map(Number);
+  const maxHop = Math.max(1, ...hopsOf(explored.a), ...hopsOf(explored.b));
+  const colGap = halfW / (maxHop + 1);
+
+  const layoutSide = (side, fromLeft) => {
+    const nodes = [];
+    Object.keys(side.by_hop || {}).forEach(hopStr => {
+      const hop = Number(hopStr);
+      const names = side.by_hop[hopStr] || [];
+      const rowGap = H / (names.length + 1);
+      names.forEach((label, i) => {
+        const xOffset = colGap * (hop + 1);
+        nodes.push({
+          label, hop, isSeed: hop === 0,
+          x: fromLeft ? xOffset : (W - xOffset),
+          y: rowGap * (i + 1),
+        });
+      });
+    });
+    return nodes;
+  };
+
+  return { nodesA: layoutSide(explored.a, true), nodesB: layoutSide(explored.b, false), maxHop };
+}
+
+function renderExploredVisualization(explored, startName, targetName) {
+  const svg = document.getElementById('pathVizSvg');
+  if (!svg) return;
+  const W = 900, H = 520;
+  const { nodesA, nodesB } = buildExploredLayout(explored, W, H);
+
+  const fan = (nodes) => {
+    const seed = nodes.find(n => n.isSeed);
+    if (!seed) return '';
+    return nodes.filter(n => n.hop === 1).map(n => {
+      const mx = (seed.x + n.x) / 2;
+      return `<path class="pv-edge-alt" d="M ${seed.x} ${seed.y} C ${mx} ${seed.y}, ${mx} ${n.y}, ${n.x} ${n.y}"></path>`;
+    }).join('');
+  };
+
+  const nodeSvg = (nodes) => nodes.map(n => {
+    const r = n.isSeed ? 9 : 6;
+    return `<g>
+      <circle class="pv-node-circle ${n.isSeed ? 'pv-endpoint' : ''}" cx="${n.x}" cy="${n.y}" r="${r}"></circle>
+      <text class="pv-node-label" x="${n.x}" y="${n.y - r - 6}" text-anchor="middle">${esc(n.label)}</text>
+    </g>`;
+  }).join('');
+
+  const midX = W / 2;
+  const divider = `
+    <line x1="${midX}" y1="24" x2="${midX}" y2="${H - 12}" stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="4 4"></line>
+    <text x="${midX}" y="16" text-anchor="middle" class="pv-edge-label" font-size="10">✕ NO OVERLAP FOUND</text>
+  `;
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = fan(nodesA) + fan(nodesB) + divider + nodeSvg(nodesA) + nodeSvg(nodesB);
+}
+
+function openPathVisualization() {
+  const legendEl = document.getElementById('pathVizLegend');
+  if (_bvrLastRoutes && _bvrLastRoutes.length) {
+    renderPathVisualization(_bvrLastRoutes, _bvrLastStartName, _bvrLastTargetName);
+    if (legendEl) legendEl.innerHTML = `
+      <span class="pv-leg-item"><span class="pv-swatch pv-best"></span>Best route</span>
+      <span class="pv-leg-item"><span class="pv-swatch pv-alt"></span>Other route considered</span>`;
+  } else if (_bvrLastExplored) {
+    renderExploredVisualization(_bvrLastExplored, _bvrLastStartName, _bvrLastTargetName);
+    if (legendEl) legendEl.innerHTML = `
+      <span class="pv-leg-item">No connecting route was found — showing what Artemis explored on each side instead</span>`;
+  } else {
+    return;
+  }
+  document.getElementById('pathVizModal')?.classList.add('open');
+  document.getElementById('pathVizScrim')?.classList.add('open');
+}
+
+function closePathVisualization() {
+  document.getElementById('pathVizModal')?.classList.remove('open');
+  document.getElementById('pathVizScrim')?.classList.remove('open');
+}
+
 function candidatePathToSteps(cp) {
   const nodes = (cp.path && cp.path.path) || [];
   return nodes.map((n,i) => ({
@@ -2091,13 +2314,26 @@ function showBoardRouteFinder() {
   if (!_bvrActiveJobId) document.getElementById('bvrRunBtn').disabled = !(start && target);
   document.getElementById('bvrResult').innerHTML = '';
   document.getElementById('bvrResultLbl').style.display = 'none';
+  document.getElementById('bvrVizBtn').style.display = 'none';
+  _bvrLastRoutes = null;
+  _bvrLastExplored = null;
   document.getElementById('bvrProgress')?.classList.remove('on');
   const bvrFill = document.getElementById('bvrProgressFill'); if (bvrFill) bvrFill.style.width = '0%';
-  // Cleared on every open, not carried over: stale context from a PREVIOUS
-  // pair's disambiguation ("biotech founder") would silently misdirect a
-  // search for a totally different, unrelated pair if left in place.
-  const ctxA = document.getElementById('bvrContextA'); if (ctxA) ctxA.value = '';
-  const ctxB = document.getElementById('bvrContextB'); if (ctxB) ctxB.value = '';
+  // Pre-filled from the CURRENTLY tagged person's own saved Affiliation/
+  // Description every time the panel opens -- not carried over from
+  // whatever was last typed here. That distinction matters: recomputing
+  // fresh from start/target on every open means this can never go stale
+  // (a previous PAIR's leftover context misdirecting today's totally
+  // different pair) while still using context the user already gave
+  // Artemis on the person's own card instead of silently discarding it and
+  // making them retype the same fact into a second box. Affiliation (role)
+  // is preferred over the longer free-text description, since this field
+  // is a short disambiguating phrase ("biotech founder"), not a paragraph;
+  // still fully editable/clearable before running.
+  const ctxA = document.getElementById('bvrContextA');
+  if (ctxA) ctxA.value = ((start && (start.role || start.description)) || '').slice(0, 200);
+  const ctxB = document.getElementById('bvrContextB');
+  if (ctxB) ctxB.value = ((target && (target.role || target.description)) || '').slice(0, 200);
   document.getElementById('bvrThinking').style.display = 'none';
   document.getElementById('bvrThinkingLog').innerHTML = '';
   document.getElementById('bvRoutePanel')?.classList.add('open');
@@ -2116,6 +2352,18 @@ function closeBoardRouteFinder() {
 let _bvrActiveJobId = null;
 let _bvrCancelRequested = false;
 let _bvrRunSeq = 0;
+// The full set of routes _diverse_paths considered for the most recent
+// search (not just the winning one) -- kept so the "VISUALIZE PATHS TRIED"
+// button can render the diagram without a second fetch.
+let _bvrLastRoutes = null;
+// When the search found NO connecting route at all, there's no route data
+// to fall back to -- but connect_people's "explored" field (present
+// whenever a fresh two-sided expansion actually ran, even without a
+// resulting path) still shows what Artemis looked at on each side. Mutually
+// exclusive with _bvrLastRoutes: exactly one of the two is set per search.
+let _bvrLastExplored = null;
+let _bvrLastStartName = '';
+let _bvrLastTargetName = '';
 
 function setBoardRouteRunning(running) {
   const runBtn = document.getElementById('bvrRunBtn');
@@ -2184,6 +2432,10 @@ async function execBoardRoute() {
   if (fillEl) fillEl.style.width = '0%';
   if (thinkingLogEl) thinkingLogEl.innerHTML = '';
   if (thinkingEl) thinkingEl.style.display = 'block';
+  const vizBtn = document.getElementById('bvrVizBtn');
+  if (vizBtn) vizBtn.style.display = 'none';
+  _bvrLastRoutes = null;
+  _bvrLastExplored = null;
   try {
     const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
@@ -2221,6 +2473,15 @@ async function execBoardRoute() {
     if (!data.connected) {
       lbl.textContent = '// NO ROUTE';
       resultEl.innerHTML = `<div class="bvr-no-path">No public path found between "${esc(start.name)}" and "${esc(target.name)}" — ${esc(data.reason||'')}. Try a higher depth.</div>`;
+      // "explored" is only present when a fresh two-sided expansion actually
+      // ran (see connect._build_explored) -- absent when the cheap known-
+      // route/direct-pair checks already decided nothing further needed to
+      // search. When present, it's what Artemis looked at on each side even
+      // though the two never met -- still worth visualizing.
+      if (data.explored && vizBtn) {
+        _bvrLastExplored = data.explored;
+        vizBtn.style.display = 'block';
+      }
       return;
     }
     const routes = (data.paths && data.paths.length) ? data.paths : [{ path: data.path, hops: data.hops, score: data.score }];
@@ -2234,6 +2495,10 @@ async function execBoardRoute() {
       }));
       return `<div style="margin-bottom:16px"><div class="bvr-flbl">ROUTE ${i+1} · ${route.hops} HOPS · SCORE ${route.score}</div>${renderRoutePath(steps)}</div>`;
     }).join('');
+    _bvrLastRoutes = routes;
+    _bvrLastStartName = start.name;
+    _bvrLastTargetName = target.name;
+    if (vizBtn) vizBtn.style.display = 'block';
     mergeConnectResultIntoBoard(data);
   } catch(e) {
     if (runSeq !== _bvrRunSeq) return;
