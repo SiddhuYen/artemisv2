@@ -2093,11 +2093,21 @@ function showBoardRouteFinder() {
   document.getElementById('bvrResultLbl').style.display = 'none';
   document.getElementById('bvrProgress')?.classList.remove('on');
   const bvrFill = document.getElementById('bvrProgressFill'); if (bvrFill) bvrFill.style.width = '0%';
-  // Cleared on every open, not carried over: stale context from a PREVIOUS
-  // pair's disambiguation ("biotech founder") would silently misdirect a
-  // search for a totally different, unrelated pair if left in place.
-  const ctxA = document.getElementById('bvrContextA'); if (ctxA) ctxA.value = '';
-  const ctxB = document.getElementById('bvrContextB'); if (ctxB) ctxB.value = '';
+  // Pre-filled from the CURRENTLY tagged person's own saved Affiliation/
+  // Description every time the panel opens -- not carried over from
+  // whatever was last typed here. That distinction matters: recomputing
+  // fresh from start/target on every open means this can never go stale
+  // (a previous PAIR's leftover context misdirecting today's totally
+  // different pair) while still using context the user already gave
+  // Artemis on the person's own card instead of silently discarding it and
+  // making them retype the same fact into a second box. Affiliation (role)
+  // is preferred over the longer free-text description, since this field
+  // is a short disambiguating phrase ("biotech founder"), not a paragraph;
+  // still fully editable/clearable before running.
+  const ctxA = document.getElementById('bvrContextA');
+  if (ctxA) ctxA.value = ((start && (start.role || start.description)) || '').slice(0, 200);
+  const ctxB = document.getElementById('bvrContextB');
+  if (ctxB) ctxB.value = ((target && (target.role || target.description)) || '').slice(0, 200);
   document.getElementById('bvrThinking').style.display = 'none';
   document.getElementById('bvrThinkingLog').innerHTML = '';
   document.getElementById('bvRoutePanel')?.classList.add('open');
