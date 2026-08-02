@@ -79,7 +79,19 @@ NEGATIVE_HINTS = ("portfolio", "blog", "post", "news", "careers", "jobs",
                   "docs", "documentation", "help", "support", "changelog",
                   "integrations", "community", "api", "reference", "guides",
                   "tutorial", "pricing", "download", "signup", "login",
-                  "get-started", "getting-started", "faq", "status")
+                  "get-started", "getting-started", "faq", "status",
+                  "dashboard", "resources", "forum", "discuss", "answers",
+                  "article", "articles", "guide", "kb", "knowledge")
+
+# The same exclusions, as a HOSTNAME prefix. A company's product docs and
+# user forum usually live on their own subdomain rather than under a path,
+# so a path-only check misses them: docs.zapier.com/platform/manage/add-team
+# and forum.ghost.org/t/... both passed Guard 1 and Guard 2, being genuinely
+# the company's own domain, and were scraped as staff rosters.
+NEGATIVE_HOST_PREFIXES = ("docs.", "help.", "support.", "forum.", "community.",
+                          "developer.", "developers.", "api.", "status.",
+                          "blog.", "learn.", "academy.", "answers.", "faq.",
+                          "kb.", "knowledge.")
 
 # Aggregators and socials: real pages, but never the org's own roster.
 BLOCKED_HOSTS = ("linkedin.com", "twitter.com", "x.com", "facebook.com",
@@ -165,6 +177,8 @@ def is_roster_url(url: str, extra_hints: Iterable[str] = ()) -> bool:
         return False
     host = host_of(url)
     if any(bad in host for bad in BLOCKED_HOSTS):
+        return False
+    if host.startswith(NEGATIVE_HOST_PREFIXES):
         return False
     path = (urlparse(url).path or "/").strip("/").lower()
     if not path:
@@ -381,6 +395,16 @@ _PAGE_FURNITURE_WORDS = {
     "attorneys", "overview", "events", "insights", "publications", "awards",
     "recognition", "rankings", "practice", "practices", "industries", "offices",
     "portal", "directory", "directories", "profile", "profiles", "bio", "bios",
+    # Job titles. A team page frequently labels each person with their role,
+    # and some list roles INSTEAD of names (doist.com/team yields "Data
+    # Engineer", "Motion Design", "Backend Development" and no people at all).
+    "engineer", "engineers", "developer", "developers", "designer", "designers",
+    "scientist", "scientists", "architect", "recruiter", "strategist", "writer",
+    "editor", "marketer", "marketers", "frontend", "backend", "fullstack",
+    "motion", "brand", "lifecycle", "growth", "content", "creative", "web",
+    "mobile", "cloud", "infrastructure", "reliability", "founding",
+    "customer", "customers", "experience", "android", "ios", "qa", "devops",
+    "sre", "onboarding", "enablement", "partnerships", "community",
 }
 
 # A person's name does not contain these. Digits, terminal punctuation and
