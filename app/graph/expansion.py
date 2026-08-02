@@ -1553,29 +1553,12 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
             if e.organization_id:
                 trusted_oids.add(e.organization_id)
 
-    removed = 0
     # --- people: deterministic shape filter (LLM-independent, safe) ---------
     junk_people = [
         p for p in db.execute(select(Person)).scalars()
         if p.norm_name not in protected_norms and p.id not in trusted_pids
         and (is_noise_name(p.canonical_name) or not looks_like_person_name(p.canonical_name))
     ]
-    if junk_people:
-        pids = [p.id for p in junk_people]
-        # One batched delete instead of one DELETE per node -- edges are the
-        # only thing that needs a manual cascade (RelationshipEdge has no FK
-        # cascade), and IN(...) does it in a single round trip either way.
-        # Retries on a SQLite lock timeout instead of failing the whole job
-        # outright -- a large batch (hundreds of ids, e.g. after researching
-        # a very public figure) is exactly the kind of slow write likely to
-        # still be contending with the OTHER concurrent /connect side when
-        # busy_timeout's own wait runs out (see builder._is_locked).
-        builder.delete_relationship_edges_with_retry(
-            db, (RelationshipEdge.person_a_id.in_(pids))
-                | (RelationshipEdge.person_b_id.in_(pids)))
-        for p in junk_people:
-            db.delete(p)
-        removed += len(junk_people)
 
     # --- orgs: Claude entity filter (only when configured) -----------------
     junk_orgs: list = []
@@ -1584,27 +1567,41 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
                 if o.id not in trusted_oids]
         valid_orgs = filter_entities([o.name for o in orgs], "organization")
         junk_orgs = [o for o in orgs if o.name not in valid_orgs]
-        if junk_orgs:
-            oids = [o.id for o in junk_orgs]
-            builder.delete_relationship_edges_with_retry(
-                db, RelationshipEdge.organization_id.in_(oids))
-            removed += len(junk_orgs)
 
-    # commit_with_retry, not a bare db.commit(): db.delete() is itself a
-    # pending mutation like any other -- a rollback() forced by a failed
-    # commit reverts a persistent object's pending "deleted" state right back
-    # to normal, same as it reverts a pending attribute change (confirmed
-    # empirically for attribute changes, see tests/test_commit_retry.py; the
-    # delete-flag hazard is the same mechanism). Re-issuing both delete loops
-    # on retry is what actually makes a retry redo the deletion instead of
-    # silently committing a no-op.
-    def _apply_deletes() -> None:
+    # One node at a time (not a single batched statement covering every
+    # candidate), each via builder.delete_node_with_retry -- deleting a
+    # node's edges and the node itself atomically, in one savepoint per
+    # attempt. The two /connect sides write into this same shared graph
+    # concurrently; a fresh edge referencing one of these "junk" nodes can
+    # land from the OTHER side between an edge-delete and a node-delete,
+    # which Postgres's real FK constraint correctly rejects (SQLite never
+    # enforces it at all -- see db.py -- so the same race used to silently
+    # corrupt the graph instead of raising). Per-node retry recovers from
+    # that; per-node isolation also means one contested node no longer takes
+    # an entire otherwise-legitimate batch down with it -- confirmed live: a
+    # whole /connect job died to a ForeignKeyViolation over ONE contested
+    # organization out of a larger batch, when this was still one IN(...)
+    # statement for the whole batch.
+    #
+    # commit_with_retry, not a bare db.commit(): a transient failure of the
+    # FINAL commit still needs the whole loop redone, not just retried empty
+    # (see commit_with_retry's own docstring) -- delete_node_with_retry's own
+    # per-node deletes are themselves idempotent (skip/redo cleanly) either way.
+    def _apply_deletes() -> int:
+        removed = 0
         for p in junk_people:
-            db.delete(p)
+            if builder.delete_node_with_retry(
+                    db, p,
+                    (RelationshipEdge.person_a_id == p.id)
+                    | (RelationshipEdge.person_b_id == p.id)):
+                removed += 1
         for o in junk_orgs:
-            db.delete(o)
+            if builder.delete_node_with_retry(
+                    db, o, RelationshipEdge.organization_id == o.id):
+                removed += 1
+        return removed
 
-    builder.commit_with_retry(db, _apply_deletes)
+    removed = builder.commit_with_retry(db, _apply_deletes) or 0
     if progress and removed:
         progress(f"  ✓ pruned {removed} junk nodes from the final graph")
     return removed

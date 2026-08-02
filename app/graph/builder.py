@@ -460,6 +460,66 @@ def delete_relationship_edges_with_retry(db: Session, condition, _retries: int =
     return 0  # unreachable (loop either returns or raises), keeps type checkers happy
 
 
+def delete_node_with_retry(db: Session, obj, edge_condition, _retries: int = 3) -> bool:
+    """Delete every RelationshipEdge matching `edge_condition`, then `obj`
+    itself (an already-loaded Person or Organization instance) -- atomically,
+    one SAVEPOINT per attempt.
+
+    Closes a real race: the two /connect sides run concurrently, each in its
+    own Session, writing into the same shared graph. If side A decides a
+    node is junk and deletes its edges, then side B -- independently, at
+    that exact moment -- inserts a brand-new edge referencing that same
+    node, side A's subsequent `DELETE FROM organizations/people WHERE id=...`
+    now hits a live reference and Postgres's real FK constraint rejects it.
+    Confirmed live: a whole /connect job died to a ForeignKeyViolation this
+    way, over ONE contested organization. SQLite never even enforces this
+    constraint (PRAGMA foreign_keys is never turned on here -- see db.py),
+    so the exact same race was silently corrupting the graph there instead
+    of ever raising anything.
+
+    Deleting the edges and the node in the SAME savepoint (not two separate
+    statements/commits like the old code) means a retry redoes both: if a
+    fresh edge snuck in since the first attempt, this attempt's own
+    edge-delete clears it before the node-delete runs again.
+
+    Retried a FEW times, not indefinitely -- the race is a one-shot,
+    whichever concurrent hop just referenced this node moves on to a
+    different candidate next and won't keep re-inserting the same edge. If
+    every attempt still loses the race, the node is left alone for a future
+    prune pass rather than failing the whole job over one contested node --
+    see expansion._prune_invalid_nodes, which now deletes candidates ONE AT
+    A TIME instead of one batched statement covering all of them, so a
+    single contested node can no longer take a whole legitimate batch down
+    with it.
+
+    Takes the ORM object itself, not just its id: the delete below is a
+    Core-level bulk statement (synchronize_session=False, same choice
+    delete_relationship_edges_with_retry already makes) so it never updates
+    the session's identity map on its own -- without an explicit expunge on
+    success, `session.get(Person, this_id)` would keep returning this same
+    stale, already-deleted-in-the-database object for the rest of the
+    session's life, since Session.get() checks the identity map first and
+    never even reaches the database for an id it already has loaded.
+
+    Returns whether the node was actually deleted."""
+    model = type(obj)
+    node_id = obj.id
+    for attempt in range(_retries):
+        try:
+            with db.begin_nested():
+                db.query(RelationshipEdge).filter(edge_condition).delete(
+                    synchronize_session=False)
+                deleted = db.query(model).filter(model.id == node_id).delete(
+                    synchronize_session=False)
+            if deleted:
+                db.expunge(obj)
+            return bool(deleted)
+        except IntegrityError:
+            if attempt < _retries - 1:
+                _deadlock_backoff(attempt)
+    return False
+
+
 def _new_person_or_existing(db: Session, name: str, norm: str,
                             qid: Optional[str], _retries: int = 5) -> Person:
     """_new_person, tolerant of a concurrent insert of the same norm_name
