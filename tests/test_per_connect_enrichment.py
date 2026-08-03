@@ -268,10 +268,18 @@ def test_bridge_contacts_get_the_alpha_treatment(db, monkeypatch):
 
 def test_symmetric_endpoints_still_decide_alpha_by_notability(db, monkeypatch):
     """The bridge front's unconditional flag must not leak into the endpoint
-    walk — equal depths still mean no asymmetry and no enhanced search."""
+    walk — with neither endpoint notable, neither side gets enhanced search.
+
+    Stubs notable_set rather than trusting the names: this used to pass real
+    strings through to a live Wikipedia lookup, and "Alpha" and "Beta" are both
+    genuine articles, so the endpoints came back notable and the assertion
+    below started failing for a reason that had nothing to do with the bridge
+    front. See test_alpha_gate.py for the notability behavior itself.
+    """
     from app.graph import connect as C
 
     seen = {}
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: set())
     monkeypatch.setattr(C, "expand_graph",
                         lambda wdb, name, depth, **kw: seen.setdefault(name, kw) or {})
     monkeypatch.setattr(config, "CONNECT_BRIDGE_CONTACTS", 0)

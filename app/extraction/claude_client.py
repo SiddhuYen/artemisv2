@@ -25,6 +25,7 @@ import threading
 from typing import Optional
 
 from .. import config
+from . import usage
 
 # One client for the process. Built lazily (not at import) so that merely
 # importing the app never requires a key -- the CLI, the tests, and a
@@ -252,6 +253,12 @@ def call_json(
                 if _is_auth_failure(exc):
                     _mark_unavailable()
                 return None
+
+    # Before any verdict check, deliberately. A refusal and a max_tokens
+    # truncation are both billed responses; skipping them here would make the
+    # ledger disagree with the invoice in exactly the cases -- prompts that
+    # overrun, prompts that trip a classifier -- worth noticing. See usage.py.
+    usage.record(model, getattr(resp, "usage", None))
 
     # A safety refusal is a successful HTTP response with no usable content;
     # a max_tokens stop means the JSON is cut off mid-object. Neither is a

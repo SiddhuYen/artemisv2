@@ -464,8 +464,14 @@ def focus(subject: str, text: str, window: Optional[int] = None) -> Focus:
         lo, hi = max(0, i - span), min(len(sentences) - 1, i + span)
         # `<= last_hi + 1` merges ADJACENT windows too, not just overlapping
         # ones: leaving a one-sentence hole would insert an elision marker
-        # around text we are about to include anyway.
-        if spans and lo <= spans[-1][1] + 1:
+        # around text we are about to include anyway. Bounded by
+        # SUBJECT_WINDOW_MAX_MERGED_SENTENCES so a run of frequent, close-
+        # together anchors (a repeating byline on a listing/archive page)
+        # cannot chain indefinitely and swallow unrelated text between them
+        # with no elision marker to flag the seam -- see its config comment.
+        if (spans and lo <= spans[-1][1] + 1
+                and max(spans[-1][1], hi) - spans[-1][0] + 1
+                <= config.SUBJECT_WINDOW_MAX_MERGED_SENTENCES):
             spans[-1][1] = max(spans[-1][1], hi)
         else:
             spans.append([lo, hi])

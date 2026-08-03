@@ -94,6 +94,9 @@ def test_enhanced_search_goes_to_the_full_depth_side_not_the_famous_one(db, monk
         captured[name] = kwargs.get("enhanced_professional_search")
 
     monkeypatch.setattr(C, "expand_graph", fake_expand_graph)
+    # Alpha keys off which endpoint is notable, not off the depth split, so the
+    # notability has to be stated here rather than implied by the depths.
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: {"Famous Person"})
 
     C._expand_both_concurrently(
         db=db, name_a="Obscure Person", name_b="Famous Person",
@@ -105,17 +108,26 @@ def test_enhanced_search_goes_to_the_full_depth_side_not_the_famous_one(db, monk
     assert captured["Famous Person"] is False, "the shallow famous side doesn't need it"
 
 
-def test_enhanced_search_is_off_for_both_sides_when_symmetric(db, monkeypatch):
+def test_enhanced_search_is_off_for_both_sides_when_neither_is_famous(db, monkeypatch):
+    """Renamed from ..._when_symmetric, because symmetry was never the reason.
+
+    Symmetric depth covers two opposite cases -- neither endpoint notable, and
+    BOTH notable -- and only the first should disable Alpha. Keying off the
+    depth split conflated them, so a famous<->famous pair (which is symmetric)
+    lost the targeted phases entirely. That case is now pinned in
+    test_alpha_gate.py; this one keeps the genuinely-unenhanced half.
+    """
     captured = {}
 
     def fake_expand_graph(worker_db, name, side_depth, **kwargs):
         captured[name] = kwargs.get("enhanced_professional_search")
 
     monkeypatch.setattr(C, "expand_graph", fake_expand_graph)
+    monkeypatch.setattr(C.ORCH, "notable_set", lambda names: set())
 
     C._expand_both_concurrently(
         db=db, name_a="Alpha", name_b="Beta",
-        depth_a=2, depth_b=2,  # symmetric -- no famous target identified either way
+        depth_a=2, depth_b=2,
         protected=set(), progress=None, context_a="", context_b="",
     )
 
