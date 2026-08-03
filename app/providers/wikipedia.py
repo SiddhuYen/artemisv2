@@ -52,12 +52,12 @@ class WikipediaProvider(SearchProvider):
         _LIMITER.acquire()
         resp = request_with_retry("GET", _SUMMARY + title.replace(" ", "_"),
                                   provider=self.name, headers=config.WIKIMEDIA_HEADERS)
-        text = ""
-        if resp is not None and resp.status_code == 200:
-            try:
-                text = resp.json().get("extract", "") or ""
-            except Exception:
-                text = ""
+        if resp is None or resp.status_code != 200:
+            return ""  # transient failure -- do NOT cache; see wikidata_id's note
+        try:
+            text = resp.json().get("extract", "") or ""
+        except Exception:
+            return ""  # malformed response -- do NOT cache
         cache.set(key, "summary", {"text": text}, self.cache_ttl)
         return text
 
@@ -71,16 +71,17 @@ class WikipediaProvider(SearchProvider):
         params = {"action": "query", "prop": "extracts", "explaintext": 1,
                   "titles": title, "format": "json", "redirects": 1}
         resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
+        if resp is None or resp.status_code != 200:
+            return ""  # transient failure -- do NOT cache; see wikidata_id's note
         text = ""
-        if resp is not None and resp.status_code == 200:
-            try:
-                pages = resp.json().get("query", {}).get("pages", {})
-                for page in pages.values():
-                    text = page.get("extract", "") or ""
-                    if text:
-                        break
-            except Exception:
-                text = ""
+        try:
+            pages = resp.json().get("query", {}).get("pages", {})
+            for page in pages.values():
+                text = page.get("extract", "") or ""
+                if text:
+                    break
+        except Exception:
+            return ""  # malformed response -- do NOT cache
         text = text[: config.MAX_PAGE_CHARS]
         cache.set(key, "article", {"text": text}, self.cache_ttl)
         return text
@@ -94,16 +95,17 @@ class WikipediaProvider(SearchProvider):
         params = {"action": "query", "prop": "links", "titles": title,
                   "pllimit": limit, "plnamespace": 0, "format": "json"}
         resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
+        if resp is None or resp.status_code != 200:
+            return []  # transient failure -- do NOT cache; see wikidata_id's note
         links: List[str] = []
-        if resp is not None and resp.status_code == 200:
-            try:
-                pages = resp.json().get("query", {}).get("pages", {})
-                for page in pages.values():
-                    for lk in page.get("links", []) or []:
-                        if lk.get("title"):
-                            links.append(lk["title"])
-            except Exception:
-                pass
+        try:
+            pages = resp.json().get("query", {}).get("pages", {})
+            for page in pages.values():
+                for lk in page.get("links", []) or []:
+                    if lk.get("title"):
+                        links.append(lk["title"])
+        except Exception:
+            return []  # malformed response -- do NOT cache
         cache.set(key, "links", {"links": links[:limit]}, self.cache_ttl)
         return links[:limit]
 
@@ -116,16 +118,27 @@ class WikipediaProvider(SearchProvider):
         params = {"action": "query", "prop": "pageprops", "ppprop": "wikibase_item",
                   "titles": title, "format": "json", "redirects": 1}
         resp = request_with_retry("GET", _API, provider=self.name, headers=config.WIKIMEDIA_HEADERS, params=params)
+        # A transient failure here (no response, non-200, malformed JSON) must
+        # NOT be cached the same way a confirmed "this page has no linked
+        # Wikidata item" is. Confirmed live: a single failed lookup for
+        # "Mark Zuckerberg" got cached as qid=None for the full 30-day TTL,
+        # so notable_set() silently treated one of the most famous people
+        # alive as non-notable for the rest of that window -- which
+        # _resolve_expansion_depths reads as "no clear asymmetry to exploit"
+        # and expands BOTH sides at full depth instead of capping the famous
+        # side to one hop. Returning early (without caching) on failure means
+        # the next call retries instead of replaying a stale non-answer.
+        if resp is None or resp.status_code != 200:
+            return None
         qid = None
-        if resp is not None and resp.status_code == 200:
-            try:
-                pages = resp.json().get("query", {}).get("pages", {})
-                for page in pages.values():
-                    qid = page.get("pageprops", {}).get("wikibase_item")
-                    if qid:
-                        break
-            except Exception:
-                qid = None
+        try:
+            pages = resp.json().get("query", {}).get("pages", {})
+            for page in pages.values():
+                qid = page.get("pageprops", {}).get("wikibase_item")
+                if qid:
+                    break
+        except Exception:
+            return None
         cache.set(key, "wdid", {"qid": qid}, self.cache_ttl)
         return qid
 
