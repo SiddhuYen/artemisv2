@@ -45,13 +45,11 @@ def test_shared_employer_becomes_a_coworker_clique(db):
     ))
     counts = materialize_contact_cliques(db)
 
-    # both directions, so expansion._reuse_existing_neighbors sees the tie from
-    # either endpoint (it only ever reads person_a_id == subject)
-    assert counts["coworker_edges"] == 2
-    assert _names(db, _edges(db, "coworker")) == {
-        ("Ada Lovelace", "Grace Hopper"),
-        ("Grace Hopper", "Ada Lovelace"),
-    }
+    # ONE row per pair. Both readers are undirected (connect._adjacency, and
+    # expansion._reuse_existing_neighbors matches either endpoint), so the
+    # mirrored row this used to write asserted nothing extra.
+    assert counts["coworker_edges"] == 1
+    assert _names(db, _edges(db, "coworker")) == {("Ada Lovelace", "Grace Hopper")}
     # the lone contact at the other employer gets membership but no clique
     assert counts["cliques"] == 1
     assert counts["membership_edges"] == 3
@@ -98,7 +96,7 @@ def test_employer_exactly_at_the_cap_still_cliques(db):
 
     n = config.CONTACT_CLIQUE_MAX
     assert counts["skipped_oversize"] == 0
-    assert counts["coworker_edges"] == n * (n - 1)
+    assert counts["coworker_edges"] == n * (n - 1) // 2   # one row per pair
 
 
 def test_generic_employers_never_form_a_clique(db):

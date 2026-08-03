@@ -5,9 +5,22 @@ At ~35 queries per person (9 silos x MAX_QUERIES_PER_SILO, deduped) a
 is not an option, so the run is a ranked prefix of the contact list and this
 module produces that ranking.
 
-The objective is NOT "who is most important to the operator" — it is "where
-does the next search query buy the most new reachable people". That leads to
-two rules that look surprising until you hold the objective in mind:
+There are two objectives, and which one applies depends on whether a TARGET is
+supplied (see BridgeTarget).
+
+UNTARGETED (the cold-start batch): "where does the next search query buy the
+most new reachable people". Nothing is known about who the operator will
+eventually want to reach, so the ranking maximises breadth of coverage.
+
+TARGETED (a specific /connect): "which of the operator's contacts most
+plausibly bridges to THIS person". Breadth stops being the goal the moment
+there is a destination — the best bridge to a stranger is usually a contact who
+shares their employer, school or field, not the operator's most notable
+contact. Passing a target adds those signals and exempts the target's own
+employer from the coverage decay below.
+
+The untargeted objective leads to two rules that look surprising until you hold
+it in mind:
 
   1. Seniority is a proxy for WEB FOOTPRINT, not for value. The silos in
      silos/definitions.py query for board seats, funding, appointments and
@@ -82,6 +95,71 @@ _EDGE_TYPES_THAT_PROVE_NOTHING = {"linkedin_1st", "coworker", "employee", "stude
 
 
 @dataclass
+class BridgeTarget:
+    """Who a ranking is being computed FOR — the person a walk wants to reach.
+
+    Ranking without one answers "whose 35 queries return the most", which is
+    the right question for a cold-start batch and the wrong one for a specific
+    /connect: the contact most likely to bridge to a particular stranger is
+    rarely the operator's most-notable contact, it is the one who shares that
+    stranger's employer, school or field. Supplying this re-asks the question
+    as "who most plausibly bridges to THIS person".
+
+    Every field is optional and cheap — whatever /connect already knows about
+    the far endpoint. With all of them empty the target contributes nothing and
+    scoring degrades exactly to the untargeted ranking.
+    """
+    name: str = ""
+    context: str = ""                       # the disambiguation hint, if any
+    companies: List[str] = field(default_factory=list)
+    schools: List[str] = field(default_factory=list)
+    silo_weights: Dict[str, float] = field(default_factory=dict)
+
+    def orgs(self) -> Set[str]:
+        keys = {org_norm_key(c) for c in self.companies if c}
+        if self.context:
+            keys.add(org_norm_key(self.context))
+        return {k for k in keys if k and k not in _GENERIC_EMPLOYERS}
+
+    def school_keys(self) -> Set[str]:
+        return {k for k in (org_norm_key(s) for s in self.schools if s)
+                if k and k not in _GENERIC_EMPLOYERS}
+
+
+# --- target-conditioned weights ---------------------------------------------
+# A contact at the TARGET's own employer is the single strongest bridge signal
+# available without spending a query: colleagues are the relationship the graph
+# most reliably recovers, so this outweighs every operator-side signal.
+_TARGET_SHARED_EMPLOYER = 4.0
+# Same school as the target — real, but weaker: cohorts span decades and
+# cliques.py already refuses to build coworker edges from schools for that
+# reason.
+_TARGET_SHARED_SCHOOL = 1.5
+# The contact's silos and the target's silos overlap (both academics, both in
+# government). Not a shared institution, just a shared WORLD — the weakest of
+# the three, and scaled by how much they actually overlap.
+_TARGET_SILO_AFFINITY = 1.25
+# Affinity below this still nudges the score but isn't worth CLAIMING as a
+# reason — "both have a nonzero news weight" explains nothing to an operator.
+_SILO_AFFINITY_MIN_REASON = 0.5
+
+
+def _silo_affinity(contact: Dict[str, float], target: Dict[str, float]) -> float:
+    """Cosine-ish overlap of two silo-weight vectors, 0..1.
+
+    Deliberately ignores the `company` silo: it is ~1.0 for every contact by
+    construction (see silo_weights.initial_weights), so counting it would give
+    every pair a large constant affinity and flatten the signal to noise.
+    """
+    keys = (set(contact) | set(target)) - {"company"}
+    if not keys:
+        return 0.0
+    shared = sum(min(contact.get(k, 0.0), target.get(k, 0.0)) for k in keys)
+    total = sum(max(contact.get(k, 0.0), target.get(k, 0.0)) for k in keys)
+    return (shared / total) if total > 0 else 0.0
+
+
+@dataclass
 class ScoredContact:
     """One contact's place in the plan. `skip_reason` set => never enriched."""
     local_profile_id: str
@@ -95,6 +173,11 @@ class ScoredContact:
     # Computed here rather than in a second pass because this is the one place
     # the contact's LocalProfile is already in hand. See silo_weights.py.
     silo_weights: Dict[str, float] = field(default_factory=dict)
+    # Why a target-conditioned ranking lifted this contact ("shared_employer",
+    # "shared_school", "silo_affinity"). Empty for an untargeted ranking. Kept
+    # so a /connect can explain WHICH of the operator's contacts it chose to
+    # spend queries on and why, instead of surfacing an opaque reordering.
+    bridge_reasons: List[str] = field(default_factory=list)
 
 
 def _title_score(titles: List[str]) -> float:
@@ -165,10 +248,17 @@ def _people_with_public_evidence(db: Session, contact_norms: Set[str]) -> Set[st
 
 
 def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
-                   owner_school: str = "") -> List[ScoredContact]:
+                   owner_school: str = "",
+                   target: Optional[BridgeTarget] = None) -> List[ScoredContact]:
     """Rank every imported contact. Returns ALL of them, best first, with
     ineligible ones carrying a `skip_reason` so the plan stays auditable
-    (a contact that will never be enriched should say so, not vanish)."""
+    (a contact that will never be enriched should say so, not vanish).
+
+    `target`, when given, re-asks the question as "who bridges to THIS person"
+    rather than "whose queries return the most" — see BridgeTarget. Omitting it
+    reproduces the untargeted ranking exactly, which is what the cold-start
+    batch run still wants.
+    """
     profiles = list(db.execute(select(LocalProfile)).scalars())
     if not profiles:
         return []
@@ -220,33 +310,68 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
         if profile.email:
             score += _HAS_EMAIL
 
+        weights = (initial_weights(
+            titles=profile.titles, companies=profile.companies,
+            schools=profile.schools, email=profile.email or "")
+            if config.ENRICH_SILO_WEIGHTS_ENABLED else {})
+
+        # Target conditioning, applied on top of the operator-side score rather
+        # than replacing it: a contact who shares the target's employer but has
+        # no web footprint at all still cannot be expanded into anything, so
+        # the footprint signals above have to keep mattering.
+        reasons: List[str] = []
+        if target is not None:
+            target_orgs = target.orgs()
+            if target_orgs and any(org_norm_key(c) in target_orgs for c in companies):
+                score += _TARGET_SHARED_EMPLOYER
+                reasons.append("shared_employer")
+            target_schools = target.school_keys()
+            if target_schools and any(org_norm_key(s) in target_schools for s in schools):
+                score += _TARGET_SHARED_SCHOOL
+                reasons.append("shared_school")
+            if target.silo_weights and weights:
+                affinity = _silo_affinity(weights, target.silo_weights)
+                if affinity > 0:
+                    score += _TARGET_SILO_AFFINITY * affinity
+                    if affinity >= _SILO_AFFINITY_MIN_REASON:
+                        reasons.append("silo_affinity")
+
         scored.append(ScoredContact(
             local_profile_id=profile.id, display_name=profile.canonical_name,
             norm_name=norm, context=context, score=score,
-            already_enriched=norm in processed,
-            silo_weights=(initial_weights(
-                titles=profile.titles, companies=profile.companies,
-                schools=profile.schools, email=profile.email or "")
-                if config.ENRICH_SILO_WEIGHTS_ENABLED else {})))
+            already_enriched=norm in processed, bridge_reasons=reasons,
+            silo_weights=weights))
 
-    return _apply_company_decay(scored)
+    return _apply_company_decay(scored, target=target)
 
 
-def _apply_company_decay(scored: List[ScoredContact]) -> List[ScoredContact]:
+def _apply_company_decay(scored: List[ScoredContact],
+                         target: Optional[BridgeTarget] = None) -> List[ScoredContact]:
     """Damp each additional contact at an employer already represented above it.
 
     Greedy submodular coverage: walk the list best-first and charge each
     contact for how much of its employer is already covered. Without this a
     single large employer's contacts occupy the whole budget.
+
+    The TARGET's own employer is exempt. The decay exists to stop one company
+    monopolising a budget meant to cover many organizations — but when the walk
+    is aimed at a specific person, their employer is not one org among many, it
+    is the destination. Damping it would penalise each additional colleague of
+    the target precisely when a second and third route into that building is
+    the most valuable thing the ranking can buy. Every other employer still
+    decays normally, so coverage is still spread everywhere it should be.
     """
     eligible = [c for c in scored if c.skip_reason is None]
     skipped = [c for c in scored if c.skip_reason is not None]
     # deterministic: name breaks score ties so two runs plan identically
     eligible.sort(key=lambda c: (-c.score, c.norm_name))
 
+    exempt = target.orgs() if target is not None else set()
     seen_per_org: Dict[str, int] = {}
     for contact in eligible:
         key = org_norm_key(contact.context)
+        if key in exempt:
+            continue
         n = seen_per_org.get(key, 0)
         contact.score = round(contact.score * (_COMPANY_DECAY ** n), 4)
         seen_per_org[key] = n + 1

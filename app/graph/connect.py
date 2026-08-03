@@ -24,6 +24,11 @@ from .. import config
 from ..extraction import extract, relation_classifier, spacy_extractor
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
+from ..network.cliques import materialize_contact_cliques
+from ..network.ingest import backfill_graph_edges
+from ..network.owner import get_owner_by_name
+from ..network.ranking import BridgeTarget, ScoredContact, score_contacts
+from ..network.silo_weights import initial_weights
 from ..silos import COLLEAGUE_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import mention_patterns, person_norm_key
@@ -40,6 +45,11 @@ REL_STRENGTH = {
 }
 _STATUS_PENALTY = {"strong": 0.0, "candidate": 0.3, "raw": 1.0,
                    "weak": 2.0, "rejected": 12.0}
+
+# How many of the target's own employers to aim contact selection at. Past the
+# best two or three the affiliations are stale or weakly evidenced, and each
+# one widens the set of contacts that count as "shares an employer".
+_TARGET_ORG_LIMIT = 3
 
 # 'rejected' means an edge was reviewed (by a human or the LLM classifier) and
 # marked false — that is the only status that means "not a real connection"
@@ -390,6 +400,226 @@ def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int
     return (shallow, full) if a_notable else (full, shallow)
 
 
+def _origin_is_operator(db: Session, origin_name: str, owner_name: str) -> bool:
+    """Whether the origin is the person who actually uploaded the contacts.
+
+    Two ways to know, both by normalized name so "siddhu yen" matches
+    "Siddhu Yen": the caller said so (`owner_name`, which /connect forwards
+    from the browser's stored operator identity), or a saved OwnerProfile
+    matches the origin. Either is sufficient.
+
+    Returns False when neither is available. That is the safe direction: the
+    only thing gated on this claims the origin personally knows every imported
+    contact, and asserting that about the wrong person writes first-degree ties
+    into a shared graph that /connect will then route through as if real.
+    """
+    origin_key = person_norm_key(origin_name or "")
+    if not origin_key:
+        return False
+    if person_norm_key(owner_name or "") == origin_key:
+        return True
+    profile = get_owner_by_name(db, origin_name)
+    return profile is not None
+
+
+def _ensure_origin_enriched(db: Session, origin_name: str, progress=None,
+                            owner_name: str = "") -> dict:
+    """Step 1 of every /connect: materialize the ORIGIN's own network.
+
+    The origin's contacts are the operator's ground truth — the nodes most
+    routes actually run through — but they only reach the shared graph via two
+    derivations that, until now, ran solely as a side effect of importing a
+    CSV: the linkedin_1st bridge (ingest.backfill_graph_edges) and wave 0's org
+    membership and coworker cliques (cliques.materialize_contact_cliques). A
+    connect whose operator imported contacts on another device, or before
+    either derivation existed, was pathfinding over a graph that simply did not
+    contain their own first degree.
+
+    Making it step 1 of the walk rather than a step of import is safe because
+    BOTH derivations are free and idempotent: no searches, no page fetches, no
+    Claude, and stable synthetic source URLs so re-running converges instead of
+    duplicating. The cost of doing it on every connect is a couple of local
+    queries; the cost of NOT doing it is a "no path" answer produced by an
+    absence in the graph rather than an absence in the world.
+
+    Deliberately NOT the paid part of enrichment. Expanding the origin's
+    contacts costs ~35 queries each and is target-dependent, so it belongs to
+    the ranked bridge front (_bridge_contacts), which knows who is being
+    reached. This establishes the foundation that front then walks out from.
+    """
+    counts = {"linkedin_1st_edges": 0, "wave0": {}}
+    if not config.CONNECT_ENRICH_ORIGIN or not (origin_name or "").strip():
+        return counts
+    # Best-effort throughout: an origin with no imported contacts is the normal
+    # case for a famous-to-famous connect, and a failure here must never cost
+    # the caller a route the rest of the walk could still have found.
+    try:
+        # The contact bridge asserts that every imported contact is a FIRST-
+        # DEGREE connection of the origin. That is only true when the origin is
+        # the operator who uploaded them, and /connect's person_a is whichever
+        # node happened to be tagged 📍 -- so it runs ONLY on an identity match.
+        # For anyone else the contacts are simply not their connections, and
+        # writing them anyway would invent ties the pathfinder then walks.
+        if config.CONNECT_ORIGIN_BACKFILL and _origin_is_operator(
+                db, origin_name, owner_name):
+            counts["linkedin_1st_edges"] = backfill_graph_edges(db, origin_name)
+        elif progress:
+            progress(f"[origin] {origin_name} is not the contact owner — "
+                     "skipping first-degree bridge")
+        # Wave 0 is origin-independent -- it derives org membership and
+        # coworker cliques from the contacts' own employer columns, asserting
+        # nothing about the origin at all -- so it always runs. `owner` only
+        # adds the origin to their own employer cluster when a saved profile
+        # happens to match by name; None simply omits that.
+        counts["wave0"] = materialize_contact_cliques(
+            db, owner=get_owner_by_name(db, origin_name))
+    except Exception as exc:
+        if progress:
+            progress(f"[origin] enrichment skipped ({exc.__class__.__name__})")
+        # Guarded: this is cleanup on a path that is already degrading
+        # gracefully, and letting a failed rollback raise here would replace a
+        # skipped-but-harmless step with a dead /connect -- masking the real
+        # error with a secondary one from the recovery.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return counts
+    if progress and (counts["linkedin_1st_edges"] or counts["wave0"].get("cliques")):
+        wave0 = counts["wave0"]
+        progress(f"[origin] {counts['linkedin_1st_edges']} first-degree edges, "
+                 f"{wave0.get('membership_edges', 0)} org memberships, "
+                 f"{wave0.get('coworker_edges', 0)} coworker ties")
+    return counts
+
+
+def _bridge_target(db: Session, name: str, context: str) -> BridgeTarget:
+    """Everything already known about the far endpoint, for ranking bridges.
+
+    Strictly free: the employers come from org edges the graph already holds
+    (or, on a cold graph, from nothing at all), and the silo weights are
+    derived from that same text. No provider call, no Claude — this runs before
+    the expansion it is meant to aim, so it cannot afford to cost anything.
+    """
+    companies: List[str] = []
+    person = db.execute(
+        select(Person).where(Person.norm_name == person_norm_key(name))
+    ).scalar_one_or_none()
+    if person is not None:
+        aff = _org_affiliations(db).get(person.id, {})
+        # Best-evidenced first: a weakly-evidenced employer is a weak thing to
+        # aim a whole contact-selection pass at.
+        companies = [n for n, _c in
+                     sorted(aff.values(), key=lambda v: -v[1])][:_TARGET_ORG_LIMIT]
+    if context and context not in companies:
+        companies.insert(0, context)
+    return BridgeTarget(
+        name=name, context=context, companies=companies,
+        silo_weights=initial_weights(companies=companies) if companies else {},
+    )
+
+
+def _bridge_contacts(db: Session, target: BridgeTarget,
+                     limit: int, progress=None) -> List[ScoredContact]:
+    """The operator's own contacts most likely to bridge to `target`.
+
+    This is the third expansion front, and the reason /connect no longer
+    depends on a frozen batch: L1 is a set of known-real people whose ties the
+    graph mostly hasn't explored, and WHICH of them is worth exploring is a
+    function of who we're trying to reach — a question the cold-start batch
+    ranking could not have asked, because at plan time no target existed.
+
+    Contacts with no org context are skipped by score_contacts itself (a bare
+    name can't be searched without attaching a namesake's network), so they
+    never reach the front.
+    """
+    if limit <= 0:
+        return []
+    scored = score_contacts(db, target=target)
+    picked = [c for c in scored if c.skip_reason is None][:limit]
+    if picked and progress:
+        for contact in picked:
+            why = ", ".join(contact.bridge_reasons) or "best available"
+            progress(f"  · {contact.display_name} ({contact.context}) — {why}")
+    return picked
+
+
+def _expand_bridge_contacts(WorkerSession, contacts: List[ScoredContact],
+                            protected: set, progress, target_name: str,
+                            target_context: str,
+                            cancel_checker: Optional[Callable[[], None]] = None,
+                            should_stop: Optional[Callable[[Session], bool]] = None) -> dict:
+    """Expand each selected bridge contact, one hop, best-ranked first.
+
+    SEQUENTIAL by design, unlike the two endpoint expansions that run beside
+    it. Each expand_graph already runs its own per-node worker pool, so fanning
+    the contacts out too would multiply the outbound request rate by the
+    contact count — and the whole front is speculative. Running them in rank
+    order and re-checking `should_stop` between each means the moment either
+    endpoint expansion (or a bridge contact itself) completes the route, the
+    remaining contacts are simply never paid for.
+
+    Depth 1: the goal is to surface each contact's OWN ties so they can meet
+    the target's expanding neighborhood, not to walk outward from them. Their
+    hop-2 is the target side's job.
+
+    Alpha runs on every contact (see the kwargs below) -- these are the nodes
+    it was designed for, and unlike the endpoint walk there is no notability
+    asymmetry to infer the flag from.
+    """
+    stats: Dict[str, dict] = {}
+    for contact in contacts:
+        worker_db = WorkerSession()
+        try:
+            if cancel_checker:
+                cancel_checker()
+            if should_stop and should_stop(worker_db):
+                break
+            if progress:
+                progress(f"\n[bridge] {contact.display_name} "
+                         f"({contact.context or 'no context'})…")
+            kwargs = {
+                "progress": progress,
+                "seed_context": contact.context,
+                "protected_norms": protected,
+                "prefer_reachable": False,
+                "silo_weights": contact.silo_weights or None,
+                "target_person_name": target_name,
+                "target_context": target_context,
+                # Alpha (steps 4/5/6 and phase 4c) applies here for the same
+                # reason it applies to the non-famous side of an asymmetric
+                # walk: a bridge contact IS a normal person being searched
+                # with a specific destination in mind, which is exactly the
+                # case node profiling, search-strategy angle selection and the
+                # targeted re-query were built for. On the endpoint walk the
+                # flag is inferred from a notability asymmetry; here there is
+                # nothing to infer -- the contact is never the famous side.
+                #
+                # Note target_person_name above is load-bearing for this, not
+                # decorative: phase 4e needs BOTH a target and this flag, so
+                # passing the target alone (as this front originally did) left
+                # the strategy step permanently inert.
+                "enhanced_professional_search": True,
+            }
+            if cancel_checker:
+                kwargs["cancel_checker"] = cancel_checker
+            if should_stop:
+                kwargs["should_stop"] = should_stop
+            stats[contact.norm_name] = expand_graph(
+                worker_db, contact.display_name, 1, **kwargs)
+        except Exception as exc:
+            # One speculative contact failing is not a reason to fail the
+            # /connect — unlike an ENDPOINT expansion, whose failure means
+            # there is no graph to path over. Contrast _expand_both_concurrently,
+            # which deliberately propagates.
+            if progress:
+                progress(f"  ⚠ bridge contact {contact.display_name} failed "
+                         f"({exc.__class__.__name__}) — skipped")
+        finally:
+            worker_db.close()
+    return stats
+
+
 def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                               depth_a: int, depth_b: int,
                               protected: set, progress, context_a: str, context_b: str,
@@ -475,13 +705,40 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
         finally:
             worker_db.close()
 
-    with ThreadPoolExecutor(max_workers=2) as ex:
+    # The third front: the operator's own contacts, ranked toward B. Selected
+    # here (not by the caller) because it must happen INSIDE the "no route yet"
+    # branch -- a /connect answered from the existing graph should stay free.
+    #
+    # The whole front is speculative, so nothing about it may be load-bearing:
+    # if SELECTING contacts fails (as expanding one already can), fall back to
+    # the plain two-endpoint walk rather than failing a /connect that would
+    # otherwise have succeeded.
+    try:
+        bridges = _bridge_contacts(db, _bridge_target(db, name_b, context_b),
+                                   config.CONNECT_BRIDGE_CONTACTS, progress=progress)
+    except Exception as exc:
+        if progress:
+            progress(f"[bridge] contact ranking unavailable "
+                     f"({exc.__class__.__name__}) — endpoints only")
+        bridges = []
+    if bridges and progress:
+        progress(f"[bridge] {len(bridges)} contact(s) ranked toward {name_b}")
+    # Endpoints AND bridge contacts must survive every side's noise prune: a
+    # bridge contact deleted by side A's prune takes its freshly-discovered
+    # ties with it, which is the whole point of having expanded it.
+    protected = set(protected) | {c.norm_name for c in bridges}
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {
             "a": ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a, professional_only_a,
                           name_b, context_b),
             "b": ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b, professional_only_b,
                           name_a, context_a),
         }
+        if bridges:
+            futures["bridge"] = ex.submit(
+                _expand_bridge_contacts, WorkerSession, bridges, protected,
+                progress, name_b, context_b, cancel_checker, should_stop)
         # Each side's own visited_by_hop (see expand_graph) -- so a caller
         # can show what was explored on BOTH sides even when the two never
         # actually met (see connect_people's "explored" field).
@@ -816,18 +1073,31 @@ def _build_explored(expand_stats: Optional[dict], name_a: str, name_b: str) -> O
     """
     if not expand_stats:
         return None
-    return {
+    explored = {
         "a": {"seed": name_a, "by_hop": (expand_stats.get("a") or {}).get("visited_by_hop", {}),
               "boundary": (expand_stats.get("a") or {}).get("boundary", [])},
         "b": {"seed": name_b, "by_hop": (expand_stats.get("b") or {}).get("visited_by_hop", {}),
               "boundary": (expand_stats.get("b") or {}).get("boundary", [])},
     }
+    # The bridge front is keyed by contact rather than by hop -- each contact is
+    # its own depth-1 expansion, so there is no single seed to report. Present
+    # only when contacts were actually expanded, so a caller can tell "no
+    # contacts were worth it" apart from "the feature is off".
+    bridge = expand_stats.get("bridge")
+    if bridge:
+        explored["bridge"] = {
+            norm: {"by_hop": (stats or {}).get("visited_by_hop", {}),
+                   "boundary": (stats or {}).get("boundary", [])}
+            for norm, stats in bridge.items()
+        }
+    return explored
 
 
 def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                    progress=None, context_a: str = "", context_b: str = "",
                    on_step: Optional[Callable[[dict], None]] = None,
-                   cancel_checker: Optional[Callable[[], None]] = None) -> dict:
+                   cancel_checker: Optional[Callable[[], None]] = None,
+                   owner_name: str = "") -> dict:
     """Build both graphs, then return the best path between the two people.
 
     context_a / context_b disambiguate a non-notable person (e.g. "Indiana
@@ -835,6 +1105,19 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
 
     `on_step`, like expand_graph's own, reports structured per-side hop/node
     progress (each event tagged {"side": "a"|"b"}) instead of free-text lines.
+
+    THREE fronts expand, not two: both endpoints, plus the operator's own
+    contacts ranked toward name_b (see _bridge_contacts). That third front is
+    what makes enrichment specific to this connect — the contacts worth
+    searching depend on who is being reached, and a batch planned before any
+    target existed could only ever have guessed. It runs solely on the
+    no-route-yet path, so an answer available from the existing graph, or from
+    the cheap direct-pair check, still costs nothing.
+
+    `owner_name` is who the CALLER is, which is not necessarily name_a: step 1
+    bridges the imported contacts to the origin as first-degree ties only when
+    the two are the same person (see _origin_is_operator). Empty means "not
+    stated", which suppresses that bridge rather than guessing.
     """
     # ADDITIVE: build both people INTO the shared global map (never reset), then
     # find a path over the WHOLE accumulated graph — a route may run through
@@ -874,18 +1157,55 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         if progress:
             progress("[known] already connected in the existing graph — skipping search entirely")
     else:
-        # _direct_pair_search already tries every returned result (not just
-        # the first few) whenever what it's found so far is only weak, so by
-        # the time it returns there's nothing more to gain from searching
-        # further here -- `confident` is purely informational (for logging),
-        # not a signal to do additional work.
-        found, confident = _direct_pair_search(db, name_a, name_b, context_a, context_b,
-                                              cancel_checker=cancel_checker)
-        if found:
+        # STEP 1: the origin's own initial enrichment, before a cent is spent.
+        # Free and idempotent (see _ensure_origin_enriched), so it runs on
+        # every connect rather than depending on whether an import or a batch
+        # run ever happened to derive it.
+        if progress:
+            progress("\n[origin] initial enrichment for "
+                     f"{name_a} — bridging their own network into the graph…")
+        _ensure_origin_enriched(db, name_a, progress=progress,
+                                owner_name=owner_name)
+
+        # Re-check, because step 1 may have just built the answer: a contact of
+        # the origin IS the target, or sits one coworker tie away from them.
+        # The check costs nothing and short-circuits the entire paid walk, so
+        # not repeating it here would mean paying for a route we already have.
+        if cancel_checker:
+            cancel_checker()
+        if _route_exists(db, name_a, name_b, max_hops):
             route_found.set()
             if progress:
-                progress(f"[direct] found a {'confident' if confident else 'weak'} "
-                         "direct mention — skipping full neighborhood expansion")
+                progress("[origin] connected through the origin's own network — "
+                         "no search needed")
+
+    if not route_found.is_set():
+        # _direct_pair_search already tries every returned result (not just
+        # the first few) whenever what it's found so far is only weak, so by
+        # the time it returns there's nothing more to gain from SEARCHING
+        # further here. Whether it found something worth STOPPING for is a
+        # different question, and `confident` is what answers it.
+        found, confident = _direct_pair_search(db, name_a, name_b, context_a, context_b,
+                                              cancel_checker=cancel_checker)
+        if found and confident:
+            route_found.set()
+            if progress:
+                progress("[direct] found a confident direct mention — "
+                         "skipping full neighborhood expansion")
+        elif found:
+            # A WEAK mention is not a route. `confident` used to be logged and
+            # discarded, so any co-mention at all cancelled both endpoint
+            # expansions -- and a weak edge is frequently one _untraversable
+            # rejects (untyped, no cooccurrence, no keyword) or one the
+            # pathfinder simply cannot chain through. The walk then reported
+            # "no path" in a couple of seconds having never expanded the far
+            # endpoint at all: no silos, no Alpha, no bridge contacts.
+            #
+            # Keep the edge -- it is real evidence and may yet shorten a route
+            # -- but carry on with the expansion it was standing in for.
+            if progress:
+                progress("[direct] found only a weak direct mention — keeping it "
+                         "as evidence and continuing to full expansion")
 
     # Populated only when a fresh expansion actually ran (not when a route
     # was already known, or found via the cheap direct-pair check) -- see

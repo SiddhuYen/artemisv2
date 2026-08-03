@@ -17,7 +17,7 @@ import random
 import time
 from typing import Callable, Optional, TypeVar
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError, PendingRollbackError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
@@ -32,6 +32,7 @@ from ..models import (
     Person,
     RelationshipEdge,
     Source,
+    SYMMETRIC_RELATIONSHIP_TYPES,
 )
 from ..providers.base import SearchResult
 from ..utils.names import (
@@ -838,7 +839,8 @@ def add_edge_from_extraction(
     counterpart,  # Person | Organization
     _retries: int = 5,
 ) -> Optional[RelationshipEdge]:
-    """Persist one ExtractedEdge, applying the (a,b,type,source_url) dedup rule."""
+    """Persist one ExtractedEdge, applying the (a,b,type,source_url) dedup rule
+    -- orientation-insensitively for symmetric person<->person types."""
     is_person = edge.other_kind == "person"
     other_id = counterpart.id if is_person else None
     org_id = counterpart.id if not is_person else None
@@ -846,15 +848,28 @@ def add_edge_from_extraction(
     conf = edge.confidence_adjusted
 
     # Dedup rule: same (person_a, counterpart, relationship_type, source_url).
+    #
+    # For a SYMMETRIC person<->person type the reversed orientation is the same
+    # connection, so it has to match here too -- otherwise re-enriching B after
+    # A mirrors every one of A's edges into a second row asserting the identical
+    # fact backwards. `.first()`, not `.scalar_one_or_none()`: graphs written
+    # before symmetric dedup existed can already hold both orientations, and
+    # this must converge on those rather than raise MultipleResultsFound on
+    # every subsequent write. See models.SYMMETRIC_RELATIONSHIP_TYPES.
+    match = and_(RelationshipEdge.person_a_id == subject.id,
+                 RelationshipEdge.person_b_id == other_id)
+    if is_person and edge.relationship_type in SYMMETRIC_RELATIONSHIP_TYPES:
+        match = or_(match,
+                    and_(RelationshipEdge.person_a_id == other_id,
+                         RelationshipEdge.person_b_id == subject.id))
     existing = db.execute(
         select(RelationshipEdge).where(
-            RelationshipEdge.person_a_id == subject.id,
-            RelationshipEdge.person_b_id == other_id,
+            match,
             RelationshipEdge.organization_id == org_id,
             RelationshipEdge.relationship_type == edge.relationship_type,
             RelationshipEdge.source_id == source_id,
-        )
-    ).scalar_one_or_none()
+        ).order_by(RelationshipEdge.created_at)
+    ).scalars().first()
     if existing:
         if conf > (existing.confidence_raw or 0):
             existing.confidence_raw = conf

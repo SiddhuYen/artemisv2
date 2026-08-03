@@ -245,21 +245,23 @@ def materialize_contact_cliques(db: Session, progress=None, owner=None) -> dict:
                              f"membership only, no coworker edges")
                 continue
 
-            # Both directions, like build_yc_cache._materialize_clique.
-            # connect._adjacency is undirected and would not need the reverse
-            # row, but expansion._reuse_existing_neighbors only ever reads
-            # person_a_id == subject — so a one-directional clique would make
-            # half the members look like they have no known neighbours.
-            for subject in people:
-                for other in people:
-                    if subject.id == other.id:
-                        continue
+            # One row per PAIR, not per ordered pair. Both readers of a
+            # coworker edge are undirected — connect._adjacency always was, and
+            # expansion._reuse_existing_neighbors matches person_a_id OR
+            # person_b_id — so the mirrored row this used to write asserted
+            # nothing the first one didn't. Writing it anyway doubled every
+            # clique and, now that coworker is symmetric for dedup purposes
+            # (models.SYMMETRIC_RELATIONSHIP_TYPES), would collapse into the
+            # same row regardless.
+            for i, subject in enumerate(people):
+                for other in people[i + 1:]:
                     _coworker_edge(db, subject, other, display, source, source_url)
                     counts["coworker_edges"] += 1
             counts["cliques"] += 1
             if progress:
+                pairs = len(people) * (len(people) - 1) // 2
                 progress(f"  ✓ {display}: {len(people)} contacts → "
-                         f"{len(people) * (len(people) - 1)} coworker edges")
+                         f"{pairs} coworker edges")
 
     db.commit()
     if progress:

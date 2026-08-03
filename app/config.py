@@ -327,6 +327,33 @@ MAX_TOTAL_NODES = int(os.environ.get("ARTEMIS_MAX_TOTAL_NODES", "50000"))
 CONNECT_NODE_CAP_PER_SIDE = int(os.environ.get("ARTEMIS_CONNECT_NODE_CAP_PER_SIDE", "1000"))
 # how many DIVERSE routes connect() returns (each avoids prior routes' bridges)
 CONNECT_MAX_PATHS = int(os.environ.get("ARTEMIS_CONNECT_MAX_PATHS", "3"))
+# How many of the operator's own contacts /connect enriches as bridge
+# candidates, ranked toward THIS target (see graph/connect._bridge_contacts).
+# This is what makes enrichment per-connect rather than one global batch: the
+# contacts worth spending queries on depend on who is being reached, which the
+# cold-start run could not know. They expand sequentially in rank order and
+# stop the moment a route is found, so this is a ceiling, not a fixed cost.
+# 0 disables the front entirely and restores the pure two-endpoint walk.
+CONNECT_BRIDGE_CONTACTS = int(
+    os.environ.get("ARTEMIS_CONNECT_BRIDGE_CONTACTS", "5"))
+# Step 1 of every /connect: derive the ORIGIN's own first degree into the shared
+# graph (linkedin_1st bridge + wave-0 org membership and coworker cliques)
+# before any paid search. Both derivations are free and idempotent, so this runs
+# unconditionally rather than depending on whether an import or a batch run
+# happened to do it -- see graph/connect._ensure_origin_enriched. 0 skips it.
+CONNECT_ENRICH_ORIGIN = _env_bool("ARTEMIS_CONNECT_ENRICH_ORIGIN", "1")
+# Master switch for step 1's first-degree bridge (every imported contact ->
+# the origin, as linkedin_1st). Split from the flag above because the two
+# halves make different claims: wave 0 derives ties BETWEEN contacts from their
+# own employer columns and asserts nothing about the origin, whereas this
+# asserts the origin personally knows all of them.
+#
+# NOTE this is only a ceiling, not the actual gate. The bridge additionally
+# requires the origin to BE the contact owner -- see
+# graph/connect._origin_is_operator -- because those contacts are nobody
+# else's connections. Turning this off disables the bridge outright; leaving it
+# on still bridges nothing when /connect is traced from someone who isn't you.
+CONNECT_ORIGIN_BACKFILL = _env_bool("ARTEMIS_CONNECT_ORIGIN_BACKFILL", "1")
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))
@@ -776,6 +803,20 @@ ENRICH_SILO_WEIGHTS_ENABLED = _env_bool("ARTEMIS_ENRICH_SILO_WEIGHTS_ENABLED", "
 # everyone, i.e. the unweighted behavior.
 ENRICH_SILO_MIN_WEIGHT = float(
     os.environ.get("ARTEMIS_ENRICH_SILO_MIN_WEIGHT", "0.25"))
+
+# --- coverage-based reuse -----------------------------------------------------
+# `Person.processed` says a node was expanded but not what it was ASKED. With
+# reuse gated on the flag alone, the first walk to touch a node froze it: every
+# later walk replayed its stored neighbors, so a /connect toward a target the
+# original walk knew nothing about could never ask its own questions. With this
+# on, a node records its per-silo query budget (Person.metadata["silo_coverage"])
+# and a later walk re-searches ONLY the silos that budget never covered — which
+# is what lets enrichment be initialized per connect instead of once, globally.
+#
+# Set to 0 to restore the old freeze-on-first-expansion behavior. Nodes carrying
+# no coverage record (expanded before this shipped) are read as fully covered
+# either way, so turning it on does not invalidate a warm graph.
+EXPAND_COVERAGE_REUSE = _env_bool("ARTEMIS_EXPAND_COVERAGE_REUSE", "1")
 
 # tier thresholds: < WEAK_MAX = weak, [WEAK_MAX, STRONG_MIN] = candidate,
 # > STRONG_MIN = strong (eligible for expansion priority)

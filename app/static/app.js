@@ -2556,8 +2556,15 @@ async function execBoardRoute() {
   _bvrLastExplored = null;
   try {
     const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
+      // owner_name says who is ASKING, which is not the same as person_a. The
+      // backend bridges your imported contacts to person_a as first-degree
+      // ties only when the two match -- tag a stranger as the origin and those
+      // contacts are simply not their connections. Sent on the same condition
+      // as the import paths above: 'OPERATOR' is the placeholder, not a name.
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
-                             context_a: contextA, context_b: contextB }) })).json();
+                             context_a: contextA, context_b: contextB,
+                             ...(operatorName() !== 'OPERATOR'
+                                 ? { owner_name: operatorName() } : {}) }) })).json();
     if (started.detail) throw new Error(started.detail);
     if (runSeq !== _bvrRunSeq) return;
     _bvrActiveJobId = started.job_id;

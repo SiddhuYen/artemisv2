@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import OwnerProfile
+from ..utils.names import person_norm_key
 
 _FIELDS = ("name", "company", "title", "school", "linkedin_url", "email")
 
@@ -31,6 +32,28 @@ def get_owner(db: Session, owner_id: str) -> Optional[OwnerProfile]:
     return db.execute(
         select(OwnerProfile).where(OwnerProfile.owner_id == owner_id)
     ).scalar_one_or_none()
+
+
+def get_owner_by_name(db: Session, name: str) -> Optional[OwnerProfile]:
+    """Resolve a profile from a NAME rather than an owner_id.
+
+    /connect knows who it is starting from but not which X-Graph-Id that
+    person belongs to, and its origin is exactly the operator whose employer
+    and school wave 0 wants (see graph/connect._ensure_origin_enriched).
+    Matched on the normalized name so "siddhu yen" finds "Siddhu Yen".
+
+    `.first()`, not scalar_one_or_none: owner_id is the identity key, so two
+    browsers configured with the same person's name are two legitimate rows
+    rather than a corruption to raise on. They agree on the only fields this
+    caller reads (company/school), so either will do.
+    """
+    key = person_norm_key(name or "")
+    if not key:
+        return None
+    for profile in db.execute(select(OwnerProfile)).scalars():
+        if person_norm_key(profile.name or "") == key:
+            return profile
+    return None
 
 
 def upsert_owner(db: Session, owner_id: str, **fields) -> OwnerProfile:
