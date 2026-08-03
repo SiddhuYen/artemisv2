@@ -22,6 +22,7 @@ from app import config
 from app.extraction.schemas import EdgeSignals, ExtractedEdge
 from app.graph import builder
 from app.models import Person, RelationshipEdge
+from app.models import RelationshipEdge
 from app.network.ingest import ingest_rows
 from app.network.ranking import BridgeTarget, score_contacts
 from app.network.silo_weights import merge_coverage, uncovered_budget
@@ -350,10 +351,13 @@ def test_the_origin_gets_its_first_degree_without_any_import_side_effect(db):
     their own first degree."""
     from app.graph.connect import _ensure_origin_enriched
 
+    # owner_name on import is what records WHOSE contacts these are; the
+    # bridge only asserts first-degree ties for rows that say so (see
+    # network.ingest.backfill_graph_edges).
     ingest_rows(db, _rows(
         {"name": "Aa Colleague", "company": "Origin Corp"},
         {"name": "Bb Colleague", "company": "Origin Corp"},
-    ))
+    ), owner_name="Oo Operator")
     counts = _ensure_origin_enriched(db, "Oo Operator", owner_name="Oo Operator")
     db.commit()
 
@@ -412,7 +416,9 @@ def test_origin_enrichment_can_answer_the_connect_for_free(db):
     ingest_rows(db, _rows(
         {"name": "Aa Colleague", "company": "Origin Corp"},
         {"name": "Zz Target", "company": "Origin Corp"},
-    ))
+    ), owner_name="Oo Operator")
+    db.query(RelationshipEdge).delete()   # isolate step 1's own bridging
+    db.commit()
     assert not _route_exists(db, "Oo Operator", "Zz Target", 5)
 
     _ensure_origin_enriched(db, "Oo Operator", owner_name="Oo Operator")
@@ -427,7 +433,8 @@ def test_origin_enrichment_uses_the_operators_saved_profile(db):
     from app.graph.connect import _ensure_origin_enriched
     from app.network.owner import upsert_owner
 
-    ingest_rows(db, _rows({"name": "Aa Colleague", "company": "Origin Corp"}))
+    ingest_rows(db, _rows({"name": "Aa Colleague", "company": "Origin Corp"}),
+                owner_name="Oo Operator")
     upsert_owner(db, "gid1", name="Oo Operator", company="Origin Corp")
     counts = _ensure_origin_enriched(db, "Oo Operator")
     db.commit()
@@ -484,7 +491,8 @@ def test_a_saved_owner_profile_also_proves_the_origin_is_the_operator(db):
     from app.graph.connect import _ensure_origin_enriched
     from app.network.owner import upsert_owner
 
-    ingest_rows(db, _rows({"name": "Aa Colleague", "company": "Origin Corp"}))
+    ingest_rows(db, _rows({"name": "Aa Colleague", "company": "Origin Corp"}),
+                owner_name="Oo Operator")
     upsert_owner(db, "gid1", name="Oo Operator", company="Origin Corp")
     counts = _ensure_origin_enriched(db, "Oo Operator")
     db.commit()
@@ -534,7 +542,8 @@ def test_step_1_short_circuits_the_entire_paid_walk(db, monkeypatch):
                         lambda *a, **k: calls.append("expand") or {})
 
     ingest_rows(db, _rows({"name": "Aa Colleague", "company": "Origin Corp"},
-                          {"name": "Zz Target", "company": "Origin Corp"}))
+                          {"name": "Zz Target", "company": "Origin Corp"}),
+                owner_name="Oo Operator")
     db.commit()
 
     result = C.connect_people(db, "Oo Operator", "Zz Target", depth=2,

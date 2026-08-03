@@ -243,3 +243,34 @@ def test_the_target_s_own_employer_is_still_exempt_from_decay(db):
         if c.skip_reason is None]
     scores = [c.score for c in ranked[:3]]
     assert len(set(scores)) == 1, "no decay may apply inside the target's employer"
+
+
+# ---------------------------------------------------------------------------
+# owner scoping -- local_profiles holds several people's exports
+# ---------------------------------------------------------------------------
+def test_ranking_uses_only_the_operators_own_contacts(db):
+    """One shared table, several uploads. Without scoping, an operator's bridge
+    front is chosen from everyone's contacts -- which is how a ranking meant
+    for one person's network spent a whole session surfacing another's."""
+    mine = _contact(db, "My Exec", "Acme", ["Chief Executive Officer"])
+    mine.owner_norm = person_norm_key("Me Operator")
+    theirs = _contact(db, "Their Exec", "Beta Corp", ["Chief Executive Officer"])
+    theirs.owner_norm = person_norm_key("Someone Else")
+    db.commit()
+
+    names = {c.display_name for c in score_contacts(db, owner_name="Me Operator")
+             if c.skip_reason is None}
+    assert names == {"My Exec"}
+
+
+def test_ranking_falls_back_to_everything_when_the_owner_has_claimed_nothing(db):
+    """Rows imported before owner_norm existed carry no owner. Planning zero
+    contacts for them would read as "you have no network" rather than "these
+    rows predate scoping" -- and ranking asserts nothing about the world, so
+    degrading here is safe in a way that bridging them is not."""
+    _contact(db, "Legacy Exec", "Acme", ["Chief Executive Officer"])
+    db.commit()
+
+    names = {c.display_name for c in score_contacts(db, owner_name="Me Operator")
+             if c.skip_reason is None}
+    assert names == {"Legacy Exec"}

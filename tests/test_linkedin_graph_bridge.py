@@ -54,10 +54,40 @@ def test_ingest_without_owner_name_creates_no_graph_edge(db):
     assert _linkedin_edges(db) == []
 
 
-def test_backfill_bridges_profiles_imported_without_owner_name(db):
+def test_backfill_does_not_bridge_rows_that_record_no_owner(db):
+    """An unowned row cannot support a first-degree claim, so by default it is
+    skipped rather than shared. local_profiles holds several people's exports;
+    reading all of it wrote 1,188 edges from one operator to another's contacts
+    -- and linkedin_1st is traversable, so _route_exists then answers through
+    people the operator has never met."""
     stats = ingest_rows(db, _rows({"name": "Fred Volinsky", "company": "Epiphany Biosciences"}))
     assert stats["graph_edges"] == 0
+
+    assert backfill_graph_edges(db, "Abhimanyu Sharma") == 0
     assert _linkedin_edges(db) == []
+
+
+def test_claim_unowned_bridges_them_and_records_the_claim(db):
+    """The pre-owner_norm migration path, kept but made explicit: claiming
+    stamps the rows, so the assertion is auditable and the NEXT operator to run
+    this cannot make it again."""
+    from app.models import LocalProfile
+    ingest_rows(db, _rows({"name": "Fred Volinsky", "company": "Epiphany Biosciences"}))
+
+    count = backfill_graph_edges(db, "Abhimanyu Sharma", claim_unowned=True)
+
+    assert count == 1
+    claimed = db.query(LocalProfile).filter(
+        LocalProfile.canonical_name == "Fred Volinsky").one()
+    assert claimed.owner_norm == person_norm_key("Abhimanyu Sharma")
+    # a second operator now gets nothing -- the row is spoken for
+    assert backfill_graph_edges(db, "Someone Else", claim_unowned=True) == 0
+
+
+def test_backfill_bridges_the_owner_s_own_rows(db):
+    stats = ingest_rows(db, _rows({"name": "Fred Volinsky", "company": "Epiphany Biosciences"}),
+                        owner_name="Abhimanyu Sharma")
+    assert stats["graph_edges"] == 1
 
     count = backfill_graph_edges(db, "Abhimanyu Sharma")
 
@@ -69,7 +99,7 @@ def test_backfill_bridges_profiles_imported_without_owner_name(db):
 
 
 def test_backfill_is_idempotent(db):
-    ingest_rows(db, _rows({"name": "Fred Volinsky"}))
+    ingest_rows(db, _rows({"name": "Fred Volinsky"}), owner_name="Abhimanyu Sharma")
     backfill_graph_edges(db, "Abhimanyu Sharma")
     backfill_graph_edges(db, "Abhimanyu Sharma")
     assert len(_linkedin_edges(db)) == 1

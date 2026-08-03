@@ -140,7 +140,8 @@ def _strip_preamble(text: str) -> str:
     return text
 
 
-def backfill_graph_edges(db: Session, owner_name: str) -> int:
+def backfill_graph_edges(db: Session, owner_name: str,
+                         claim_unowned: bool = False) -> int:
     """Retroactively bridge already-imported LocalProfiles into the shared
     public graph as linkedin_1st edges, for profiles imported before
     `owner_name` was passed on upload (or before that parameter existed at
@@ -150,7 +151,28 @@ def backfill_graph_edges(db: Session, owner_name: str) -> int:
     Idempotent: _linkedin_edge's stable synthetic source_url plus
     add_edge_from_extraction's upsert-by-(a, b, type, source) dedup mean
     re-running this for the same owner is always safe -- it converges rather
-    than piling up duplicate edges."""
+    than piling up duplicate edges.
+
+    Scoped to THIS owner's rows, and strictly: a row with no owner_norm is
+    excluded rather than shared. Several people's exports live in one
+    local_profiles table, and before this the loop selected all of them --
+    confirmed live, where running it wrote 1,188 first-degree edges from one
+    operator to another operator's contacts. Those edges are traversable, so
+    connect._route_exists will short-circuit a real search and answer through
+    people the operator has never met.
+
+    Excluding unowned rows is the same safe direction connect._origin_is_operator
+    already takes ("returns False when neither is available"): asserting a
+    first-degree tie is a claim about the world, and a row that does not say
+    whose contact it is cannot support that claim.
+
+    `claim_unowned` restores the original migration affordance -- rows imported
+    before owner_name existed -- but as an explicit opt-in, and it CLAIMS them
+    (stamps owner_norm) rather than merely reading them, so the assertion is
+    recorded and the next operator to run this cannot make it again. It is
+    off by default because the default is what runs unattended on every
+    /connect, where a silent land-grab of someone else's export is exactly the
+    failure this scoping exists to prevent."""
     from ..graph import builder
 
     owner_name = (owner_name or "").strip()
@@ -159,6 +181,7 @@ def backfill_graph_edges(db: Session, owner_name: str) -> int:
     owner = builder.get_or_create_person(db, owner_name)
     if owner is None:
         return 0
+    owner_key = person_norm_key(owner_name)
 
     # Whole loop wrapped as one retryable unit, not just the final commit:
     # this function's own docstring already establishes it's safe to redo
@@ -166,11 +189,17 @@ def backfill_graph_edges(db: Session, owner_name: str) -> int:
     # retry needs -- see builder.commit_with_retry.
     def _apply() -> int:
         count = 0
-        for profile in db.execute(select(LocalProfile)).scalars():
+        where = LocalProfile.owner_norm == owner_key
+        if claim_unowned:
+            where = where | (LocalProfile.owner_norm.is_(None))
+        for profile in db.execute(select(LocalProfile).where(where)).scalars():
             contact = builder.get_or_create_person(db, profile.canonical_name)
             if contact is None:
                 continue
             _linkedin_edge(db, owner, contact, profile.linkedin_url or "")
+            if profile.owner_norm is None:
+                profile.owner_norm = owner_key   # claimed, so only once
+                db.add(profile)
             count += 1
         return count
 
@@ -213,6 +242,7 @@ def ingest_rows(db: Session, rows: Iterable[Dict[str, str]],
     # than just re-committing an empty transaction.
     def _apply() -> dict:
         owner = builder.get_or_create_person(db, owner_name) if owner_name.strip() else None
+        owner_key = person_norm_key(owner_name) if owner_name.strip() else ""
         created = updated = edges = skipped = graph_edges = 0
         by_key: Dict[str, LocalProfile] = {}
 
@@ -244,6 +274,14 @@ def ingest_rows(db: Session, rows: Iterable[Dict[str, str]],
                 # default: directly connected to "You"
                 db.add(LocalEdge(from_profile_id=None, to_profile_id=existing.id))
                 edges += 1
+            # Stamp ownership on created AND updated rows: an import is a
+            # claim about whose contacts these are, and a row someone else
+            # uploaded first is still this operator's contact too. Last writer
+            # wins, which is the honest reading of "I also know this person"
+            # (the alternative -- first-upload-owns -- would let one operator
+            # permanently exclude everyone else's identical contact).
+            if owner_key:
+                existing.owner_norm = owner_key
             by_key[key] = existing
 
             if owner is not None:

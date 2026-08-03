@@ -322,11 +322,27 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
     reproduces the untargeted ranking exactly, which is what the cold-start
     batch run still wants.
     """
+    # Rank only THIS operator's contacts when we know which are theirs.
+    # local_profiles is shared, so without this an operator's bridge front is
+    # chosen from everyone's uploads -- which is how a ranking meant for one
+    # person's network spent this session surfacing another person's contacts.
+    #
+    # Falls back to the whole table when the owner has claimed nothing, rather
+    # than returning an empty plan: rows imported before owner_norm existed
+    # carry no owner, and silently planning zero contacts would look like "you
+    # have no network" instead of "these rows predate scoping". Unlike
+    # backfill_graph_edges, ranking asserts nothing about the world -- it only
+    # decides where to spend searches -- so degrading to the old behaviour here
+    # is safe in a way that bridging them would not be.
+    owner_norm = person_norm_key(owner_name) if owner_name else ""
     profiles = list(db.execute(select(LocalProfile)).scalars())
+    if owner_norm:
+        mine = [p for p in profiles if p.owner_norm == owner_norm]
+        if mine:
+            profiles = mine
     if not profiles:
         return []
 
-    owner_norm = person_norm_key(owner_name) if owner_name else ""
     owner_co = org_norm_key(owner_company) if owner_company else ""
     owner_sch = org_norm_key(owner_school) if owner_school else ""
 

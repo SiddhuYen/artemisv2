@@ -837,11 +837,19 @@ async def network_profiles_backfill(req: dict, db: Session = Depends(get_db)) ->
     LocalProfile, for accounts that uploaded before `owner_name` was wired
     up on the frontend (or before this bridge existed at all) -- otherwise
     those contacts sit in LocalProfile forever, invisible to /connect and
-    /discover. Idempotent; safe to call repeatedly (e.g. once per session)."""
+    /discover. Idempotent; safe to call repeatedly (e.g. once per session).
+
+    Bridges only contacts this owner uploaded. `claim_unowned` also takes rows
+    that record no owner at all -- the pre-owner_norm imports -- and stamps
+    them, so the claim happens once and is auditable. Send it only when the
+    caller really did upload those rows: several people's exports share this
+    table, and claiming another operator's contacts asserts first-degree ties
+    that /connect will then route through."""
     owner_name = (req.get("owner_name") or "").strip()
     if not owner_name:
         raise HTTPException(status_code=400, detail="owner_name required")
-    count = await run_in_threadpool(backfill_graph_edges, db, owner_name)
+    count = await run_in_threadpool(
+        backfill_graph_edges, db, owner_name, bool(req.get("claim_unowned")))
     return {"graph_edges": count}
 
 
