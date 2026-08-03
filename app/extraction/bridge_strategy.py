@@ -108,6 +108,17 @@ def _candidate_line(i: int, contact) -> str:
     lets the model reason about which of several real overlaps matters most
     for this particular target, instead of re-deriving overlap from names."""
     line = f"{i}. {contact.display_name} -- {contact.context or 'unknown employer'}"
+    # getattr, not attribute access: `candidates` is typed as a plain list and
+    # these two are populated only once a contact has been through
+    # contact_profiler, so a shortlist built before the backfill ran (or by a
+    # caller passing its own objects) must degrade to the shorter line rather
+    # than raise inside a front that is meant to fail soft.
+    domain = getattr(contact, "domain", None)
+    footprint = getattr(contact, "footprint", None)
+    if domain:
+        line += f" -- domain: {domain}"
+    if footprint:
+        line += f" -- searchable: {footprint}"
     if contact.bridge_reasons:
         line += f" -- overlaps with target: {', '.join(contact.bridge_reasons)}"
     return line

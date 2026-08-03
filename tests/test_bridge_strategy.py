@@ -100,20 +100,33 @@ def test_inactive_or_failed_calls_return_none(monkeypatch):
 # _bridge_contacts -- reordering only, never truncation
 # ---------------------------------------------------------------------------
 def test_reasoning_promotes_its_picks_to_the_front(db, contacts, monkeypatch):
+    """Picks are INDEXES into the shortlist the ranker built, so resolve them
+    through that same shortlist rather than assuming a fixed order -- ties are
+    no longer alphabetical (see ranking._tiebreak)."""
+    from app.network.ranking import BridgeTarget, score_contacts
+    target = _target()
+    shortlist = [c.display_name for c in score_contacts(db, target=target)
+                 if c.skip_reason is None]
+
     _fake_payload(monkeypatch, {"angle": "industry_adjacency", "picks": [3, 1],
                                 "why": "consulting shop in the target's ecosystem"})
-    out = C._bridge_contacts(db, _target(), limit=5)
-    assert [c.display_name for c in out][:2] == ["Contact 3", "Contact 1"]
+    out = C._bridge_contacts(db, target, limit=5)
+    assert [c.display_name for c in out][:2] == [shortlist[3], shortlist[1]]
 
 
 def test_the_rest_stay_queued_behind_the_picks(db, contacts, monkeypatch):
     """The fallback that makes a wrong pick survivable: expansion runs the
     queue sequentially and stops on a route, so unpromoted contacts cost
     nothing unless the picks fail to close it."""
+    from app.network.ranking import score_contacts
+    target = _target()
+    shortlist = [c.display_name for c in score_contacts(db, target=target)
+                 if c.skip_reason is None]
+
     _fake_payload(monkeypatch, {"angle": "generic", "picks": [4], "why": "w"})
-    out = C._bridge_contacts(db, _target(), limit=5)
+    out = C._bridge_contacts(db, target, limit=5)
     assert len(out) == 5
-    assert out[0].display_name == "Contact 4"
+    assert out[0].display_name == shortlist[4]
     # every other eligible contact is still present, none dropped
     assert {c.display_name for c in out} == {f"Contact {i}" for i in range(5)}
 

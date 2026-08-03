@@ -41,6 +41,7 @@ that needs the network) is applied separately by the caller via
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
@@ -178,6 +179,12 @@ class ScoredContact:
     # so a /connect can explain WHICH of the operator's contacts it chose to
     # spend queries on and why, instead of surfacing an opaque reordering.
     bridge_reasons: List[str] = field(default_factory=list)
+    # From LocalProfile.reach_profile (extraction/contact_profiler): what a
+    # search for this name would return, and which world the row sits in.
+    # Carried here so the hop-0 prompt can state it as a fact rather than
+    # re-deriving it from the employer string.
+    footprint: Optional[str] = None
+    domain: Optional[str] = None
 
 
 # An intern is not senior whatever else the title says. Without this, "CSP
@@ -350,7 +357,17 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
                 norm_name=norm, context="", score=0.0, skip_reason=reason))
             continue
 
-        score = _BASE + _title_score(profile.titles or [])
+        # A measured footprint REPLACES the title proxy rather than adding to
+        # it. _SENIORITY_TIERS exists only because "seniority is a proxy for
+        # web footprint" (rule 1 above); once the footprint itself has been
+        # judged, keeping the proxy would double-count the same signal and let
+        # a title regex keep overriding the measurement it stands in for.
+        reach = profile.reach_profile if isinstance(profile.reach_profile, dict) else None
+        footprint = (reach or {}).get("footprint")
+        if footprint in config.CONTACT_FOOTPRINT_SCORES:
+            score = _BASE + config.CONTACT_FOOTPRINT_SCORES[footprint]
+        else:
+            score = _BASE + _title_score(profile.titles or [])
         if norm in with_evidence:
             score += _HAS_PUBLIC_EDGES
         if owner_co and any(org_norm_key(c) == owner_co for c in companies):
@@ -392,9 +409,30 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
             local_profile_id=profile.id, display_name=profile.canonical_name,
             norm_name=norm, context=context, score=score,
             already_enriched=norm in processed, bridge_reasons=reasons,
-            silo_weights=weights))
+            silo_weights=weights, footprint=footprint,
+            domain=(reach or {}).get("domain")))
 
     return _apply_company_decay(scored, target=target)
+
+
+def _tiebreak(contact: ScoredContact, target: Optional[BridgeTarget]) -> str:
+    """Stable, unbiased ordering WITHIN a score tie.
+
+    Breaking ties by name reads as harmless and is not. On a real 1,187-contact
+    export 175 contacts tied on one score, so the 15-contact shortlist handed to
+    hop-0 reasoning was simply the alphabetical HEAD of that band -- 12 of the
+    15 began with "A" -- and being alphabetical it was the same 12 for every
+    target, so ~160 equally-ranked contacts could never be considered for
+    anyone, ever. A tie means the ranking has no information to separate these
+    people; ordering them by an accident of spelling turns that absence of
+    information into a permanent, systematic exclusion.
+
+    Seeded with the target so different targets sample the tied band
+    differently, while the same target twice still plans identically -- which
+    is the determinism the name sort was there to provide.
+    """
+    seed = f"{contact.norm_name}|{target.name if target is not None else ''}"
+    return hashlib.sha1(seed.encode()).hexdigest()
 
 
 def _apply_company_decay(scored: List[ScoredContact],
@@ -415,8 +453,8 @@ def _apply_company_decay(scored: List[ScoredContact],
     """
     eligible = [c for c in scored if c.skip_reason is None]
     skipped = [c for c in scored if c.skip_reason is not None]
-    # deterministic: name breaks score ties so two runs plan identically
-    eligible.sort(key=lambda c: (-c.score, c.norm_name))
+    # deterministic, but NOT alphabetical -- see _tiebreak
+    eligible.sort(key=lambda c: (-c.score, _tiebreak(c, target)))
 
     exempt = target.orgs() if target is not None else set()
     seen_per_org: Dict[str, int] = {}
@@ -428,7 +466,7 @@ def _apply_company_decay(scored: List[ScoredContact],
         contact.score = round(contact.score * (_COMPANY_DECAY ** n), 4)
         seen_per_org[key] = n + 1
 
-    eligible.sort(key=lambda c: (-c.score, c.norm_name))
+    eligible.sort(key=lambda c: (-c.score, _tiebreak(c, target)))
     skipped.sort(key=lambda c: c.norm_name)
     return eligible + skipped
 

@@ -624,6 +624,20 @@ NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CH
 # fully deterministic and inspectable query surface. "generic" intentionally
 # maps to no extra queries: the existing broad silo search already runs
 # regardless, this only ever ADDS a couple of targeted queries on top.
+# Per-contact "would a search for this name return anything" judgment, made
+# once from the uploaded row and stored on the profile (see
+# extraction/contact_profiler.py). Target-independent, so it is computed at
+# import/backfill time and reused by every future /connect rather than being
+# re-derived per connect like the hop-0 strategy below.
+CONTACT_PROFILE_ENABLED = _env_bool("ARTEMIS_CONTACT_PROFILE", "1")
+CONTACT_PROFILE_MODEL = os.environ.get("ARTEMIS_CONTACT_PROFILE_MODEL", CLAUDE_BATCH_MODEL)
+CONTACT_PROFILE_BATCH = int(os.environ.get("ARTEMIS_CONTACT_PROFILE_BATCH", "25"))
+# Score contribution per footprint tier. "individual" is what 35 queries are
+# actually buying; "none" is negative because spending them on a student-club
+# row is worse than neutral -- it displaces a contact who would have returned
+# something, and reliably drags in a namesake's network.
+CONTACT_FOOTPRINT_SCORES = {"individual": 3.0, "org_only": 0.5, "none": -1.5}
+
 # Hop-0 counterpart to STRATEGY below (see extraction/bridge_strategy.py):
 # reasons about WHICH of the operator's contacts to walk first, before any
 # expansion has happened, from the origin's and target's contexts.

@@ -171,6 +171,9 @@ class LocalProfile(Base):
     notes = Column(Text, nullable=True)
     raw_row = Column(JSON, default=dict)
     connected_on = Column(String, nullable=True)  # from the CSV's "Connected On" column, if present
+    # {footprint, domain, why} from extraction/contact_profiler -- a judgment
+    # about THIS ROW, made once and reused by every /connect that ranks it.
+    reach_profile = Column(JSON, nullable=True)
     created_at = Column(String, default=lambda: _now().isoformat())
 
 
