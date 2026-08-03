@@ -14,6 +14,7 @@ stage, which judges whether a whole route is real.
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Optional
 
 from .. import config
@@ -83,19 +84,78 @@ _SCHEMA = {
 }
 
 
+# Bump on ANY change to _PROMPT_TEMPLATE or _SCHEMA. A verdict cached under an
+# older prompt is indistinguishable from a current one and would be replayed for
+# the whole TTL -- the same trap config.NODE_PROFILE_VERSION exists for, solved
+# the same way relation_classifier's own "v2" key segment solves it.
+_CACHE_VERSION = "v1"
+
+
+def _verdict_key(subject: str, body: str, model: str) -> str:
+    from ..providers import cache
+
+    h = hashlib.sha1(
+        "{}||{}||{}".format(model, subject, body).encode("utf-8")
+    ).hexdigest()[:24]
+    return cache.make_key("claudeextract", _CACHE_VERSION, h)
+
+
+def _extract_verdict(subject_person: str, body: str) -> Optional[dict]:
+    """The model's raw verdict for one (subject, page) pair. Cached; None on failure.
+
+    Split out from the edge-building below because the prompt depends ONLY on
+    the subject and the page text: `silo`, `evidence` and `source_url` never
+    reach the model (see _PROMPT_TEMPLATE), they only shape the edges built
+    from a verdict afterwards.
+
+    That distinction is what makes caching here safe AND worth doing.
+    expansion._process_person's phase 4 iterates (query, result, silo) tuples,
+    not unique pages -- page FETCHES are deduped through a set, extractions are
+    not -- so one URL returned by five of the ~35 silo queries used to be five
+    full-page requests carrying a byte-identical prompt and getting back a
+    byte-identical answer, which _dedup_and_cap then collapsed anyway by
+    (counterpart, type, source_url). Every caller still runs its own
+    post-processing against the verdict; only the request is shared.
+
+    The model is part of the key: CLAUDE_EXTRACT_MODEL is a knob (a cheaper
+    model is the obvious lever once this stage is the budget), and verdicts
+    from the previous one must not be served after it changes.
+    """
+    # Imported inside the function, not at module scope, because
+    # extraction/__init__ imports THIS module at package load while
+    # app.providers pulls in the whole provider stack (bs4, httpx, the
+    # orchestrator). Keeping it local means importing the extraction layer
+    # still costs nothing it didn't already -- same reason extract() takes
+    # `from .. import config` locally.
+    from ..providers import cache
+
+    key = _verdict_key(subject_person, body, config.CLAUDE_EXTRACT_MODEL)
+    hit = cache.get(key, track=False)
+    if hit is not None:
+        return hit
+    verdict = call_json(
+        _PROMPT_TEMPLATE.format(subject=subject_person, text=body),
+        schema=_SCHEMA,
+        model=config.CLAUDE_EXTRACT_MODEL,
+        max_tokens=8192,
+    )
+    # Never cache a failure. call_json returns None for a timeout, a rate limit
+    # past the SDK's retries, a refusal or a truncated response, and the caller
+    # treats that as "fall back to spaCy for this page". Persisting a
+    # non-verdict would pin the page to the deterministic extractor for the
+    # whole TTL on one bad response -- the same rule entity_filter and
+    # relation_classifier apply to their own missing verdicts.
+    if verdict is not None:
+        cache.set(key, "claudeextract", verdict, config.CACHE_TTL_PAGE)
+    return verdict
+
+
 def claude_extract(
     subject_person: str, text: str, silo, evidence: str = "", source_url: str = ""
 ) -> Optional[ExtractionOutput]:
     if not text:
         return ExtractionOutput(extractor="claude")
-    payload = call_json(
-        _PROMPT_TEMPLATE.format(
-            subject=subject_person, text=text[: config.MAX_PAGE_CHARS]
-        ),
-        schema=_SCHEMA,
-        model=config.CLAUDE_EXTRACT_MODEL,
-        max_tokens=8192,
-    )
+    payload = _extract_verdict(subject_person, text[: config.MAX_PAGE_CHARS])
     if payload is None:
         return None
 

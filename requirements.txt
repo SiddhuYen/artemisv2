@@ -3,7 +3,12 @@ uvicorn[standard]>=0.27
 SQLAlchemy>=2.0
 psycopg2-binary>=2.9  # Postgres driver — required for any deployment (see DEPLOY.md)
 httpx>=0.27
-beautifulsoup4>=4.12
+# 4.13, not 4.12: utils/htmltext imports ParserRejectedMarkup from the
+# bs4.exceptions module, which only exists from 4.13 (it lived under
+# bs4.builder before). A resolver honouring the old >=4.12 could legally pick
+# 4.12.3, where that import raises ModuleNotFoundError at startup — the whole
+# app, not just the HTML path, since app.providers imports it transitively.
+beautifulsoup4>=4.13
 pydantic>=2.6
 python-multipart
 anthropic>=0.69
