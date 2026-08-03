@@ -357,6 +357,28 @@ CONNECT_ENRICH_ORIGIN = _env_bool("ARTEMIS_CONNECT_ENRICH_ORIGIN", "1")
 # else's connections. Turning this off disables the bridge outright; leaving it
 # on still bridges nothing when /connect is traced from someone who isn't you.
 CONNECT_ORIGIN_BACKFILL = _env_bool("ARTEMIS_CONNECT_ORIGIN_BACKFILL", "1")
+# Harvest the OTHER people named on the pages the direct-pair search already
+# fetched, instead of reading each page for a single A-B fact and discarding
+# everyone else on it.
+#
+# The pair query ('"Sanjay Ghemawat" "Larry Page"') returns pages about the
+# world both endpoints sit in, so the people on them are disproportionately the
+# ones who bridge -- and the page is already downloaded and already saved as a
+# Source. The keyword path was extracting them and dropping them one line
+# later; the Claude path only ever looked at windows naming both endpoints, so
+# it never saw them at all. Either way the observed failure was a pair three
+# hops apart returning "no connection" while the intermediary sat in HTML we
+# had paid for.
+#
+# NOT free, and that is why it has a switch: per-source extraction runs once
+# per endpoint per page, so this is ~2x pages Claude calls added to what the
+# docstring calls the cheap first pass. Costed on /status.
+CONNECT_HARVEST_PAIR_PAGES = _env_bool("ARTEMIS_CONNECT_HARVEST_PAIR_PAGES", "1")
+# Ceiling on pages harvested per direct-pair search, applied to the highest-
+# ranked results. Bounds the added spend when a query returns a long tail whose
+# relevance is already falling off.
+CONNECT_HARVEST_MAX_PAGES = int(
+    os.environ.get("ARTEMIS_CONNECT_HARVEST_MAX_PAGES", "6"))
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))

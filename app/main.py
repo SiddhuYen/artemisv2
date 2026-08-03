@@ -39,6 +39,7 @@ from . import auth, config
 from .buildqueue import BUILDS, QueueFull
 from .db import SessionLocal, get_boards_db, get_db, init_boards_db, init_db, safe_graph_id
 from .extraction import claude_available
+from .extraction import usage as claude_usage
 from .graph.expansion import expand_graph
 from .models import (
     Board,
@@ -383,6 +384,57 @@ def _start_build_job(request: Request, kind: str, worker, args: tuple) -> dict:
     return {"job_id": job_id}
 
 
+class _UsageWindow:
+    """What one build spent on Claude, measured as a before/after difference.
+
+    Open it AFTER the build slot is acquired: a job that sat in the queue for
+    five minutes did not spend anything while waiting, but every other build
+    running in that window did, and counting from enqueue would charge this job
+    for all of it.
+
+    Token accounting is process-wide (see extraction/usage), so a concurrent
+    build still lands inside this window. Rather than pretend otherwise, the
+    number of other builds seen running is sampled at both edges and reported
+    alongside: 0 means nothing else could have contributed and the figure is
+    exact. It is a floor on contamination, not a proof of it -- a build that
+    starts and finishes entirely between the two samples goes unseen.
+    """
+
+    def __init__(self) -> None:
+        self.mark = claude_usage.checkpoint()
+        self.others = self._others()
+        self._closed = None
+
+    @staticmethod
+    def _others() -> int:
+        try:
+            return max(0, int(BUILDS.stats().get("running", 1)) - 1)
+        except Exception:  # noqa: BLE001 -- never fail a build over bookkeeping
+            return 0
+
+    def close(self) -> dict:
+        """Idempotent: the done-path wants this in the result AND on the job."""
+        if self._closed is None:
+            self._closed = claude_usage.since(
+                self.mark, max(self.others, self._others()))
+        return self._closed
+
+
+def _set_job_usage(job_id: str, window: "_UsageWindow") -> None:
+    """Attach the spend to the job however it ended.
+
+    Written straight into the record rather than through _update_job, whose
+    guard drops any status-less update once a job is cancelling -- and a
+    cancelled build is exactly the one whose cost the operator most wants to
+    see, since it spent the money and returned nothing.
+    """
+    delta = window.close()   # outside the lock: close() takes BUILDS' own
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is not None:
+            job["claude_usage"] = delta
+
+
 def _hop_fraction(hop: int, done: int, total: int, max_depth: int) -> float:
     """0..1 progress within a single-sided expand_graph run."""
     within_hop = (done / total) if total else 0.0
@@ -517,6 +569,10 @@ def status() -> dict:
         "auth": auth.status(),
         "builds": BUILDS.stats(),
         "database": _database_status(),
+        # The other half of the spend. Serper's counter above measures searches;
+        # this measures the Claude calls, which on an extraction-enabled build
+        # are the larger line item -- one whole-page call per source.
+        "claude_usage": claude_usage.status(),
     }
     out.update(_extraction_status())
     return out
@@ -551,10 +607,12 @@ def _run_target_search_job(job_id: str, ticket, target_name: str, max_depth: int
                             f"{evt.get('done', 0)}/{evt.get('total', 1)} nodes")
 
     db = None
+    window = None
     try:
         db = SessionLocal()
         _await_build_slot(job_id, ticket, check_cancel)
         check_cancel()
+        window = _UsageWindow()
         # ADDITIVE: accumulate the searched person into the shared global map
         # (no reset), then return only that person's neighborhood.
         stats = expand_graph(db, target_name, max_depth, on_step=on_step,
@@ -571,6 +629,8 @@ def _run_target_search_job(job_id: str, ticket, target_name: str, max_depth: int
         _update_job(job_id, status="error", error=str(exc))
     finally:
         BUILDS.release(ticket)
+        if window is not None:
+            _set_job_usage(job_id, window)
         if db is not None:
             db.close()
 
@@ -680,16 +740,21 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
         _append_job_log(job_id, line)
 
     db = None
+    window = None
     try:
         db = SessionLocal()
         _await_build_slot(job_id, ticket, check_cancel)
         check_cancel()
+        window = _UsageWindow()
         result = connect_people(db, a, b, depth, context_a=context_a,
                                 context_b=context_b, on_step=on_step,
                                 progress=progress, cancel_checker=check_cancel,
                                 owner_name=owner_name)
         check_cancel()
         result["graph_id"] = "global"
+        # In the result too, not just on the job: the route is what gets kept
+        # and compared, and "this path cost $0.14" is part of what it is.
+        result["claude_usage"] = window.close()
         _update_job(job_id, status="done", pct=100, message="done", result=result)
     except JobCancelled:
         _update_job(job_id, status="cancelled", message="cancelled",
@@ -702,6 +767,8 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
         # ticket would sit in the queue forever holding a slot nobody uses.
         # release() handles both states and is safe to call twice.
         BUILDS.release(ticket)
+        if window is not None:
+            _set_job_usage(job_id, window)
         if db is not None:
             db.close()
 
@@ -745,16 +812,19 @@ def _run_discover_job(job_id: str, ticket, name: str, depth: int) -> None:
                             f"{evt.get('done', 0)}/{evt.get('total', 1)} nodes")
 
     db = None
+    window = None
     try:
         db = SessionLocal()
         _await_build_slot(job_id, ticket, check_cancel)
         check_cancel()
+        window = _UsageWindow()
         expand_graph(db, name, depth, on_step=on_step,
                      cancel_checker=check_cancel)
         check_cancel()
         result = discover_person(db, name, depth)
         check_cancel()
         result["graph_id"] = "global"
+        result["claude_usage"] = window.close()
         _update_job(job_id, status="done", pct=100, message="done", result=result)
     except JobCancelled:
         _update_job(job_id, status="cancelled", message="cancelled",
@@ -763,6 +833,8 @@ def _run_discover_job(job_id: str, ticket, name: str, depth: int) -> None:
         _update_job(job_id, status="error", error=str(exc))
     finally:
         BUILDS.release(ticket)  # see _run_connect_job: covers the queued case too
+        if window is not None:
+            _set_job_usage(job_id, window)
         if db is not None:
             db.close()
 
