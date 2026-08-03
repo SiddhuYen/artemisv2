@@ -25,7 +25,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from .. import config
 from ..extraction import (bridge_hypothesis, bridge_strategy, extract,
                           relation_classifier, spacy_extractor)
-from ..extraction.schemas import EdgeSignals, ExtractedEdge
+from ..extraction.entity_filter import is_filtering_active
+from ..extraction.entity_filter import validate as filter_entities
+from ..extraction.schemas import EdgeSignals, ExtractedEdge, ExtractionOutput
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..network.cliques import materialize_contact_cliques
 from ..network.ingest import backfill_graph_edges
@@ -112,6 +114,37 @@ def _untraversable(status: str, relationship_type: str, signals: Optional[dict])
 
 def _path_worthy(e: RelationshipEdge) -> bool:
     return not _untraversable(e.status, e.relationship_type, e.signals)
+
+
+def _org_shaped_person_ids(db: Session) -> set:
+    """Person rows that are really organizations, by name collision with `organizations`.
+
+    An org that got minted into `people` is walkable as a human intermediary,
+    and no evidence check can catch it: "Justin Hotard -> Hewlett Packard
+    Enterprise" IS a true, well-sourced relationship, so hop verification
+    confirms it (observed: verified_status='genuine', reason "worked at
+    Hewlett Packard Enterprise in a leadership role"). The claim is right; the
+    TYPE is wrong. A person-to-employer affiliation is being walked as though
+    the employer were a person who knows people.
+
+    Deliberately a collision test, not a name-shape test. utils.names'
+    looks_like_org_name only matches legal suffixes and returns False for
+    "Hewlett Packard Enterprise", "Goldman Sachs" and "Aruba Networks" -- it
+    would catch almost none of these. A row existing in BOTH tables is the
+    only signal available that does not require re-deciding what a company
+    name looks like.
+
+    Used to block PASS-THROUGH only, never to hide a node. The collision says
+    the two tables disagree, not which one is wrong: "Arnold Schwarzenegger"
+    and "Steve Nash" are also in this set, as real people with a junk org row
+    of the same name. Excluding them as intermediates costs a route that ran
+    through them; deleting them would lose the person.
+    """
+    return {
+        pid for (pid,) in db.execute(
+            select(Person.id).where(Person.norm_name.in_(select(Organization.norm_name)))
+        ).all()
+    }
 
 
 def _adjacency(db: Session):
@@ -230,11 +263,17 @@ def _best_path(adj, start: str, target: str, max_hops: int, excluded=None,
 
 
 def _diverse_paths(adj, start: str, target: str, max_hops: int, k: int,
-                   person_by_id=None, degree=None):
+                   person_by_id=None, degree=None, excluded_intermediates=None):
     """Up to k routes; each avoids all bridge (intermediate) nodes used by the
-    earlier ones, so they're genuinely different."""
+    earlier ones, so they're genuinely different.
+
+    `excluded_intermediates` seeds that same exclusion set before the first
+    route -- nodes that may be an endpoint but must never be routed THROUGH
+    (see _org_shaped_person_ids). _best_path already exempts the target from
+    exclusion, so seeding here blocks pass-through without hiding anyone.
+    """
     paths = []
-    excluded = set()
+    excluded = set(excluded_intermediates or ())
     for _ in range(k):
         hops = _best_path(adj, start, target, max_hops, excluded, person_by_id, degree)
         if hops is None:
@@ -328,6 +367,14 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
     if a_id == b_id:
         return True
 
+    # The same pass-through rule the scoring pass applies, for the same reason
+    # #53's second gate exists: a cheap check that says "connected" where the
+    # pathfinder then says "no path" produces the worst pair of outcomes at
+    # once -- the expensive walk is skipped BECAUSE a route is believed found,
+    # and then nothing is returned. An org-shaped node may still be an
+    # endpoint, so this only stops the walk expanding THROUGH one.
+    org_shaped = _org_shaped_person_ids(db) - {a_id, b_id}
+
     frontier = {a_id}
     visited = {a_id}
     for _ in range(max_hops):
@@ -353,7 +400,7 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
                     continue
                 if far_id == b_id:
                     return True
-                if far_id not in visited:
+                if far_id not in visited and far_id not in org_shaped:
                     next_frontier.add(far_id)
         visited |= next_frontier
         frontier = next_frontier
@@ -950,6 +997,11 @@ def _fetch_result_text(res) -> str:
         return res.snippet
 
 
+# Stands in for a failed extraction so the harvest's name-collection pass
+# can read .edges unconditionally.
+_EMPTY_EXTRACTION = ExtractionOutput(extractor="none")
+
+
 class _PairPage(NamedTuple):
     """One fetched result, kept whole so every consumer reads the same bytes."""
     source: Source
@@ -1257,6 +1309,18 @@ def _harvest_pair_page_entities(db: Session, name_a: str, name_b: str,
         return 0
     endpoint_norms = {person_norm_key(name_a), person_norm_key(name_b)}
     written = 0
+    # Same gate expansion applies to ITS counterparts (expansion._process_person:
+    # "dropped X -- not a real person"). This path did not have it, and it is the
+    # one that mints a Person per extracted name: without it the harvest is a
+    # fast way to fill `people` with companies, which then get walked as human
+    # intermediaries (see _org_shaped_person_ids). Batched and cached, so the
+    # marginal cost is one classification per never-before-seen name.
+    proposed = {edge.person_b
+                for idx in range(min(len(pages), max(0, config.CONNECT_HARVEST_MAX_PAGES)))
+                for subject in (name_a, name_b)
+                for edge in ((extractions.get(idx, subject) or _EMPTY_EXTRACTION).edges)
+                if edge.other_kind == "person"}
+    real_people = filter_entities(sorted(proposed), "person") if proposed else set()
     # Highest-ranked results only: relevance falls off down the list, and every
     # page here costs one per-source extraction call PER endpoint.
     for idx, page in enumerate(pages[:max(0, config.CONNECT_HARVEST_MAX_PAGES)]):
@@ -1276,6 +1340,9 @@ def _harvest_pair_page_entities(db: Session, name_a: str, name_b: str,
                     continue
                 if person_norm_key(edge.person_b) in endpoint_norms:
                     continue      # the A-B edge belongs to the caller
+                if (is_filtering_active() and not edge.signals.trusted
+                        and edge.person_b not in real_people):
+                    continue      # a company, a section heading, a job title
                 try:
                     counterpart = builder.get_or_create_person(db, edge.person_b)
                     if counterpart is None:
@@ -1633,7 +1700,8 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         if cancel_checker:
             cancel_checker()
         found = _diverse_paths(adjacency, a.id, b.id, max_hops,
-                               config.CONNECT_MAX_PATHS, by_id, deg)
+                               config.CONNECT_MAX_PATHS, by_id, deg,
+                               excluded_intermediates=_org_shaped_person_ids(db))
         if cancel_checker:
             cancel_checker()
         candidate_count = len(found)
