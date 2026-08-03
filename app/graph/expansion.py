@@ -862,6 +862,40 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
         progress(f"  [hop {hop}] {subject_name}  ·  capped "
                  f"{len(candidate_edges)} → {len(final_edges)} edges (anti-explosion)")
 
+    # Claude-validate counterpart names BEFORE they ever become a Person/Org
+    # row -- the heuristic extractor's confidence score describes how sure it
+    # is that a RELATIONSHIP exists, not whether the string it grabbed is
+    # even a real entity, so "USA Key" (mis-tokenized from "...California,
+    # USA / Key people: ...") sailed through at whatever confidence the
+    # co-occurrence happened to score. Deterministic name-shape checks (see
+    # is_noise_name/looks_like_person_name) only catch shapes someone already
+    # anticipated; asking Claude "is this a real, specific person/org" is the
+    # same judgment call a human skimming the evidence sentence would make,
+    # and it generalizes to whatever malformed shape shows up next instead of
+    # requiring a new pattern per failure mode. No-ops (keeps everyone) when
+    # filtering is disabled or no key resolves -- see entity_filter.validate.
+    #
+    # Skips edges already marked signals.trusted -- those came from a
+    # structured source (Wikidata/EDGAR/ProPublica/a scraped roster) with a
+    # clean canonical name and were deliberately exempted from the Claude
+    # filter by _mark_trusted at extraction time (see phase 0/0b above);
+    # _ranked_expandable applies this same trusted-skips-filtering rule when
+    # ranking the next frontier, so persistence now agrees with it instead of
+    # spending a Claude call re-litigating a source extraction already
+    # vouched for.
+    check_cancel()
+    valid_people: Set[str] = set()
+    valid_orgs: Set[str] = set()
+    if is_filtering_active():
+        person_names = [e.person_b for e in final_edges
+                        if e.other_kind == "person" and not e.signals.trusted]
+        org_names = [e.organization for e in final_edges
+                    if e.other_kind == "organization" and not e.signals.trusted]
+        if person_names:
+            valid_people = filter_entities(person_names, "person")
+        if org_names:
+            valid_orgs = filter_entities(org_names, "organization")
+
     # Snapshot the cap once for this node's whole edge batch instead of
     # re-querying COUNT(*) on every candidate edge (up to MAX_EDGES_PER_NODE
     # per node) -- the cap is already a soft/best-effort bound (concurrent
@@ -871,6 +905,12 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     for edge in final_edges:
         check_cancel()
         if edge.other_kind == "person":
+            if (is_filtering_active() and not edge.signals.trusted
+                    and edge.person_b not in valid_people):
+                if progress:
+                    progress(f"  ✕ dropped {edge.person_b!r} — not a real person "
+                             "(Claude entity filter)")
+                continue
             counterpart = builder.get_or_create_person(
                 db, edge.person_b, allow_create=not at_cap,
                 identity_text=_counterpart_identity_text(edge),
@@ -882,6 +922,12 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             )
             _record(disc, edge)
         else:
+            if (is_filtering_active() and not edge.signals.trusted
+                    and edge.organization not in valid_orgs):
+                if progress:
+                    progress(f"  ✕ dropped {edge.organization!r} — not a real organization "
+                             "(Claude entity filter)")
+                continue
             counterpart = builder.get_or_create_org(
                 db, edge.organization, edge.org_type, allow_create=not at_cap
             )
