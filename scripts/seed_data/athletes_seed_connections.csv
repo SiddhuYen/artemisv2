@@ -1,0 +1,318 @@
+target_name,target_context,connection_name,connection_context,relationship_type,evidence_note,source_url
+LeBron James,NBA forward for the Los Angeles Lakers,Rich Paul,Founder of Klutch Sports Group,agent,Represented by Paul since he founded Klutch in 2012,https://en.wikipedia.org/wiki/Rich_Paul
+LeBron James,NBA forward for the Los Angeles Lakers,Maverick Carter,CEO of The SpringHill Company,cofounder,Friends since high school; cofounded SpringHill in 2020,https://en.wikipedia.org/wiki/Maverick_Carter
+LeBron James,NBA forward for the Los Angeles Lakers,Anthony Davis,NBA forward-center for the Dallas Mavericks,colleague,Lakers teammates 2019-2025; 2020 championship,https://en.wikipedia.org/wiki/Anthony_Davis
+LeBron James,NBA forward for the Los Angeles Lakers,Dwyane Wade,Retired NBA guard and Chicago Sky co-owner,colleague,Miami Heat teammates 2010-2014; two championships,https://en.wikipedia.org/wiki/Dwyane_Wade
+LeBron James,NBA forward for the Los Angeles Lakers,Luka Doncic,NBA guard for the Los Angeles Lakers,colleague,Lakers teammates from February 2025,https://en.wikipedia.org/wiki/Luka_Don%C4%8Di%C4%87
+LeBron James,NBA forward for the Los Angeles Lakers,Bronny James,NBA guard for the Los Angeles Lakers,family,Son; drafted by the Lakers in 2024,https://en.wikipedia.org/wiki/Bronny_James
+LeBron James,NBA forward for the Los Angeles Lakers,Carmelo Anthony,Retired NBA forward,friend,Longtime friends from USA Basketball; 2004-2012 Olympic teammates,https://en.wikipedia.org/wiki/Carmelo_Anthony
+LeBron James,NBA forward for the Los Angeles Lakers,Savannah James,Entrepreneur and philanthropist,spouse,Married 2013; partners since high school in Akron,https://en.wikipedia.org/wiki/LeBron_James
+Stephen Curry,NBA guard for the Golden State Warriors,Draymond Green,NBA forward for the Golden State Warriors,colleague,Warriors teammates since 2012; four championships,https://en.wikipedia.org/wiki/Draymond_Green
+Stephen Curry,NBA guard for the Golden State Warriors,Jimmy Butler,NBA forward for the Golden State Warriors,colleague,Golden State Warriors teammates from February 2025,https://en.wikipedia.org/wiki/Stephen_Curry
+Stephen Curry,NBA guard for the Golden State Warriors,Klay Thompson,NBA guard for the Dallas Mavericks,colleague,Warriors backcourt teammates 2011-2024; four championships,https://en.wikipedia.org/wiki/Klay_Thompson
+Stephen Curry,NBA guard for the Golden State Warriors,Steve Kerr,Golden State Warriors head coach,colleague,Coached by Kerr since 2014,https://en.wikipedia.org/wiki/Steve_Kerr
+Stephen Curry,NBA guard for the Golden State Warriors,Dell Curry,Retired NBA guard and broadcaster,family,Father; played 16 NBA seasons,https://en.wikipedia.org/wiki/Dell_Curry
+Stephen Curry,NBA guard for the Golden State Warriors,Seth Curry,NBA guard,family,Younger brother,https://en.wikipedia.org/wiki/Seth_Curry
+Stephen Curry,NBA guard for the Golden State Warriors,Ayesha Curry,Author and television personality,spouse,Married 2011,https://en.wikipedia.org/wiki/Ayesha_Curry
+Kevin Durant,NBA forward and Thirty Five Ventures cofounder,Rich Kleiman,Business manager and Thirty Five Ventures cofounder,cofounder,Cofounded Thirty Five Ventures in 2016,https://en.wikipedia.org/wiki/Kevin_Durant
+Kevin Durant,NBA forward and Thirty Five Ventures cofounder,Devin Booker,NBA guard for the Phoenix Suns,colleague,Phoenix Suns teammates 2023-2025,https://en.wikipedia.org/wiki/Devin_Booker
+Kevin Durant,NBA forward and Thirty Five Ventures cofounder,Kyrie Irving,NBA guard,colleague,Brooklyn Nets teammates 2019-2023,https://en.wikipedia.org/wiki/Kyrie_Irving
+Kevin Durant,NBA forward and Thirty Five Ventures cofounder,Russell Westbrook,NBA guard,colleague,Oklahoma City Thunder teammates 2008-2016,https://en.wikipedia.org/wiki/Russell_Westbrook
+Giannis Antetokounmpo,NBA forward for the Milwaukee Bucks,Khris Middleton,NBA forward,colleague,Milwaukee Bucks teammates 2013-2025; 2021 championship,https://en.wikipedia.org/wiki/Khris_Middleton
+Giannis Antetokounmpo,NBA forward for the Milwaukee Bucks,Alex Antetokounmpo,Professional basketball player,family,Youngest brother,https://en.wikipedia.org/wiki/Alex_Antetokounmpo
+Giannis Antetokounmpo,NBA forward for the Milwaukee Bucks,Kostas Antetokounmpo,Professional basketball forward,family,Younger brother; won an NBA title with the Lakers in 2020,https://en.wikipedia.org/wiki/Kostas_Antetokounmpo
+Giannis Antetokounmpo,NBA forward for the Milwaukee Bucks,Thanasis Antetokounmpo,Professional basketball forward,family,Older brother; Bucks teammates 2019-2024,https://en.wikipedia.org/wiki/Thanasis_Antetokounmpo
+Giannis Antetokounmpo,NBA forward for the Milwaukee Bucks,Mariah Riddlesprigger,Former Rice University volleyball player,partner,Long-term partner; children together,https://en.wikipedia.org/wiki/Giannis_Antetokounmpo
+Nikola Jokic,NBA center for the Denver Nuggets,Jamal Murray,NBA guard for the Denver Nuggets,colleague,Nuggets teammates since 2016; 2023 championship,https://en.wikipedia.org/wiki/Jamal_Murray
+Nikola Jokic,NBA center for the Denver Nuggets,Michael Malone,Basketball head coach,colleague,Nuggets head coach 2015-2025,https://en.wikipedia.org/wiki/Michael_Malone_(basketball)
+Nikola Jokic,NBA center for the Denver Nuggets,Strahinja Jokic,Brother and manager,family,Older brother; part of his management circle,https://en.wikipedia.org/wiki/Nikola_Joki%C4%87
+Luka Doncic,NBA guard for the Los Angeles Lakers,Goran Dragic,Retired Slovenian basketball guard,colleague,Slovenia teammates; won EuroBasket 2017 together,https://en.wikipedia.org/wiki/Goran_Dragi%C4%87
+Luka Doncic,NBA guard for the Los Angeles Lakers,Kyrie Irving,NBA guard,colleague,Dallas Mavericks teammates 2023-2025,https://en.wikipedia.org/wiki/Kyrie_Irving
+Luka Doncic,NBA guard for the Los Angeles Lakers,LeBron James,NBA forward for the Los Angeles Lakers,colleague,Lakers teammates from February 2025,https://en.wikipedia.org/wiki/Luka_Don%C4%8Di%C4%87
+Joel Embiid,NBA center for the Philadelphia 76ers,James Harden,NBA guard,colleague,76ers teammates 2022-2023,https://en.wikipedia.org/wiki/James_Harden
+Joel Embiid,NBA center for the Philadelphia 76ers,Tyrese Maxey,NBA guard for the Philadelphia 76ers,colleague,76ers teammates since 2020,https://en.wikipedia.org/wiki/Tyrese_Maxey
+Jayson Tatum,NBA forward for the Boston Celtics,Jaylen Brown,NBA guard-forward for the Boston Celtics,colleague,Celtics teammates since 2017; 2024 championship,https://en.wikipedia.org/wiki/Jaylen_Brown
+Jayson Tatum,NBA forward for the Boston Celtics,Joe Mazzulla,Boston Celtics head coach,colleague,Coached by Mazzulla since 2022,https://en.wikipedia.org/wiki/Joe_Mazzulla
+Anthony Davis,NBA forward-center for the Dallas Mavericks,Rich Paul,Founder of Klutch Sports Group,agent,Represented by Klutch Sports Group,https://en.wikipedia.org/wiki/Rich_Paul
+Anthony Davis,NBA forward-center for the Dallas Mavericks,LeBron James,NBA forward for the Los Angeles Lakers,colleague,Lakers teammates 2019-2025; 2020 championship,https://en.wikipedia.org/wiki/Anthony_Davis
+Klay Thompson,NBA guard for the Dallas Mavericks,Stephen Curry,NBA guard for the Golden State Warriors,colleague,Warriors backcourt teammates 2011-2024; four championships,https://en.wikipedia.org/wiki/Klay_Thompson
+Klay Thompson,NBA guard for the Dallas Mavericks,Mychal Thompson,Retired NBA forward and broadcaster,family,Father; won two NBA titles with the Lakers in the 1980s,https://en.wikipedia.org/wiki/Mychal_Thompson
+Draymond Green,NBA forward for the Golden State Warriors,Stephen Curry,NBA guard for the Golden State Warriors,colleague,Warriors teammates since 2012; four championships,https://en.wikipedia.org/wiki/Draymond_Green
+Draymond Green,NBA forward for the Golden State Warriors,Hazel Renee,Actress and television personality,spouse,Married 2022,https://en.wikipedia.org/wiki/Draymond_Green
+Chris Paul,NBA guard and former NBPA president,Blake Griffin,Retired NBA forward,colleague,Los Angeles Clippers teammates 2011-2017,https://en.wikipedia.org/wiki/Blake_Griffin
+Chris Paul,NBA guard and former NBPA president,Devin Booker,NBA guard for the Phoenix Suns,colleague,Phoenix Suns teammates 2020-2023; 2021 NBA Finals run,https://en.wikipedia.org/wiki/Devin_Booker
+Chris Paul,NBA guard and former NBPA president,James Harden,NBA guard,colleague,Houston Rockets teammates 2017-2019,https://en.wikipedia.org/wiki/James_Harden
+Chris Paul,NBA guard and former NBPA president,Carmelo Anthony,Retired NBA forward,friend,Longtime friends; USA Basketball teammates,https://en.wikipedia.org/wiki/Carmelo_Anthony
+Kawhi Leonard,NBA forward for the LA Clippers,Paul George,NBA forward,colleague,LA Clippers teammates 2019-2024,https://en.wikipedia.org/wiki/Paul_George
+Kawhi Leonard,NBA forward for the LA Clippers,Gregg Popovich,San Antonio Spurs executive and former head coach,mentor,Coached by Popovich 2011-2018; 2014 championship,https://en.wikipedia.org/wiki/Gregg_Popovich
+Jimmy Butler,NBA forward for the Golden State Warriors,Bam Adebayo,NBA center for the Miami Heat,colleague,Miami Heat teammates 2019-2025,https://en.wikipedia.org/wiki/Bam_Adebayo
+Jimmy Butler,NBA forward for the Golden State Warriors,Erik Spoelstra,Miami Heat head coach,colleague,Coached by Spoelstra 2019-2025,https://en.wikipedia.org/wiki/Erik_Spoelstra
+Jimmy Butler,NBA forward for the Golden State Warriors,Stephen Curry,NBA guard for the Golden State Warriors,colleague,Golden State Warriors teammates from February 2025,https://en.wikipedia.org/wiki/Stephen_Curry
+Devin Booker,NBA guard for the Phoenix Suns,Chris Paul,NBA guard and former NBPA president,colleague,Phoenix Suns teammates 2020-2023; 2021 NBA Finals run,https://en.wikipedia.org/wiki/Devin_Booker
+Devin Booker,NBA guard for the Phoenix Suns,Kevin Durant,NBA forward and Thirty Five Ventures cofounder,colleague,Phoenix Suns teammates 2023-2025,https://en.wikipedia.org/wiki/Devin_Booker
+Devin Booker,NBA guard for the Phoenix Suns,Melvin Booker,Retired professional basketball guard,family,Father; played in the NBA and overseas,https://en.wikipedia.org/wiki/Melvin_Booker
+Michael Jordan,Retired NBA guard and NASCAR team co-owner,Denny Hamlin,NASCAR driver and 23XI Racing co-owner,cofounder,Cofounded 23XI Racing in 2020,https://en.wikipedia.org/wiki/Denny_Hamlin
+Michael Jordan,Retired NBA guard and NASCAR team co-owner,Phil Jackson,Retired NBA head coach and executive,colleague,Bulls head coach 1989-1998; six championships together,https://en.wikipedia.org/wiki/Phil_Jackson
+Michael Jordan,Retired NBA guard and NASCAR team co-owner,Scottie Pippen,Retired NBA forward,colleague,Chicago Bulls teammates 1987-1998; six championships,https://en.wikipedia.org/wiki/Scottie_Pippen
+Michael Jordan,Retired NBA guard and NASCAR team co-owner,Juanita Vanoy,Businesswoman,ex-spouse,Married 1989-2006; three children,https://en.wikipedia.org/wiki/Michael_Jordan
+Michael Jordan,Retired NBA guard and NASCAR team co-owner,Yvette Prieto,Model,spouse,Married 2013,https://en.wikipedia.org/wiki/Michael_Jordan
+Magic Johnson,Retired NBA guard and sports franchise investor,Kareem Abdul-Jabbar,Retired NBA center and author,colleague,Los Angeles Lakers teammates 1979-1989; five championships,https://en.wikipedia.org/wiki/Kareem_Abdul-Jabbar
+Magic Johnson,Retired NBA guard and sports franchise investor,Larry Bird,Retired NBA forward and executive,colleague,Career-long rivals from the 1979 NCAA final onward,https://en.wikipedia.org/wiki/Larry_Bird
+Magic Johnson,Retired NBA guard and sports franchise investor,EJ Johnson,Television personality,family,Son; adult public figure,https://en.wikipedia.org/wiki/EJ_Johnson
+Magic Johnson,Retired NBA guard and sports franchise investor,Cookie Johnson,Author and philanthropist,spouse,Married 1991,https://en.wikipedia.org/wiki/Magic_Johnson
+Shaquille O'Neal,Retired NBA center and broadcaster,Penny Hardaway,Retired NBA guard and college head coach,colleague,Orlando Magic teammates 1993-1996,https://en.wikipedia.org/wiki/Penny_Hardaway
+Shaquille O'Neal,Retired NBA center and broadcaster,Phil Jackson,Retired NBA head coach and executive,colleague,Lakers head coach 1999-2004; three championships together,https://en.wikipedia.org/wiki/Phil_Jackson
+Shaquille O'Neal,Retired NBA center and broadcaster,Shaunie Henderson,Television producer and author,ex-spouse,Married 2002-2011; four children,https://en.wikipedia.org/wiki/Shaunie_Henderson
+Dwyane Wade,Retired NBA guard and Chicago Sky co-owner,Chris Bosh,Retired NBA forward,colleague,Miami Heat teammates 2010-2016; two championships,https://en.wikipedia.org/wiki/Chris_Bosh
+Dwyane Wade,Retired NBA guard and Chicago Sky co-owner,LeBron James,NBA forward for the Los Angeles Lakers,colleague,Miami Heat teammates 2010-2014; two championships,https://en.wikipedia.org/wiki/Dwyane_Wade
+Dwyane Wade,Retired NBA guard and Chicago Sky co-owner,Udonis Haslem,Retired NBA forward and Heat executive,colleague,Miami Heat teammates 2003-2019; three championships,https://en.wikipedia.org/wiki/Udonis_Haslem
+Dwyane Wade,Retired NBA guard and Chicago Sky co-owner,Gabrielle Union,Actress and producer,spouse,Married 2014,https://en.wikipedia.org/wiki/Gabrielle_Union
+Carmelo Anthony,Retired NBA forward,La La Anthony,Television personality and actress,ex-spouse,Married 2010-2021,https://en.wikipedia.org/wiki/La_La_Anthony
+Carmelo Anthony,Retired NBA forward,Chris Paul,NBA guard and former NBPA president,friend,Longtime friends; USA Basketball teammates,https://en.wikipedia.org/wiki/Carmelo_Anthony
+Carmelo Anthony,Retired NBA forward,LeBron James,NBA forward for the Los Angeles Lakers,friend,Longtime friends from USA Basketball; 2004-2012 Olympic teammates,https://en.wikipedia.org/wiki/Carmelo_Anthony
+Carmelo Anthony,Retired NBA forward,Jim Boeheim,Retired Syracuse University head coach,mentor,Coached him to the 2003 NCAA championship at Syracuse,https://en.wikipedia.org/wiki/Jim_Boeheim
+Caitlin Clark,WNBA guard for the Indiana Fever,Aliyah Boston,WNBA forward for the Indiana Fever,colleague,Indiana Fever teammates since 2024,https://en.wikipedia.org/wiki/Aliyah_Boston
+Caitlin Clark,WNBA guard for the Indiana Fever,Kate Martin,WNBA guard,colleague,Iowa teammates 2020-2024,https://en.wikipedia.org/wiki/Kate_Martin_(basketball)
+Caitlin Clark,WNBA guard for the Indiana Fever,Lisa Bluder,Retired Iowa Hawkeyes head coach,mentor,Coached her at Iowa 2020-2024; two NCAA title games,https://en.wikipedia.org/wiki/Lisa_Bluder
+A'ja Wilson,WNBA forward for the Las Vegas Aces,Becky Hammon,Las Vegas Aces head coach,colleague,Coached by Hammon since 2022; two championships,https://en.wikipedia.org/wiki/Becky_Hammon
+A'ja Wilson,WNBA forward for the Las Vegas Aces,Kelsey Plum,WNBA guard,colleague,Las Vegas Aces teammates 2018-2024; two championships,https://en.wikipedia.org/wiki/Kelsey_Plum
+A'ja Wilson,WNBA forward for the Las Vegas Aces,Dawn Staley,South Carolina Gamecocks head coach,mentor,Coached her to the 2017 NCAA championship at South Carolina,https://en.wikipedia.org/wiki/Dawn_Staley
+Breanna Stewart,WNBA forward for the New York Liberty,Sabrina Ionescu,WNBA guard for the New York Liberty,colleague,New York Liberty teammates since 2023; 2024 championship,https://en.wikipedia.org/wiki/Sabrina_Ionescu
+Breanna Stewart,WNBA forward for the New York Liberty,Geno Auriemma,UConn Huskies head coach,mentor,Coached her to four consecutive NCAA titles 2013-2016,https://en.wikipedia.org/wiki/Geno_Auriemma
+Breanna Stewart,WNBA forward for the New York Liberty,Marta Xargay,Retired Spanish basketball guard,spouse,Married 2021,https://en.wikipedia.org/wiki/Marta_Xargay
+Sue Bird,Retired WNBA guard and Seattle Storm co-owner,Diana Taurasi,Retired WNBA guard,friend,UConn teammates 2000-2004 and longtime USA Basketball teammates,https://en.wikipedia.org/wiki/Diana_Taurasi
+Sue Bird,Retired WNBA guard and Seattle Storm co-owner,Geno Auriemma,UConn Huskies head coach,mentor,Coached her at UConn; NCAA titles in 2000 and 2002,https://en.wikipedia.org/wiki/Geno_Auriemma
+Sue Bird,Retired WNBA guard and Seattle Storm co-owner,Megan Rapinoe,Retired USWNT forward,partner,Partners since 2016; engaged 2020,https://en.wikipedia.org/wiki/Megan_Rapinoe
+Diana Taurasi,Retired WNBA guard,Brittney Griner,WNBA center,colleague,Phoenix Mercury teammates 2013-2024,https://en.wikipedia.org/wiki/Brittney_Griner
+Diana Taurasi,Retired WNBA guard,Sue Bird,Retired WNBA guard and Seattle Storm co-owner,friend,UConn teammates 2000-2004 and longtime USA Basketball teammates,https://en.wikipedia.org/wiki/Diana_Taurasi
+Diana Taurasi,Retired WNBA guard,Penny Taylor,Retired Australian basketball forward,spouse,Married 2017,https://en.wikipedia.org/wiki/Penny_Taylor
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Angel Di Maria,Argentine winger,colleague,Argentina teammates; 2021 Copa America and 2022 World Cup wins,https://en.wikipedia.org/wiki/%C3%81ngel_Di_Mar%C3%ADa
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,David Beckham,Retired midfielder and Inter Miami co-owner,colleague,Signed for Beckham's Inter Miami in 2023,https://en.wikipedia.org/wiki/David_Beckham
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Jordi Alba,Spanish defender for Inter Miami,colleague,Barcelona teammates 2012-2021 and Inter Miami teammates from 2023,https://en.wikipedia.org/wiki/Jordi_Alba
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Neymar,Brazilian forward and Santos captain,colleague,Barcelona teammates 2013-2017 and Paris Saint-Germain teammates 2021-2023,https://en.wikipedia.org/wiki/Neymar
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Sergio Busquets,Spanish midfielder for Inter Miami,colleague,Barcelona teammates 2008-2021 and Inter Miami teammates from 2023,https://en.wikipedia.org/wiki/Sergio_Busquets
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Luis Suarez,Uruguayan striker for Inter Miami,friend,Barcelona teammates 2014-2020; reunited at Inter Miami in 2023,https://en.wikipedia.org/wiki/Luis_Su%C3%A1rez
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Pep Guardiola,Manchester City manager,mentor,Managed him at Barcelona 2008-2012; two Champions League titles,https://en.wikipedia.org/wiki/Pep_Guardiola
+Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,Antonela Roccuzzo,Businesswoman,spouse,Married 2017; childhood acquaintances from Rosario,https://en.wikipedia.org/wiki/Antonela_Roccuzzo
+Cristiano Ronaldo,Al Nassr forward and five-time Ballon d'Or winner,Jorge Mendes,Football agent and Gestifute founder,agent,Represented by Mendes since 2002,https://en.wikipedia.org/wiki/Jorge_Mendes
+Cristiano Ronaldo,Al Nassr forward and five-time Ballon d'Or winner,Karim Benzema,French striker for Al-Ittihad,colleague,Real Madrid teammates 2009-2018; four Champions League titles,https://en.wikipedia.org/wiki/Karim_Benzema
+Cristiano Ronaldo,Al Nassr forward and five-time Ballon d'Or winner,Wayne Rooney,Retired England forward and manager,colleague,Manchester United teammates 2004-2009,https://en.wikipedia.org/wiki/Wayne_Rooney
+Cristiano Ronaldo,Al Nassr forward and five-time Ballon d'Or winner,Alex Ferguson,Retired Manchester United manager,mentor,Managed him at Manchester United 2003-2009,https://en.wikipedia.org/wiki/Alex_Ferguson
+Cristiano Ronaldo,Al Nassr forward and five-time Ballon d'Or winner,Georgina Rodriguez,Model and television personality,partner,Partners since 2016; engaged 2025,https://en.wikipedia.org/wiki/Georgina_Rodr%C3%ADguez
+Kylian Mbappe,Real Madrid forward and France captain,Didier Deschamps,France national team manager,colleague,Managed by Deschamps since 2017; 2018 World Cup win,https://en.wikipedia.org/wiki/Didier_Deschamps
+Kylian Mbappe,Real Madrid forward and France captain,Neymar,Brazilian forward and Santos captain,colleague,Paris Saint-Germain teammates 2017-2023,https://en.wikipedia.org/wiki/Neymar
+Kylian Mbappe,Real Madrid forward and France captain,Ethan Mbappe,French midfielder,family,Younger brother; professional footballer,https://en.wikipedia.org/wiki/Ethan_Mbapp%C3%A9
+Erling Haaland,Manchester City striker,Pep Guardiola,Manchester City manager,colleague,Managed by Guardiola since 2022; 2023 treble,https://en.wikipedia.org/wiki/Pep_Guardiola
+Erling Haaland,Manchester City striker,Alfie Haaland,Retired Norwegian footballer,family,Father; played in the Premier League for Leeds and Manchester City,https://en.wikipedia.org/wiki/Alf-Inge_H%C3%A5land
+Neymar,Brazilian forward and Santos captain,Kylian Mbappe,Real Madrid forward and France captain,colleague,Paris Saint-Germain teammates 2017-2023,https://en.wikipedia.org/wiki/Neymar
+Neymar,Brazilian forward and Santos captain,Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,colleague,Barcelona teammates 2013-2017 and Paris Saint-Germain teammates 2021-2023,https://en.wikipedia.org/wiki/Neymar
+Neymar,Brazilian forward and Santos captain,Neymar Santos Sr.,Former footballer and business manager,family,Father; manages his commercial affairs,https://en.wikipedia.org/wiki/Neymar
+Kevin De Bruyne,Belgian midfielder and former Manchester City captain,Pep Guardiola,Manchester City manager,colleague,Managed by Guardiola 2016-2025; 2023 treble,https://en.wikipedia.org/wiki/Pep_Guardiola
+Kevin De Bruyne,Belgian midfielder and former Manchester City captain,Michele Lacroix,Belgian businesswoman,spouse,Married 2017,https://en.wikipedia.org/wiki/Kevin_De_Bruyne
+Mohamed Salah,Liverpool forward and Egypt captain,Jurgen Klopp,Former Liverpool manager,colleague,Managed by Klopp 2017-2024; 2019 Champions League title,https://en.wikipedia.org/wiki/J%C3%BCrgen_Klopp
+Mohamed Salah,Liverpool forward and Egypt captain,Sadio Mane,Senegalese forward for Al Nassr,colleague,Liverpool teammates 2017-2022,https://en.wikipedia.org/wiki/Sadio_Man%C3%A9
+Vinicius Junior,Real Madrid forward,Carlo Ancelotti,Brazil national team manager,colleague,Managed by Ancelotti at Real Madrid 2021-2025,https://en.wikipedia.org/wiki/Carlo_Ancelotti
+Vinicius Junior,Real Madrid forward,Jude Bellingham,Real Madrid midfielder,colleague,Real Madrid teammates since 2023,https://en.wikipedia.org/wiki/Vin%C3%ADcius_J%C3%BAnior
+Vinicius Junior,Real Madrid forward,Rodrygo,Brazilian forward for Real Madrid,colleague,Real Madrid teammates since 2019,https://en.wikipedia.org/wiki/Rodrygo
+Jude Bellingham,Real Madrid midfielder,Vinicius Junior,Real Madrid forward,colleague,Real Madrid teammates since 2023,https://en.wikipedia.org/wiki/Vin%C3%ADcius_J%C3%BAnior
+Jude Bellingham,Real Madrid midfielder,Jobe Bellingham,English midfielder,family,Younger brother; professional footballer,https://en.wikipedia.org/wiki/Jobe_Bellingham
+Robert Lewandowski,Barcelona striker and Poland captain,Thomas Muller,German forward,colleague,Bayern Munich teammates 2014-2022; 2020 treble,https://en.wikipedia.org/wiki/Thomas_M%C3%BCller
+Robert Lewandowski,Barcelona striker and Poland captain,Anna Lewandowska,Karate champion and nutritionist,spouse,Married 2013,https://en.wikipedia.org/wiki/Anna_Lewandowska
+Luka Modric,Croatian midfielder and 2018 Ballon d'Or winner,Toni Kroos,Retired German midfielder,colleague,Real Madrid midfield partners 2014-2024; five Champions League titles,https://en.wikipedia.org/wiki/Toni_Kroos
+Luka Modric,Croatian midfielder and 2018 Ballon d'Or winner,Zlatko Dalic,Croatia national team manager,colleague,Captained Croatia under Dalic to the 2018 World Cup final,https://en.wikipedia.org/wiki/Zlatko_Dali%C4%87
+David Beckham,Retired midfielder and Inter Miami co-owner,Gary Neville,Retired defender and broadcaster,colleague,Manchester United teammates 1992-2003,https://en.wikipedia.org/wiki/Gary_Neville
+David Beckham,Retired midfielder and Inter Miami co-owner,Lionel Messi,Inter Miami forward and eight-time Ballon d'Or winner,colleague,Signed for Beckham's Inter Miami in 2023,https://en.wikipedia.org/wiki/David_Beckham
+David Beckham,Retired midfielder and Inter Miami co-owner,Brooklyn Beckham,Photographer and media personality,family,Son; adult public figure,https://en.wikipedia.org/wiki/Brooklyn_Beckham
+David Beckham,Retired midfielder and Inter Miami co-owner,Alex Ferguson,Retired Manchester United manager,mentor,Managed him at Manchester United 1992-2003,https://en.wikipedia.org/wiki/Alex_Ferguson
+David Beckham,Retired midfielder and Inter Miami co-owner,Victoria Beckham,Fashion designer and former Spice Girls member,spouse,Married 1999,https://en.wikipedia.org/wiki/Victoria_Beckham
+Megan Rapinoe,Retired USWNT forward,Alex Morgan,Retired USWNT forward,colleague,USWNT teammates; 2015 and 2019 World Cup titles,https://en.wikipedia.org/wiki/Alex_Morgan
+Megan Rapinoe,Retired USWNT forward,Rachael Rapinoe,Cofounder of Mendi,family,Twin sister,https://en.wikipedia.org/wiki/Megan_Rapinoe
+Megan Rapinoe,Retired USWNT forward,Sue Bird,Retired WNBA guard and Seattle Storm co-owner,partner,Partners since 2016; engaged 2020,https://en.wikipedia.org/wiki/Megan_Rapinoe
+Alex Morgan,Retired USWNT forward,Megan Rapinoe,Retired USWNT forward,colleague,USWNT teammates; 2015 and 2019 World Cup titles,https://en.wikipedia.org/wiki/Alex_Morgan
+Alex Morgan,Retired USWNT forward,Servando Carrasco,Retired MLS midfielder,spouse,Married 2014,https://en.wikipedia.org/wiki/Servando_Carrasco
+Marta,Brazilian forward for Orlando Pride,Pia Sundhage,Swedish football manager,colleague,Managed by Sundhage with Brazil 2019-2023,https://en.wikipedia.org/wiki/Pia_Sundhage
+Marta,Brazilian forward for Orlando Pride,Toni Pressley,Retired American defender,spouse,Married 2022; Orlando Pride teammates,https://en.wikipedia.org/wiki/Toni_Pressley
+Sam Kerr,Chelsea striker and Australia captain,Emma Hayes,USWNT head coach,colleague,Managed by Hayes at Chelsea 2020-2024,https://en.wikipedia.org/wiki/Emma_Hayes
+Sam Kerr,Chelsea striker and Australia captain,Kristie Mewis,American midfielder,partner,Engaged 2023; child born 2024,https://en.wikipedia.org/wiki/Kristie_Mewis
+Aitana Bonmati,Barcelona midfielder and Ballon d'Or Feminin winner,Alexia Putellas,Barcelona midfielder and Spain international,colleague,Barcelona and Spain teammates; 2023 World Cup win,https://en.wikipedia.org/wiki/Alexia_Putellas
+Aitana Bonmati,Barcelona midfielder and Ballon d'Or Feminin winner,Jonatan Giraldez,Football manager,colleague,Coached her at Barcelona 2021-2024 through a continental quadruple,https://en.wikipedia.org/wiki/Jonatan_Gir%C3%A1ldez
+Aitana Bonmati,Barcelona midfielder and Ballon d'Or Feminin winner,Patri Guijarro,Spanish midfielder for Barcelona,colleague,Barcelona midfield teammates since 2016,https://en.wikipedia.org/wiki/Patri_Guijarro
+Aitana Bonmati,Barcelona midfielder and Ballon d'Or Feminin winner,Salma Paralluelo,Spanish forward for Barcelona,colleague,Barcelona and Spain teammates; 2023 World Cup win,https://en.wikipedia.org/wiki/Salma_Paralluelo
+Alexia Putellas,Barcelona midfielder and Spain international,Aitana Bonmati,Barcelona midfielder and Ballon d'Or Feminin winner,colleague,Barcelona and Spain teammates; 2023 World Cup win,https://en.wikipedia.org/wiki/Alexia_Putellas
+Alexia Putellas,Barcelona midfielder and Spain international,Jonatan Giraldez,Football manager,colleague,Managed by Giraldez at Barcelona 2021-2024,https://en.wikipedia.org/wiki/Jonatan_Gir%C3%A1ldez
+Harry Kane,Bayern Munich striker and England captain,Son Heung-min,South Korean forward and national team captain,colleague,Tottenham Hotspur teammates 2015-2023; record Premier League link-up,https://en.wikipedia.org/wiki/Son_Heung-min
+Harry Kane,Bayern Munich striker and England captain,Katie Goodland,Sports scientist,spouse,Married 2019; childhood friends,https://en.wikipedia.org/wiki/Harry_Kane
+Son Heung-min,South Korean forward and national team captain,Harry Kane,Bayern Munich striker and England captain,colleague,Tottenham Hotspur teammates 2015-2023; record Premier League link-up,https://en.wikipedia.org/wiki/Son_Heung-min
+Son Heung-min,South Korean forward and national team captain,Son Woong-jung,Football coach and former player,family,Father and first coach,https://en.wikipedia.org/wiki/Son_Heung-min
+Novak Djokovic,Serbian tennis player with 24 Grand Slam singles titles,Andy Murray,Retired British tennis player and two-time Wimbledon champion,colleague,Career-long rivals from junior tennis; Murray coached him in 2025,https://en.wikipedia.org/wiki/Andy_Murray
+Novak Djokovic,Serbian tennis player with 24 Grand Slam singles titles,Goran Ivanisevic,Retired Croatian tennis player and coach,colleague,Coached him 2019-2024,https://en.wikipedia.org/wiki/Goran_Ivani%C5%A1evi%C4%87
+Novak Djokovic,Serbian tennis player with 24 Grand Slam singles titles,Jelena Djokovic,Philanthropist and Novak Djokovic Foundation director,spouse,Married 2014,https://en.wikipedia.org/wiki/Novak_Djokovic
+Rafael Nadal,Retired Spanish tennis player with 22 Grand Slam titles,Carlos Moya,Retired Spanish tennis player and coach,colleague,Coached him from 2016 until his 2024 retirement,https://en.wikipedia.org/wiki/Carlos_Moy%C3%A0
+Rafael Nadal,Retired Spanish tennis player with 22 Grand Slam titles,Roger Federer,Retired Swiss tennis player with 20 Grand Slam titles,colleague,Career-long rivals; doubles partners at the 2017 and 2022 Laver Cups,https://en.wikipedia.org/wiki/Roger_Federer
+Rafael Nadal,Retired Spanish tennis player with 22 Grand Slam titles,Toni Nadal,Tennis coach,mentor,Uncle; coached him from childhood until 2017,https://en.wikipedia.org/wiki/Toni_Nadal
+Rafael Nadal,Retired Spanish tennis player with 22 Grand Slam titles,Maria Francisca Perello,Director of the Rafa Nadal Foundation,spouse,Married 2019,https://en.wikipedia.org/wiki/Rafael_Nadal
+Roger Federer,Retired Swiss tennis player with 20 Grand Slam titles,Tony Godsick,Sports agent and Team8 cofounder,agent,Career-long agent; cofounded Team8 with him in 2013,https://en.wikipedia.org/wiki/Roger_Federer
+Roger Federer,Retired Swiss tennis player with 20 Grand Slam titles,Rafael Nadal,Retired Spanish tennis player with 22 Grand Slam titles,colleague,Career-long rivals; doubles partners at the 2017 and 2022 Laver Cups,https://en.wikipedia.org/wiki/Roger_Federer
+Roger Federer,Retired Swiss tennis player with 20 Grand Slam titles,Severin Luthi,Swiss tennis coach and Davis Cup captain,colleague,Longtime coach and Swiss Davis Cup captain,https://en.wikipedia.org/wiki/Severin_L%C3%BCthi
+Roger Federer,Retired Swiss tennis player with 20 Grand Slam titles,Mirka Federer,Retired Swiss tennis player,spouse,Married 2009; met at the 2000 Sydney Olympics,https://en.wikipedia.org/wiki/Mirka_Federer
+Carlos Alcaraz,Spanish tennis player and former world No. 1,Jannik Sinner,Italian tennis player and former world No. 1,colleague,Defining rivalry of the 2020s; met in multiple Grand Slam finals,https://en.wikipedia.org/wiki/Jannik_Sinner
+Carlos Alcaraz,Spanish tennis player and former world No. 1,Juan Carlos Ferrero,Retired Spanish tennis player and coach,mentor,Has coached him since 2018,https://en.wikipedia.org/wiki/Juan_Carlos_Ferrero
+Jannik Sinner,Italian tennis player and former world No. 1,Carlos Alcaraz,Spanish tennis player and former world No. 1,colleague,Defining rivalry of the 2020s; met in multiple Grand Slam finals,https://en.wikipedia.org/wiki/Jannik_Sinner
+Jannik Sinner,Italian tennis player and former world No. 1,Darren Cahill,Australian tennis coach,colleague,Part of his coaching team since 2022,https://en.wikipedia.org/wiki/Darren_Cahill
+Jannik Sinner,Italian tennis player and former world No. 1,Simone Vagnozzi,Italian tennis coach,colleague,Head coach since 2022,https://en.wikipedia.org/wiki/Simone_Vagnozzi
+Serena Williams,Retired American tennis player with 23 Grand Slam singles titles,Patrick Mouratoglou,French tennis coach,colleague,Coached her 2012-2022,https://en.wikipedia.org/wiki/Patrick_Mouratoglou
+Serena Williams,Retired American tennis player with 23 Grand Slam singles titles,Oracene Price,Tennis coach,family,Mother and coach,https://en.wikipedia.org/wiki/Oracene_Price
+Serena Williams,Retired American tennis player with 23 Grand Slam singles titles,Richard Williams,Tennis coach,family,Father and first coach,https://en.wikipedia.org/wiki/Richard_Williams_(tennis_coach)
+Serena Williams,Retired American tennis player with 23 Grand Slam singles titles,Venus Williams,American tennis player and seven-time Grand Slam singles champion,family,Older sister; 14 Grand Slam doubles titles together,https://en.wikipedia.org/wiki/Venus_Williams
+Serena Williams,Retired American tennis player with 23 Grand Slam singles titles,Alexis Ohanian,Reddit cofounder and venture capitalist,spouse,Married 2017,https://en.wikipedia.org/wiki/Alexis_Ohanian
+Venus Williams,American tennis player and seven-time Grand Slam singles champion,Coco Gauff,American tennis player and Grand Slam champion,colleague,First-round opponents at Wimbledon 2019 in Gauff's main-draw debut,https://en.wikipedia.org/wiki/Venus_Williams
+Venus Williams,American tennis player and seven-time Grand Slam singles champion,Oracene Price,Tennis coach,family,Mother and coach,https://en.wikipedia.org/wiki/Oracene_Price
+Venus Williams,American tennis player and seven-time Grand Slam singles champion,Richard Williams,Tennis coach,family,Father and first coach,https://en.wikipedia.org/wiki/Richard_Williams_(tennis_coach)
+Venus Williams,American tennis player and seven-time Grand Slam singles champion,Serena Williams,Retired American tennis player with 23 Grand Slam singles titles,family,Older sister; 14 Grand Slam doubles titles together,https://en.wikipedia.org/wiki/Venus_Williams
+Naomi Osaka,Japanese tennis player and four-time Grand Slam champion,Patrick Mouratoglou,French tennis coach,colleague,Coached her 2022-2024,https://en.wikipedia.org/wiki/Patrick_Mouratoglou
+Naomi Osaka,Japanese tennis player and four-time Grand Slam champion,Mari Osaka,Retired Japanese tennis player and artist,family,Older sister; former professional player,https://en.wikipedia.org/wiki/Mari_Osaka
+Naomi Osaka,Japanese tennis player and four-time Grand Slam champion,Cordae,American rapper,partner,In a relationship from 2019; daughter born 2023,https://en.wikipedia.org/wiki/Cordae
+Iga Swiatek,Polish tennis player and former world No. 1,Tomasz Wiktorowski,Polish tennis coach,colleague,Coached her 2021-2024; four Grand Slam titles together,https://en.wikipedia.org/wiki/Tomasz_Wiktorowski
+Iga Swiatek,Polish tennis player and former world No. 1,Tomasz Swiatek,Former Olympic rower,family,Father; rowed for Poland at the 1988 Olympics,https://en.wikipedia.org/wiki/Iga_%C5%9Awi%C4%85tek
+Coco Gauff,American tennis player and Grand Slam champion,Venus Williams,American tennis player and seven-time Grand Slam singles champion,colleague,First-round opponents at Wimbledon 2019 in Gauff's main-draw debut,https://en.wikipedia.org/wiki/Venus_Williams
+Coco Gauff,American tennis player and Grand Slam champion,Corey Gauff,Tennis coach and former college basketball player,family,Father and longtime coach,https://en.wikipedia.org/wiki/Coco_Gauff
+Andy Murray,Retired British tennis player and two-time Wimbledon champion,Ivan Lendl,Retired Czech-American tennis player and coach,colleague,Coached him to all three of his Grand Slam titles,https://en.wikipedia.org/wiki/Ivan_Lendl
+Andy Murray,Retired British tennis player and two-time Wimbledon champion,Novak Djokovic,Serbian tennis player with 24 Grand Slam singles titles,colleague,Career-long rivals from junior tennis; Murray coached him in 2025,https://en.wikipedia.org/wiki/Andy_Murray
+Andy Murray,Retired British tennis player and two-time Wimbledon champion,Jamie Murray,British doubles player and former world No. 1,family,Older brother; Grand Slam doubles champion,https://en.wikipedia.org/wiki/Jamie_Murray
+Andy Murray,Retired British tennis player and two-time Wimbledon champion,Judy Murray,Tennis coach and former Fed Cup captain,family,Mother and first coach,https://en.wikipedia.org/wiki/Judy_Murray
+Andy Murray,Retired British tennis player and two-time Wimbledon champion,Kim Sears,Artist,spouse,Married 2015,https://en.wikipedia.org/wiki/Andy_Murray
+Tiger Woods,Professional golfer with 15 major championships,Mark Steinberg,Sports agent at Excel Sports Management,agent,His agent since 1998,https://en.wikipedia.org/wiki/Tiger_Woods
+Tiger Woods,Professional golfer with 15 major championships,Rory McIlroy,Northern Irish golfer and career Grand Slam winner,cofounder,Cofounded TMRW Sports and the TGL league in 2022,https://en.wikipedia.org/wiki/Rory_McIlroy
+Tiger Woods,Professional golfer with 15 major championships,Steve Williams,New Zealand golf caddie,colleague,His caddie 1999-2011 across 13 major wins,https://en.wikipedia.org/wiki/Steve_Williams_(caddie)
+Tiger Woods,Professional golfer with 15 major championships,Lindsey Vonn,American alpine skier and Olympic medalist,ex-partner,In a relationship 2013-2015,https://en.wikipedia.org/wiki/Lindsey_Vonn
+Tiger Woods,Professional golfer with 15 major championships,Elin Nordegren,Former model,ex-spouse,Married 2004-2010; two children,https://en.wikipedia.org/wiki/Elin_Nordegren
+Rory McIlroy,Northern Irish golfer and career Grand Slam winner,Tiger Woods,Professional golfer with 15 major championships,cofounder,Cofounded TMRW Sports and the TGL league in 2022,https://en.wikipedia.org/wiki/Rory_McIlroy
+Rory McIlroy,Northern Irish golfer and career Grand Slam winner,Harry Diamond,Golf caddie,colleague,Childhood friend; his caddie since 2017,https://en.wikipedia.org/wiki/Rory_McIlroy
+Rory McIlroy,Northern Irish golfer and career Grand Slam winner,Erica Stoll,Former PGA of America championship manager,spouse,Married 2017,https://en.wikipedia.org/wiki/Rory_McIlroy
+Scottie Scheffler,American golfer and former world No. 1,Ted Scott,Golf caddie,colleague,His caddie since 2021,https://en.wikipedia.org/wiki/Ted_Scott_(caddie)
+Scottie Scheffler,American golfer and former world No. 1,Randy Smith,American golf instructor,mentor,Coached him from age seven at Royal Oaks in Dallas,https://en.wikipedia.org/wiki/Scottie_Scheffler
+Scottie Scheffler,American golfer and former world No. 1,Meredith Scudder,Former college athlete,spouse,Married 2020; high school sweethearts,https://en.wikipedia.org/wiki/Scottie_Scheffler
+Phil Mickelson,American golfer with six major championships,Jim Mackay,Golf caddie and broadcaster,colleague,His caddie 1992-2017 across five major wins,https://en.wikipedia.org/wiki/Jim_Mackay_(caddie)
+Phil Mickelson,American golfer with six major championships,Amy Mickelson,Former NBA cheerleader and philanthropist,spouse,Married 1996,https://en.wikipedia.org/wiki/Phil_Mickelson
+Nelly Korda,American LPGA golfer and Olympic gold medalist,Jessica Korda,American LPGA golfer,family,Older sister; six-time LPGA Tour winner,https://en.wikipedia.org/wiki/Jessica_Korda
+Nelly Korda,American LPGA golfer and Olympic gold medalist,Petr Korda,Retired Czech tennis player,family,Father; won the 1998 Australian Open,https://en.wikipedia.org/wiki/Petr_Korda
+Nelly Korda,American LPGA golfer and Olympic gold medalist,Sebastian Korda,American tennis player,family,Younger brother; ATP Tour player,https://en.wikipedia.org/wiki/Sebastian_Korda
+Lewis Hamilton,Ferrari Formula One driver and seven-time world champion,Charles Leclerc,Ferrari Formula One driver,colleague,Ferrari teammates from 2025,https://en.wikipedia.org/wiki/Lewis_Hamilton
+Lewis Hamilton,Ferrari Formula One driver and seven-time world champion,Nico Rosberg,Retired German Formula One driver and 2016 world champion,colleague,Karting teammates as juniors and Mercedes teammates 2013-2016,https://en.wikipedia.org/wiki/Nico_Rosberg
+Lewis Hamilton,Ferrari Formula One driver and seven-time world champion,Toto Wolff,Mercedes Formula One team principal,colleague,Team principal during his Mercedes years 2013-2024,https://en.wikipedia.org/wiki/Toto_Wolff
+Lewis Hamilton,Ferrari Formula One driver and seven-time world champion,Anthony Hamilton,Businessman and former driver manager,family,Father; managed his early career,https://en.wikipedia.org/wiki/Lewis_Hamilton
+Lewis Hamilton,Ferrari Formula One driver and seven-time world champion,Ron Dennis,British businessman and former McLaren principal,mentor,Signed him to the McLaren driver programme in 1998,https://en.wikipedia.org/wiki/Ron_Dennis
+Max Verstappen,Red Bull Formula One driver and multiple world champion,Christian Horner,British motorsport executive,colleague,Red Bull team principal through his 2021-2024 title years,https://en.wikipedia.org/wiki/Christian_Horner
+Max Verstappen,Red Bull Formula One driver and multiple world champion,Jos Verstappen,Retired Dutch Formula One driver,family,Father; raced in Formula One in the 1990s and 2000s,https://en.wikipedia.org/wiki/Jos_Verstappen
+Max Verstappen,Red Bull Formula One driver and multiple world champion,Sophie Kumpen,Retired Belgian karting driver,family,Mother; competitive karting driver,https://en.wikipedia.org/wiki/Sophie_Kumpen
+Max Verstappen,Red Bull Formula One driver and multiple world champion,Helmut Marko,Red Bull motorsport adviser,mentor,Brought him into the Red Bull junior programme in 2014,https://en.wikipedia.org/wiki/Helmut_Marko
+Max Verstappen,Red Bull Formula One driver and multiple world champion,Kelly Piquet,Brazilian-Dutch model and writer,partner,Partners since 2020; daughter born 2025,https://en.wikipedia.org/wiki/Kelly_Piquet
+Charles Leclerc,Ferrari Formula One driver,Carlos Sainz Jr.,Spanish Formula One driver,colleague,Ferrari teammates 2021-2024,https://en.wikipedia.org/wiki/Carlos_Sainz_Jr.
+Charles Leclerc,Ferrari Formula One driver,Lewis Hamilton,Ferrari Formula One driver and seven-time world champion,colleague,Ferrari teammates from 2025,https://en.wikipedia.org/wiki/Lewis_Hamilton
+Charles Leclerc,Ferrari Formula One driver,Arthur Leclerc,Monegasque racing driver,family,Younger brother; racing driver,https://en.wikipedia.org/wiki/Arthur_Leclerc
+Charles Leclerc,Ferrari Formula One driver,Nicolas Todt,French motorsport manager,manager,His manager since 2011,https://en.wikipedia.org/wiki/Nicolas_Todt
+Patrick Mahomes,NFL quarterback for the Kansas City Chiefs,Andy Reid,Kansas City Chiefs head coach,colleague,Coached by Reid since 2017,https://en.wikipedia.org/wiki/Andy_Reid
+Patrick Mahomes,NFL quarterback for the Kansas City Chiefs,Travis Kelce,NFL tight end for the Kansas City Chiefs,colleague,Chiefs teammates since 2017; three Super Bowl wins,https://en.wikipedia.org/wiki/Travis_Kelce
+Patrick Mahomes,NFL quarterback for the Kansas City Chiefs,Pat Mahomes,Retired MLB pitcher,family,Father; pitched 11 MLB seasons,https://en.wikipedia.org/wiki/Pat_Mahomes
+Patrick Mahomes,NFL quarterback for the Kansas City Chiefs,Brittany Mahomes,Kansas City Current co-owner,spouse,Married 2022; high school sweethearts,https://en.wikipedia.org/wiki/Patrick_Mahomes
+Travis Kelce,NFL tight end for the Kansas City Chiefs,Andy Reid,Kansas City Chiefs head coach,colleague,Coached by Reid since 2013,https://en.wikipedia.org/wiki/Andy_Reid
+Travis Kelce,NFL tight end for the Kansas City Chiefs,Patrick Mahomes,NFL quarterback for the Kansas City Chiefs,colleague,Chiefs teammates since 2017; three Super Bowl wins,https://en.wikipedia.org/wiki/Travis_Kelce
+Travis Kelce,NFL tight end for the Kansas City Chiefs,Jason Kelce,Retired NFL center and broadcaster,family,Older brother; co-hosts the New Heights podcast with him,https://en.wikipedia.org/wiki/Jason_Kelce
+Travis Kelce,NFL tight end for the Kansas City Chiefs,Taylor Swift,American singer-songwriter,partner,In a relationship since 2023; engaged 2025,https://en.wikipedia.org/wiki/Taylor_Swift
+Jason Kelce,Retired NFL center and broadcaster,Jalen Hurts,NFL quarterback for the Philadelphia Eagles,colleague,Philadelphia Eagles teammates 2020-2023,https://en.wikipedia.org/wiki/Jalen_Hurts
+Jason Kelce,Retired NFL center and broadcaster,Travis Kelce,NFL tight end for the Kansas City Chiefs,family,Older brother; co-hosts the New Heights podcast with him,https://en.wikipedia.org/wiki/Jason_Kelce
+Jason Kelce,Retired NFL center and broadcaster,Kylie Kelce,Podcast host and philanthropist,spouse,Married 2018,https://en.wikipedia.org/wiki/Kylie_Kelce
+Tom Brady,"Retired NFL quarterback, broadcaster and Raiders minority owner",Bill Belichick,Football head coach,colleague,New England Patriots head coach 2000-2019; six Super Bowl wins together,https://en.wikipedia.org/wiki/Bill_Belichick
+Tom Brady,"Retired NFL quarterback, broadcaster and Raiders minority owner",Julian Edelman,Retired NFL wide receiver,colleague,Patriots teammates 2009-2020,https://en.wikipedia.org/wiki/Julian_Edelman
+Tom Brady,"Retired NFL quarterback, broadcaster and Raiders minority owner",Rob Gronkowski,Retired NFL tight end,colleague,Patriots teammates 2010-2018 and Buccaneers teammates 2020-2021,https://en.wikipedia.org/wiki/Rob_Gronkowski
+Tom Brady,"Retired NFL quarterback, broadcaster and Raiders minority owner",Robert Kraft,New England Patriots owner,colleague,Owner of the Patriots throughout his 2000-2019 tenure,https://en.wikipedia.org/wiki/Robert_Kraft
+Tom Brady,"Retired NFL quarterback, broadcaster and Raiders minority owner",Gisele Bundchen,Brazilian model and businesswoman,ex-spouse,Married 2009-2022; two children,https://en.wikipedia.org/wiki/Gisele_B%C3%BCndchen
+Aaron Rodgers,NFL quarterback and four-time MVP,Davante Adams,NFL wide receiver,colleague,Green Bay Packers teammates 2014-2021,https://en.wikipedia.org/wiki/Davante_Adams
+Aaron Rodgers,NFL quarterback and four-time MVP,Mike McCarthy,NFL head coach,colleague,Packers head coach 2006-2018; Super Bowl XLV win together,https://en.wikipedia.org/wiki/Mike_McCarthy_(American_football)
+Aaron Rodgers,NFL quarterback and four-time MVP,Brett Favre,Retired NFL quarterback,predecessor,Succeeded him as Packers starting quarterback in 2008,https://en.wikipedia.org/wiki/Brett_Favre
+Peyton Manning,Retired NFL quarterback and Omaha Productions founder,Marvin Harrison,Retired NFL wide receiver,colleague,Indianapolis Colts teammates 1998-2008; record touchdown connection,https://en.wikipedia.org/wiki/Marvin_Harrison
+Peyton Manning,Retired NFL quarterback and Omaha Productions founder,Tony Dungy,Retired NFL head coach and broadcaster,colleague,Colts head coach 2002-2008; Super Bowl XLI win together,https://en.wikipedia.org/wiki/Tony_Dungy
+Peyton Manning,Retired NFL quarterback and Omaha Productions founder,Archie Manning,Retired NFL quarterback,family,Father; played 13 NFL seasons,https://en.wikipedia.org/wiki/Archie_Manning
+Peyton Manning,Retired NFL quarterback and Omaha Productions founder,Eli Manning,Retired NFL quarterback and two-time Super Bowl MVP,family,Younger brother; both Super Bowl MVPs,https://en.wikipedia.org/wiki/Eli_Manning
+Eli Manning,Retired NFL quarterback and two-time Super Bowl MVP,Tom Coughlin,Retired NFL head coach,colleague,New York Giants head coach 2004-2015; two Super Bowl wins together,https://en.wikipedia.org/wiki/Tom_Coughlin
+Eli Manning,Retired NFL quarterback and two-time Super Bowl MVP,Peyton Manning,Retired NFL quarterback and Omaha Productions founder,family,Younger brother; both Super Bowl MVPs,https://en.wikipedia.org/wiki/Eli_Manning
+Russell Wilson,NFL quarterback and Super Bowl champion,Pete Carroll,NFL head coach,colleague,Seattle Seahawks head coach 2012-2021; Super Bowl XLVIII win together,https://en.wikipedia.org/wiki/Pete_Carroll
+Russell Wilson,NFL quarterback and Super Bowl champion,Ciara,American singer and businesswoman,spouse,Married 2016,https://en.wikipedia.org/wiki/Ciara
+J.J. Watt,Retired NFL defensive end and broadcaster,Derek Watt,Retired NFL fullback,family,Younger brother,https://en.wikipedia.org/wiki/Derek_Watt
+J.J. Watt,Retired NFL defensive end and broadcaster,T.J. Watt,NFL linebacker for the Pittsburgh Steelers,family,Younger brother; NFL Defensive Player of the Year,https://en.wikipedia.org/wiki/T._J._Watt
+J.J. Watt,Retired NFL defensive end and broadcaster,Kealia Watt,Retired NWSL forward,spouse,Married 2020,https://en.wikipedia.org/wiki/Kealia_Watt
+Saquon Barkley,NFL running back for the Philadelphia Eagles,Jalen Hurts,NFL quarterback for the Philadelphia Eagles,colleague,Eagles teammates from 2024; Super Bowl LIX win,https://en.wikipedia.org/wiki/Jalen_Hurts
+Saquon Barkley,NFL running back for the Philadelphia Eagles,James Franklin,American football head coach,mentor,Recruited and coached him at Penn State,https://en.wikipedia.org/wiki/James_Franklin_(American_football)
+Josh Allen,NFL quarterback for the Buffalo Bills,Sean McDermott,Buffalo Bills head coach,colleague,Coached by McDermott since 2018,https://en.wikipedia.org/wiki/Sean_McDermott
+Josh Allen,NFL quarterback for the Buffalo Bills,Stefon Diggs,NFL wide receiver,colleague,Buffalo Bills teammates 2020-2023,https://en.wikipedia.org/wiki/Stefon_Diggs
+Josh Allen,NFL quarterback for the Buffalo Bills,Hailee Steinfeld,American actress and singer,spouse,Married 2025,https://en.wikipedia.org/wiki/Hailee_Steinfeld
+Shohei Ohtani,MLB two-way player for the Los Angeles Dodgers,Mike Trout,MLB outfielder for the Los Angeles Angels,colleague,Los Angeles Angels teammates 2018-2023,https://en.wikipedia.org/wiki/Mike_Trout
+Shohei Ohtani,MLB two-way player for the Los Angeles Dodgers,Mookie Betts,MLB infielder for the Los Angeles Dodgers,colleague,Los Angeles Dodgers teammates since 2024; 2024 World Series win,https://en.wikipedia.org/wiki/Mookie_Betts
+Shohei Ohtani,MLB two-way player for the Los Angeles Dodgers,Mamiko Tanaka,Former professional basketball player,spouse,Married 2024,https://en.wikipedia.org/wiki/Shohei_Ohtani
+Aaron Judge,MLB outfielder and New York Yankees captain,Giancarlo Stanton,MLB designated hitter for the New York Yankees,colleague,Yankees teammates since 2018,https://en.wikipedia.org/wiki/Giancarlo_Stanton
+Aaron Judge,MLB outfielder and New York Yankees captain,Samantha Bracksieck,Businesswoman,spouse,Married 2021; high school classmates,https://en.wikipedia.org/wiki/Aaron_Judge
+Mookie Betts,MLB infielder for the Los Angeles Dodgers,Freddie Freeman,MLB first baseman for the Los Angeles Dodgers,colleague,Dodgers teammates since 2022; 2024 World Series win,https://en.wikipedia.org/wiki/Freddie_Freeman
+Mookie Betts,MLB infielder for the Los Angeles Dodgers,Shohei Ohtani,MLB two-way player for the Los Angeles Dodgers,colleague,Los Angeles Dodgers teammates since 2024; 2024 World Series win,https://en.wikipedia.org/wiki/Mookie_Betts
+Derek Jeter,Retired MLB shortstop and former Miami Marlins CEO,Alex Rodriguez,Retired MLB infielder and A-Rod Corp founder,colleague,Yankees teammates 2004-2016; 2009 World Series win,https://en.wikipedia.org/wiki/Alex_Rodriguez
+Derek Jeter,Retired MLB shortstop and former Miami Marlins CEO,Joe Torre,Retired MLB manager and executive,colleague,Yankees manager 1996-2007; four championships together,https://en.wikipedia.org/wiki/Joe_Torre
+Derek Jeter,Retired MLB shortstop and former Miami Marlins CEO,Mariano Rivera,Retired MLB pitcher,colleague,New York Yankees teammates 1995-2013; five championships,https://en.wikipedia.org/wiki/Mariano_Rivera
+Derek Jeter,Retired MLB shortstop and former Miami Marlins CEO,Hannah Jeter,Model and former television host,spouse,Married 2016,https://en.wikipedia.org/wiki/Hannah_Jeter
+Alex Rodriguez,Retired MLB infielder and A-Rod Corp founder,Marc Lore,Entrepreneur and Minnesota Timberwolves co-owner,cofounder,Partnered with Lore on the 2021 agreement to buy the Minnesota Timberwolves,https://en.wikipedia.org/wiki/Marc_Lore
+Alex Rodriguez,Retired MLB infielder and A-Rod Corp founder,Derek Jeter,Retired MLB shortstop and former Miami Marlins CEO,colleague,Yankees teammates 2004-2016; 2009 World Series win,https://en.wikipedia.org/wiki/Alex_Rodriguez
+Alex Rodriguez,Retired MLB infielder and A-Rod Corp founder,Jennifer Lopez,American singer and actress,ex-partner,In a relationship 2017-2021; engaged 2019,https://en.wikipedia.org/wiki/Jennifer_Lopez
+Sidney Crosby,NHL center and Pittsburgh Penguins captain,Evgeni Malkin,NHL center for the Pittsburgh Penguins,colleague,Penguins teammates since 2006; three Stanley Cups,https://en.wikipedia.org/wiki/Evgeni_Malkin
+Sidney Crosby,NHL center and Pittsburgh Penguins captain,Kris Letang,NHL defenceman for the Pittsburgh Penguins,colleague,Penguins teammates since 2006; three Stanley Cups,https://en.wikipedia.org/wiki/Kris_Letang
+Sidney Crosby,NHL center and Pittsburgh Penguins captain,Mario Lemieux,Retired NHL center and former Penguins owner,mentor,Billeted with the Lemieux family as a rookie in 2005; Penguins owner,https://en.wikipedia.org/wiki/Mario_Lemieux
+Alex Ovechkin,NHL winger and Washington Capitals captain,Nicklas Backstrom,Retired NHL center,colleague,Washington Capitals teammates 2007-2024; 2018 Stanley Cup,https://en.wikipedia.org/wiki/Nicklas_B%C3%A4ckstr%C3%B6m
+Alex Ovechkin,NHL winger and Washington Capitals captain,Nastasia Shubskaya,Russian model,spouse,Married 2016,https://en.wikipedia.org/wiki/Alexander_Ovechkin
+Connor McDavid,NHL center and Edmonton Oilers captain,Leon Draisaitl,NHL center for the Edmonton Oilers,colleague,Edmonton Oilers teammates since 2015,https://en.wikipedia.org/wiki/Leon_Draisaitl
+Connor McDavid,NHL center and Edmonton Oilers captain,Lauren Kyle,Interior designer and entrepreneur,spouse,Married 2024,https://en.wikipedia.org/wiki/Connor_McDavid
+Wayne Gretzky,Retired NHL center and hockey executive,Mark Messier,Retired NHL center,colleague,Edmonton Oilers teammates 1979-1988; four Stanley Cups,https://en.wikipedia.org/wiki/Mark_Messier
+Wayne Gretzky,Retired NHL center and hockey executive,Dustin Johnson,American professional golfer,family,Son-in-law; married Paulina Gretzky in 2022,https://en.wikipedia.org/wiki/Dustin_Johnson
+Wayne Gretzky,Retired NHL center and hockey executive,Paulina Gretzky,Model and media personality,family,Daughter; adult public figure,https://en.wikipedia.org/wiki/Paulina_Gretzky
+Wayne Gretzky,Retired NHL center and hockey executive,Janet Jones,American actress,spouse,Married 1988,https://en.wikipedia.org/wiki/Janet_Jones
+Khabib Nurmagomedov,Retired UFC lightweight champion and coach,Javier Mendez,American MMA coach and AKA founder,mentor,Head coach at American Kickboxing Academy throughout his UFC career,https://en.wikipedia.org/wiki/Javier_Mendez
+Khabib Nurmagomedov,Retired UFC lightweight champion and coach,Islam Makhachev,Russian mixed martial artist and UFC champion,protege,Longtime training partner; now coaches him,https://en.wikipedia.org/wiki/Islam_Makhachev
+Canelo Alvarez,Mexican professional boxer and multiple-division champion,Eddy Reynoso,Mexican boxing trainer,mentor,Trainer since his amateur years,https://en.wikipedia.org/wiki/Eddy_Reynoso
+Canelo Alvarez,Mexican professional boxer and multiple-division champion,Fernanda Gomez,Mexican model,spouse,Married 2021,https://en.wikipedia.org/wiki/Canelo_%C3%81lvarez
+Tyson Fury,British heavyweight boxer and former world champion,SugarHill Steward,American boxing trainer,colleague,"Trainer from 2020, including the Deontay Wilder rematches",https://en.wikipedia.org/wiki/SugarHill_Steward
+Tyson Fury,British heavyweight boxer and former world champion,Tommy Fury,British boxer and television personality,family,Younger half-brother; professional boxer,https://en.wikipedia.org/wiki/Tommy_Fury
+Tyson Fury,British heavyweight boxer and former world champion,Paris Fury,British author and television personality,spouse,Married 2008,https://en.wikipedia.org/wiki/Paris_Fury
+Usain Bolt,Retired Jamaican sprinter and eight-time Olympic champion,Yohan Blake,Jamaican sprinter,colleague,Jamaica relay teammates; Olympic gold medals in 2012 and 2016,https://en.wikipedia.org/wiki/Yohan_Blake
+Usain Bolt,Retired Jamaican sprinter and eight-time Olympic champion,Glen Mills,Jamaican athletics coach,mentor,Coached him from 2004 through his 2017 retirement,https://en.wikipedia.org/wiki/Glen_Mills
+Usain Bolt,Retired Jamaican sprinter and eight-time Olympic champion,Kasi Bennett,Jamaican businesswoman,partner,Long-term partner; children together,https://en.wikipedia.org/wiki/Usain_Bolt
+Simone Biles,American artistic gymnast and Olympic champion,Jordan Chiles,American artistic gymnast,colleague,US Olympic team teammates in 2021 and 2024,https://en.wikipedia.org/wiki/Jordan_Chiles
+Simone Biles,American artistic gymnast and Olympic champion,Cecile Landi,French-American gymnastics coach,mentor,Coached her 2017-2024 with Laurent Landi,https://en.wikipedia.org/wiki/C%C3%A9cile_Landi
+Simone Biles,American artistic gymnast and Olympic champion,Jonathan Owens,NFL safety,spouse,Married 2023,https://en.wikipedia.org/wiki/Jonathan_Owens
+Katie Ledecky,American swimmer and multiple Olympic champion,Greg Meehan,American swimming coach,colleague,Coached her at Stanford 2016-2021,https://en.wikipedia.org/wiki/Greg_Meehan
+Katie Ledecky,American swimmer and multiple Olympic champion,Bruce Gemmell,American swimming coach,mentor,Coached her 2013-2016 at Nation's Capital Swim Club,https://en.wikipedia.org/wiki/Katie_Ledecky
+Michael Phelps,Retired American swimmer with 23 Olympic gold medals,Ryan Lochte,Retired American swimmer,colleague,US teammates and rivals across four Olympic Games,https://en.wikipedia.org/wiki/Ryan_Lochte
+Michael Phelps,Retired American swimmer with 23 Olympic gold medals,Bob Bowman,American swimming coach,mentor,Career-long coach from his youth club years through 2016,https://en.wikipedia.org/wiki/Bob_Bowman
+Michael Phelps,Retired American swimmer with 23 Olympic gold medals,Nicole Johnson,Former Miss California USA,spouse,Married 2016,https://en.wikipedia.org/wiki/Michael_Phelps
+Noah Lyles,American sprinter and Olympic 100m champion,Josephus Lyles,American sprinter,family,Younger brother; professional sprinter,https://en.wikipedia.org/wiki/Noah_Lyles
+Noah Lyles,American sprinter and Olympic 100m champion,Junelle Bromfield,Jamaican sprinter,partner,In a relationship since 2022,https://en.wikipedia.org/wiki/Junelle_Bromfield
+Sydney McLaughlin-Levrone,American hurdler and world record holder,Bobby Kersee,American athletics coach,mentor,Coached by Kersee since 2020,https://en.wikipedia.org/wiki/Bob_Kersee
+Sydney McLaughlin-Levrone,American hurdler and world record holder,Andre Levrone Jr.,Former NFL wide receiver,spouse,Married 2022,https://en.wikipedia.org/wiki/Sydney_McLaughlin-Levrone
+Allyson Felix,Retired American sprinter and Saysh cofounder,Wes Felix,Sports agent and Saysh cofounder,cofounder,Brother; cofounded the footwear brand Saysh with her in 2021,https://en.wikipedia.org/wiki/Allyson_Felix
+Allyson Felix,Retired American sprinter and Saysh cofounder,Bobby Kersee,American athletics coach,mentor,Coached her for most of her professional career,https://en.wikipedia.org/wiki/Bob_Kersee
+Allyson Felix,Retired American sprinter and Saysh cofounder,Kenneth Ferguson,Retired American hurdler,spouse,Married 2018,https://en.wikipedia.org/wiki/Kenneth_Ferguson
+Eliud Kipchoge,Kenyan marathon runner and two-time Olympic champion,Geoffrey Kamworor,Kenyan long-distance runner,colleague,Both coached by Patrick Sang and managed by Global Sports Communication,https://en.wikipedia.org/wiki/Geoffrey_Kamworor
+Eliud Kipchoge,Kenyan marathon runner and two-time Olympic champion,Jos Hermens,Founder and CEO of Global Sports Communication,manager,Managed by Hermens' Global Sports Communication agency,https://en.wikipedia.org/wiki/Jos_Hermens
+Eliud Kipchoge,Kenyan marathon runner and two-time Olympic champion,Valentijn Trouw,Dutch athlete manager at Global Sports Communication,manager,His day-to-day athlete manager for many years,https://en.wikipedia.org/wiki/Eliud_Kipchoge
+Eliud Kipchoge,Kenyan marathon runner and two-time Olympic champion,Patrick Sang,Kenyan athletics coach and former steeplechaser,mentor,Coached him since the start of his career,https://en.wikipedia.org/wiki/Patrick_Sang
+Mikaela Shiffrin,American alpine skier and Olympic champion,Eileen Shiffrin,Former nurse and ski coach,family,Mother; travels with her as coach,https://en.wikipedia.org/wiki/Mikaela_Shiffrin
+Mikaela Shiffrin,American alpine skier and Olympic champion,Aleksander Aamodt Kilde,Norwegian alpine skier,partner,Partners since 2021; engaged 2024,https://en.wikipedia.org/wiki/Aleksander_Aamodt_Kilde
+Lindsey Vonn,American alpine skier and Olympic medalist,P. K. Subban,Retired NHL defenceman and broadcaster,ex-partner,Engaged 2019; relationship ended 2020,https://en.wikipedia.org/wiki/P._K._Subban
+Lindsey Vonn,American alpine skier and Olympic medalist,Tiger Woods,Professional golfer with 15 major championships,ex-partner,In a relationship 2013-2015,https://en.wikipedia.org/wiki/Lindsey_Vonn
+Virat Kohli,Indian batter and former national team captain,MS Dhoni,Retired Indian wicketkeeper-batter and World Cup winning captain,colleague,India teammates 2008-2019; captained him before Kohli took over in 2017,https://en.wikipedia.org/wiki/MS_Dhoni
+Virat Kohli,Indian batter and former national team captain,Rohit Sharma,Indian batter and former national team captain,colleague,India teammates since 2008; 2024 T20 World Cup win,https://en.wikipedia.org/wiki/Rohit_Sharma
+Virat Kohli,Indian batter and former national team captain,AB de Villiers,Retired South African batter,friend,Royal Challengers Bangalore teammates 2011-2021,https://en.wikipedia.org/wiki/AB_de_Villiers
+Virat Kohli,Indian batter and former national team captain,Anushka Sharma,Indian actress and producer,spouse,Married 2017,https://en.wikipedia.org/wiki/Anushka_Sharma
+Sachin Tendulkar,Retired Indian batter and record Test run scorer,MS Dhoni,Retired Indian wicketkeeper-batter and World Cup winning captain,colleague,India teammates; 2011 World Cup win together,https://en.wikipedia.org/wiki/MS_Dhoni
+Sachin Tendulkar,Retired Indian batter and record Test run scorer,Arjun Tendulkar,Indian cricketer,family,Son; professional cricketer,https://en.wikipedia.org/wiki/Arjun_Tendulkar
+Sachin Tendulkar,Retired Indian batter and record Test run scorer,Vinod Kambli,Retired Indian batter,friend,School teammates; shared a 664-run stand in 1988,https://en.wikipedia.org/wiki/Vinod_Kambli
+Sachin Tendulkar,Retired Indian batter and record Test run scorer,Anjali Tendulkar,Paediatrician,spouse,Married 1995,https://en.wikipedia.org/wiki/Sachin_Tendulkar
+MS Dhoni,Retired Indian wicketkeeper-batter and World Cup winning captain,Sachin Tendulkar,Retired Indian batter and record Test run scorer,colleague,India teammates; 2011 World Cup win together,https://en.wikipedia.org/wiki/MS_Dhoni
+MS Dhoni,Retired Indian wicketkeeper-batter and World Cup winning captain,Suresh Raina,Retired Indian batter,colleague,India and Chennai Super Kings teammates,https://en.wikipedia.org/wiki/Suresh_Raina
+MS Dhoni,Retired Indian wicketkeeper-batter and World Cup winning captain,Virat Kohli,Indian batter and former national team captain,colleague,India teammates 2008-2019; captained him before Kohli took over in 2017,https://en.wikipedia.org/wiki/MS_Dhoni
+MS Dhoni,Retired Indian wicketkeeper-batter and World Cup winning captain,Sakshi Dhoni,Indian businesswoman,spouse,Married 2010,https://en.wikipedia.org/wiki/MS_Dhoni
