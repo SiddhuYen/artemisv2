@@ -357,7 +357,7 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                               protected: set, progress, context_a: str, context_b: str,
                               on_step: Optional[Callable[[dict], None]] = None,
                               cancel_checker: Optional[Callable[[], None]] = None,
-                              should_stop: Optional[Callable[[Session], bool]] = None) -> None:
+                              should_stop: Optional[Callable[[Session], bool]] = None) -> dict:
     """Run both endpoints' expand_graph calls concurrently, each on its own
     Session (bound to the same engine as `db` — a Session isn't thread-safe to
     share). The two sides are fully independent expansions into the same
@@ -374,7 +374,12 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     unhandled exception from a sequential call would have; this is not the
     place to silently swallow a genuine failure (contrast with expand_graph's
     OWN per-node worker pool, which deliberately skips a failed node rather
-    than aborting the whole hop — a full endpoint failing is not that)."""
+    than aborting the whole hop — a full endpoint failing is not that).
+
+    Returns {"a": <side A's expand_graph stats>, "b": <side B's>} -- each
+    includes visited_by_hop, so connect_people can show what was explored
+    on BOTH sides even when they never actually met (see its "explored"
+    field)."""
     engine = db.get_bind()
     WorkerSession = sessionmaker(bind=engine, autoflush=False,
                                  expire_on_commit=False, future=True)
@@ -398,7 +403,7 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
 
     def _run(name: str, context: str, label: str, side_depth: int,
              enhanced: bool, professional_only: bool,
-             target_name: str, target_context: str) -> None:
+             target_name: str, target_context: str) -> dict:
         worker_db = WorkerSession()
         try:
             if cancel_checker:
@@ -428,19 +433,21 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                 kwargs["cancel_checker"] = cancel_checker
             if should_stop:
                 kwargs["should_stop"] = should_stop
-            expand_graph(worker_db, name, side_depth, **kwargs)
+            return expand_graph(worker_db, name, side_depth, **kwargs)
         finally:
             worker_db.close()
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        futures = [
-            ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a, professional_only_a,
-                      name_b, context_b),
-            ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b, professional_only_b,
-                      name_a, context_a),
-        ]
-        for f in futures:
-            f.result()
+        futures = {
+            "a": ex.submit(_run, name_a, context_a, "A", depth_a, enhanced_a, professional_only_a,
+                          name_b, context_b),
+            "b": ex.submit(_run, name_b, context_b, "B", depth_b, enhanced_b, professional_only_b,
+                          name_a, context_a),
+        }
+        # Each side's own visited_by_hop (see expand_graph) -- so a caller
+        # can show what was explored on BOTH sides even when the two never
+        # actually met (see connect_people's "explored" field).
+        return {side: f.result() for side, f in futures.items()}
 
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
@@ -787,6 +794,26 @@ def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, quer
     return found, confident
 
 
+def _build_explored(expand_stats: Optional[dict], name_a: str, name_b: str) -> Optional[dict]:
+    """Each side's per-hop explored node names (see expand_graph's
+    visited_by_hop), for a caller to visualize what Artemis actually looked
+    at even when the two sides never met -- not just the found path, which
+    doesn't exist in that case at all.
+
+    None when no fresh expansion ran (a route was already known, or found
+    via the cheap direct-pair check) -- nothing new was explored, so
+    there's nothing to show beyond the route itself.
+    """
+    if not expand_stats:
+        return None
+    return {
+        "a": {"seed": name_a, "by_hop": (expand_stats.get("a") or {}).get("visited_by_hop", {}),
+              "boundary": (expand_stats.get("a") or {}).get("boundary", [])},
+        "b": {"seed": name_b, "by_hop": (expand_stats.get("b") or {}).get("visited_by_hop", {}),
+              "boundary": (expand_stats.get("b") or {}).get("boundary", [])},
+    }
+
+
 def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                    progress=None, context_a: str = "", context_b: str = "",
                    on_step: Optional[Callable[[dict], None]] = None,
@@ -850,6 +877,10 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                 progress(f"[direct] found a {'confident' if confident else 'weak'} "
                          "direct mention — skipping full neighborhood expansion")
 
+    # Populated only when a fresh expansion actually ran (not when a route
+    # was already known, or found via the cheap direct-pair check) -- see
+    # _build_explored below and its use in both return paths.
+    expand_stats: Optional[dict] = None
     if not route_found.is_set():
         if cancel_checker:
             cancel_checker()
@@ -859,10 +890,11 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             progress(f"[reachable] side {shallow_side} is a public figure — "
                      f"capping their expansion to depth {min(depth_a, depth_b)} "
                      "(immediate circle only) instead of matching the other side")
-        _expand_both_concurrently(db, name_a, name_b, depth_a, depth_b, both, progress,
-                                  context_a, context_b, on_step=on_step,
-                                  cancel_checker=cancel_checker,
-                                  should_stop=should_stop)
+        expand_stats = _expand_both_concurrently(
+            db, name_a, name_b, depth_a, depth_b, both, progress,
+            context_a, context_b, on_step=on_step,
+            cancel_checker=cancel_checker,
+            should_stop=should_stop)
 
     if cancel_checker:
         cancel_checker()
@@ -889,6 +921,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             "person_a": a.canonical_name, "person_b": b.canonical_name,
             "reason": f"no path within {max_hops} hops — their graphs don't overlap "
                       f"at depth {depth}. Try a higher depth.",
+            "explored": _build_explored(expand_stats, name_a, name_b),
         }
 
     paths = []
@@ -928,6 +961,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         "bridges": best["bridges"], "path": best["path"],
         "paths": paths,  # all diverse routes, best first
         "warnings": ["Path is unverified", "Requires Claude verification before activation"],
+        "explored": _build_explored(expand_stats, name_a, name_b),
     }
 
 

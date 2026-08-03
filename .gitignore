@@ -12,6 +12,8 @@ __pycache__/
 .DS_Store
 .env
 .env.*
+# ...except the committed template of what to set (holds no real values)
+!.env.example
 # Claude Code per-user local settings
 .claude/settings.local.json
 # generated graph snapshots / per-session graph DBs (build artifacts)

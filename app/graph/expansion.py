@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -1221,6 +1221,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     visited: Set[str] = set()
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
+    visited_by_hop: Dict[int, List[str]] = {}  # hop -> node names selected for it
     # Alpha step 7 (per-candidate depth): a node selected for the Alpha
     # frontier that turns out to be independently notable/famous relative to
     # the target gets fully processed and persisted (its own "1 hop"), but
@@ -1250,11 +1251,41 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         return bool(should_stop and should_stop(session))
 
     def _process_one(name: str, hop: int) -> Dict[str, "_Candidate"]:
+        """Process one frontier node, retrying the WHOLE node on a transient
+        DB error.
+
+        The retry has to live here, not deeper. Every write helper in builder
+        already retries the failing STATEMENT inside a SAVEPOINT, and that is
+        enough for a SQLite lock -- the contending writer finishes and the
+        next attempt goes through. It cannot fix a Postgres deadlock. There,
+        two workers each hold locks the other needs (both are mid-transaction,
+        having already inserted overlapping people/orgs in different orders),
+        so retrying the same statement inside a transaction that STILL HOLDS
+        the conflicting locks can never succeed. Confirmed against a real
+        Postgres: every one of the six statement-level attempts deadlocked,
+        then the node was dropped -- which is what lost a node from a live
+        /connect walk.
+
+        Breaking the cycle needs the whole transaction gone, so each attempt
+        gets a FRESH session. Re-doing the node is cheap relative to losing
+        it: the searches behind it are served from the provider cache, so a
+        retry mostly re-runs extraction and the writes.
+        """
+        attempts = max(0, config.NODE_DB_RETRY_ATTEMPTS)
+        for attempt in range(attempts + 1):
+            result, retry = _process_one_attempt(name, hop, attempt, attempts)
+            if not retry:
+                return result
+        return {}
+
+    def _process_one_attempt(name: str, hop: int, attempt: int,
+                             attempts: int) -> Tuple[Dict[str, "_Candidate"], bool]:
+        """One attempt at a node. Returns (discoveries, should_retry)."""
         local_disc: Dict[str, _Candidate] = {}
         worker_db = WorkerSession()
         try:
             if stop_requested(worker_db):
-                return local_disc
+                return local_disc, False
             check_cancel()
             # If this node was already expanded (this run, a prior run, or by
             # another teammate in the shared map), REUSE its persisted
@@ -1291,17 +1322,37 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 check_cancel()
             except Exception:
                 raise
+            # A lock/deadlock is worth redoing from a clean transaction; a
+            # genuine bug is not -- retrying that just burns the budget and
+            # delays the same failure.
+            if builder.is_transient_db_error(exc) and attempt < attempts:
+                if progress:
+                    progress(f"  ↻ {name!r} at hop {hop} hit a transient DB "
+                             f"error ({exc.__class__.__name__}) — retrying "
+                             f"({attempt + 1}/{attempts})")
+                # let the contending worker commit and release its locks
+                # before we take the same ones again
+                builder._deadlock_backoff(attempt)
+                return {}, True
             if progress:
+                # str(exc), not just the class name: a dropped node is silent
+                # data loss (it can turn a real /connect route into "NO PATH"),
+                # and the class name alone is useless for telling a transient
+                # DB lock apart from a genuine bug -- diagnosing one such drop
+                # cost a full instrumented re-run purely because the message
+                # was discarded here. Truncated: some DBAPI errors embed the
+                # entire offending statement plus parameters.
+                detail = " ".join(str(exc).split())[:300]
                 progress(f"  ⚠ {name!r} at hop {hop} failed "
-                         f"({exc.__class__.__name__}) — skipped")
+                         f"({exc.__class__.__name__}: {detail}) — skipped")
         finally:
             worker_db.close()
         if person_norm_key(name) in shallow_nodes:
             # Fully processed and persisted above -- only excluded from
             # feeding the NEXT hop's frontier selection (see shallow_nodes'
             # own comment above).
-            return {}
-        return local_disc
+            return {}, False
+        return local_disc, False
 
     for hop in range(0, max_depth):
         if stop_requested(db):
@@ -1316,6 +1367,14 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 continue
             visited.add(norm)
             to_process.append(name)
+        # Who Artemis actually looked at, hop by hop -- kept so a caller
+        # (connect_people) can show "what did Artemis explore" even when no
+        # connecting path was ever found between the two sides. Captured up
+        # front (the intended frontier for this hop), not narrowed to
+        # whatever finished before a cancellation -- a node that was
+        # SELECTED for this hop is still something the search "tried",
+        # whether or not it got to finish.
+        visited_by_hop[hop] = list(to_process)
 
         if on_step:
             check_cancel()
@@ -1415,12 +1474,29 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 progress("  → no strong nodes to expand; stopping")
             break
 
+    # Whatever candidates the last processed hop turned up are real,
+    # persisted data (see _process_one/_merge_disc) -- the loop just never
+    # got to walk them as their own hop (max_depth reached, the node cap hit,
+    # or a cancellation). Recomputing the ranking once more here doesn't
+    # process/persist anything new; it only tells a caller what WOULD have
+    # been expanded next, so the no-route visualization can show "found, not
+    # walked" instead of silently implying Artemis found nothing further --
+    # see connect_people's "explored" field. When the loop instead ended
+    # because ranking already came back empty, this repeats that same
+    # (cheap, eligible-list-empty) call and correctly yields nothing.
+    alpha_top_n = config.ALPHA_TOP_CANDIDATES if enhanced_professional_search else None
+    boundary = _ranked_expandable(disc, visited, prefer_reachable=prefer_reachable,
+                                  top_n=alpha_top_n)
+
     protected = {person_norm_key(target_name)} | (protected_norms or set())
     check_cancel()
     _prune_invalid_nodes(db, protected, progress=progress)
     check_cancel()
     _retype_unknown_edges(db, progress=progress)
-    return _stats(db, per_depth)
+    stats = _stats(db, per_depth)
+    stats["visited_by_hop"] = visited_by_hop
+    stats["boundary"] = boundary
+    return stats
 
 
 def _retype_unknown_edges(db: Session, progress=None) -> int:
@@ -1519,29 +1595,12 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
             if e.organization_id:
                 trusted_oids.add(e.organization_id)
 
-    removed = 0
     # --- people: deterministic shape filter (LLM-independent, safe) ---------
     junk_people = [
         p for p in db.execute(select(Person)).scalars()
         if p.norm_name not in protected_norms and p.id not in trusted_pids
         and (is_noise_name(p.canonical_name) or not looks_like_person_name(p.canonical_name))
     ]
-    if junk_people:
-        pids = [p.id for p in junk_people]
-        # One batched delete instead of one DELETE per node -- edges are the
-        # only thing that needs a manual cascade (RelationshipEdge has no FK
-        # cascade), and IN(...) does it in a single round trip either way.
-        # Retries on a SQLite lock timeout instead of failing the whole job
-        # outright -- a large batch (hundreds of ids, e.g. after researching
-        # a very public figure) is exactly the kind of slow write likely to
-        # still be contending with the OTHER concurrent /connect side when
-        # busy_timeout's own wait runs out (see builder._is_locked).
-        builder.delete_relationship_edges_with_retry(
-            db, (RelationshipEdge.person_a_id.in_(pids))
-                | (RelationshipEdge.person_b_id.in_(pids)))
-        for p in junk_people:
-            db.delete(p)
-        removed += len(junk_people)
 
     # --- orgs: Claude entity filter (only when configured) -----------------
     junk_orgs: list = []
@@ -1550,27 +1609,41 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
                 if o.id not in trusted_oids]
         valid_orgs = filter_entities([o.name for o in orgs], "organization")
         junk_orgs = [o for o in orgs if o.name not in valid_orgs]
-        if junk_orgs:
-            oids = [o.id for o in junk_orgs]
-            builder.delete_relationship_edges_with_retry(
-                db, RelationshipEdge.organization_id.in_(oids))
-            removed += len(junk_orgs)
 
-    # commit_with_retry, not a bare db.commit(): db.delete() is itself a
-    # pending mutation like any other -- a rollback() forced by a failed
-    # commit reverts a persistent object's pending "deleted" state right back
-    # to normal, same as it reverts a pending attribute change (confirmed
-    # empirically for attribute changes, see tests/test_commit_retry.py; the
-    # delete-flag hazard is the same mechanism). Re-issuing both delete loops
-    # on retry is what actually makes a retry redo the deletion instead of
-    # silently committing a no-op.
-    def _apply_deletes() -> None:
+    # One node at a time (not a single batched statement covering every
+    # candidate), each via builder.delete_node_with_retry -- deleting a
+    # node's edges and the node itself atomically, in one savepoint per
+    # attempt. The two /connect sides write into this same shared graph
+    # concurrently; a fresh edge referencing one of these "junk" nodes can
+    # land from the OTHER side between an edge-delete and a node-delete,
+    # which Postgres's real FK constraint correctly rejects (SQLite never
+    # enforces it at all -- see db.py -- so the same race used to silently
+    # corrupt the graph instead of raising). Per-node retry recovers from
+    # that; per-node isolation also means one contested node no longer takes
+    # an entire otherwise-legitimate batch down with it -- confirmed live: a
+    # whole /connect job died to a ForeignKeyViolation over ONE contested
+    # organization out of a larger batch, when this was still one IN(...)
+    # statement for the whole batch.
+    #
+    # commit_with_retry, not a bare db.commit(): a transient failure of the
+    # FINAL commit still needs the whole loop redone, not just retried empty
+    # (see commit_with_retry's own docstring) -- delete_node_with_retry's own
+    # per-node deletes are themselves idempotent (skip/redo cleanly) either way.
+    def _apply_deletes() -> int:
+        removed = 0
         for p in junk_people:
-            db.delete(p)
+            if builder.delete_node_with_retry(
+                    db, p,
+                    (RelationshipEdge.person_a_id == p.id)
+                    | (RelationshipEdge.person_b_id == p.id)):
+                removed += 1
         for o in junk_orgs:
-            db.delete(o)
+            if builder.delete_node_with_retry(
+                    db, o, RelationshipEdge.organization_id == o.id):
+                removed += 1
+        return removed
 
-    builder.commit_with_retry(db, _apply_deletes)
+    removed = builder.commit_with_retry(db, _apply_deletes) or 0
     if progress and removed:
         progress(f"  ✓ pruned {removed} junk nodes from the final graph")
     return removed

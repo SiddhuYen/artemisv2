@@ -147,7 +147,16 @@ def test_phase_4e_fires_the_chosen_angles_queries_and_records_the_decision(db, m
         monkeypatch,
         search_results=[SearchResult("Prantik Chakraborty board", "https://example.com/board",
                                      "snippet", "serper")],
-        fetched_text="Prantik Chakraborty serves as a board member alongside Dana Whitfield.",
+        # Needs a properly-shaped org suffix ("Trinamix Inc") and a full
+        # two-word person name ("John Smith") -- confirmed live (reported in
+        # PR #29) that a bare single-capitalized-word text like "Trinamix's
+        # leadership team includes several Oracle veterans." passes under
+        # spaCy's NER but produces ZERO edges under heuristic_extract (the
+        # fallback when spaCy isn't installed): neither "Trinamix's" nor
+        # "Oracle" alone clears looks_like_org_name/looks_like_person_name's
+        # shape checks, so the test's own assertion below was silently
+        # environment-dependent on whether spaCy happens to be available.
+        fetched_text="Trinamix Inc's leadership team includes John Smith, Chief Operating Officer.",
     )
     monkeypatch.setattr(expansion, "_best_org_affiliation_edge",
                         lambda edges: _fake_org_edge("Trinamix"))

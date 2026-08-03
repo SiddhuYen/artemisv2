@@ -1,15 +1,18 @@
 # Deploying Artemis V2
 
 Artemis is **one FastAPI app that also serves its UI**, and it is **long-running
-and stateful** (SQLite on disk). Deploy it to a host with a **persistent disk** —
+and stateful**. Deploy it to a host that can run a persistent process —
 Fly.io, Render, or Railway. **Do not use a serverless platform** (Vercel/Lambda):
-requests take minutes, and the filesystem must persist.
+requests take minutes.
 
-Two hard rules on any host:
+Three hard rules on any host:
 1. **One worker only.** The app keeps in-process state (a build lock + a
    per-session engine cache). Never run multiple workers/replicas.
-2. **All SQLite state on a mounted disk at `/data`** (cache, per-session graphs,
-   Brave quota). The `ARTEMIS_*` env vars in the Dockerfile already point there.
+2. **The graph goes in Postgres**, via `DATABASE_URL`. Not SQLite — see
+   [Database](#database) for why this is not a preference.
+3. **The search cache on a mounted disk at `/data`.** It is a local file cache
+   of fetched pages; losing it costs real money in re-bought search results,
+   but nothing is corrupted if it goes.
 
 Secrets are set as **platform env vars**, never committed (`.env` is gitignored).
 
@@ -61,20 +64,26 @@ Notes:
 
 ## Render (Docker web service + disk)
 
+Easiest path: **New → Blueprint** and point it at this repo — `render.yaml`
+declares the service, the disk and every variable below, prompting only for the
+secrets. To do it by hand instead:
+
 1. New → **Web Service** → connect the GitHub repo → **Docker** runtime
    (it uses the `Dockerfile`).
 2. **Disks** → add a disk, mount path **`/data`**, size ~3 GB.
 3. **Environment** → add:
    - `ARTEMIS_ACCESS_TOKEN` (secret — gates the whole app; set this)
+   - `DATABASE_URL` (secret — your Supabase URI; see [Database](#database))
    - `ANTHROPIC_API_KEY` (secret — enables the Claude extraction stages)
    - `SERPER_API_KEY`, `BRAVE_API_KEY`, `OPENCORPORATES_API_TOKEN` (secrets — all optional)
-   - `ARTEMIS_DB_URL=sqlite:////data/artemis.db`
    - `ARTEMIS_CACHE_DB=/data/artemis_cache.db`
    - `ARTEMIS_GRAPH_DIR=/data/graphs`
    - `ARTEMIS_CACHED_GRAPHS_DIR=/data/cached_graphs`
 4. Instances: **1** (do not scale out). Render sets `$PORT`; the entrypoint uses it.
 
-A paid instance is required for a persistent disk.
+A paid instance is required for a persistent disk. If you skip the disk, the
+app still runs correctly — the graph is in Postgres — but the search cache
+resets on every deploy and you re-pay for results you already bought.
 
 ---
 
@@ -102,46 +111,115 @@ docker run -p 8080:8080 \
 # open http://localhost:8080
 ```
 
-## Local Postgres (optional — local dev only, never for deployment)
+## Database
 
-The app defaults to SQLite everywhere, including local dev (`ARTEMIS_DB_URL`
-unset → `sqlite:///./artemis.db`). SQLite only allows one database writer at
-a time; `/connect` and `/targets/search` research multiple people
-concurrently, so heavy local testing of those endpoints can occasionally hit
-a SQLite write-lock timeout that silently drops one side of a search (a real,
-still-open bug — see the concurrency-fix PRs for the full writeup). Switching
-your **local** database to Postgres sidesteps that failure mode entirely,
-since Postgres supports true concurrent writers. This is purely a local
-convenience for whoever wants it — it changes nothing about how the app is
-deployed, and nobody else's setup is affected by your choice here.
+**A deployment must use Postgres.** SQLite remains the zero-setup default for
+local dev and the test suite, and the schema is identical on both — but it is
+not a safe choice for a deployed instance, for two independent reasons.
+
+**1. Concurrency, which is a correctness problem here, not a speed one.**
+Expansion researches several people at once (`EXPAND_NODE_CONCURRENCY`,
+doubled again by `/connect` walking both endpoints simultaneously), each on its
+own session. SQLite allows exactly one writer at a time and serializes the rest
+behind a single file lock. When a writer waited past the busy timeout, the node
+being written was **dropped from the graph** — and a dropped node is silent
+data loss: `/connect` then reports "no path" between two people who really are
+connected. This was diagnosed live, not theorised: four of five frontier nodes
+were lost in a single run. Postgres has row-level locking and MVCC, so
+unrelated concurrent writes don't contend at all.
+
+**2. Durability.** A disk on Render or Fly is tied to one paid instance.
+Postgres survives instance replacement, plan changes and redeploys, can be
+backed up, and can be inspected with `psql` while the app is running.
+
+### Wiring it up
+
+Set **`DATABASE_URL`** — the variable every managed host and Postgres add-on
+populates automatically. Attach a database and the app finds it; there is no
+Artemis-specific database configuration to do. `ARTEMIS_DB_URL` still takes
+precedence when set, so a local override doesn't require unsetting the
+platform's own variable.
+
+With **Supabase** (Project → Connect → URI):
+
+```
+DATABASE_URL=postgresql://postgres:PASSWORD@db.PROJECT.supabase.co:5432/postgres
+```
+
+Three things worth knowing:
+
+- **Use the direct connection on port 5432**, not the transaction pooler on
+  6543. Graph writes rely on `SAVEPOINT`s inside multi-statement transactions,
+  which is session-level behaviour that a transaction pooler does not promise.
+- **A `postgres://` string is fine.** Supabase, Render and Heroku all still
+  print that scheme; SQLAlchemy 1.4+ rejects it, so the app rewrites it
+  (`config._normalize_db_url`). Paste the string as given.
+- **The free tier pauses when idle.** A paused project makes the app hang on
+  connect rather than fail fast — worth knowing before you debug it as an app
+  bug.
+
+The schema builds itself via `Base.metadata.create_all` on first connect. There
+is **no migration step**, and additive column migrations
+([app/db.py](app/db.py)) run against either backend.
+
+### What stays on SQLite
+
+`ARTEMIS_CACHE_DB` — the provider-response cache. It is a raw-`sqlite3`
+key/value store of fetched pages, entirely separate from the graph, and local
+file access beats a network round-trip on every hit. Leave it pointed at the
+mounted disk.
+
+`ARTEMIS_BOARDS_DB_URL` is best left unset: on Postgres, boards default to the
+**same** database as the graph, so they inherit its durability. The separate
+file only ever existed to keep board autosaves from contending with the graph
+for SQLite's single write lock — a problem Postgres does not have.
+
+### Working as a team on one shared database
+
+Collaborators can point their local checkouts at the same Supabase project and
+build one shared graph. `cp .env.example .env`, then fill in `DATABASE_URL` and
+the API keys. Pass the connection string through a password manager — it is a
+credential, and it is not in git.
+
+Three things to know before you do this:
+
+**The CLI no longer wipes a shared graph.** `python -m app.cli "Some Name"`
+resets the graph by default (`--keep` is opt-in) — which is fine against a
+private local file, and catastrophic against a team database, where it would
+delete everyone's work. On a shared database the CLI now **accumulates by
+default** and says so; wiping requires an explicit `--force-reset`.
+`reset_public_graph` refuses outright unless forced, so the same protection
+covers every other caller — including `add-org-network`, which used to clear
+the public graph as routine scratch cleanup.
+
+**There is no per-person isolation.** One accumulating graph is the design —
+it is what lets `/connect` route through people an earlier run discovered —
+but it also means everyone sees everyone's noise, and a name someone typo'd
+is in your results too. For solo experiments, leave `DATABASE_URL` blank and
+work against your own local SQLite file.
+
+**Everyone's keys spend real money.** Each build costs search credits and
+Anthropic tokens. Sharing one set of keys means one bill with no attribution;
+separate keys per person cost the same in total but tell you who spent what.
+
+Alternatively, for collaborators who only need to *use* Artemis rather than
+develop it: give them the deployed URL and `ARTEMIS_ACCESS_TOKEN` instead. No
+setup, no credentials on their machines, and no way to run the destructive
+commands at all.
+
+### Local Postgres (optional)
+
+To run the deployment backend locally:
 
 ```bash
-# once: install + start Postgres, create a database
 brew install postgresql@16
 brew services start postgresql@16
 createdb artemis
-
-# psycopg2-binary is already in requirements.txt, so this covers it:
-pip install -r requirements.txt
 ```
 
-Add to your local `.env` (gitignored, never committed):
-
-```
-ARTEMIS_DB_URL=postgresql://localhost/artemis
-```
-
-Leave `ARTEMIS_BOARDS_DB_URL` and `ARTEMIS_CACHE_DB` unset — both
-intentionally stay on SQLite regardless (see [app/db.py](app/db.py) and
-[app/providers/cache.py](app/providers/cache.py) for why: boards autosave is
-isolated on its own file specifically so it never contends with the main
-graph DB, and the provider-response cache is a small raw-`sqlite3` key/value
-store, not part of this at all).
-
-Restart the server — `Base.metadata.create_all` builds the schema on
-Postgres automatically on first connect, no manual migration step. To switch
-back to SQLite, just remove the `ARTEMIS_DB_URL` line from `.env` and
-restart; nothing else changes.
+Then in `.env` (gitignored): `ARTEMIS_DB_URL=postgresql://localhost/artemis`.
+To go back to SQLite, delete that line. `psycopg2-binary` is already in
+`requirements.txt`.
 
 ## Access control
 

@@ -47,14 +47,34 @@ def _domain(url: str) -> str:
         return url or "?"
 
 
-def _reset_db() -> None:
+def _reset_db(force: bool = False) -> None:
     """Clear the public graph but KEEP the uploaded local network."""
     init_db()
     db = SessionLocal()
     try:
-        builder.reset_public_graph(db)
+        builder.reset_public_graph(db, force=force)
     finally:
         db.close()
+
+
+def _start_clean(force_reset: bool) -> bool:
+    """Whether this run should wipe the graph first.
+
+    A private SQLite file keeps the original behaviour: each run starts fresh
+    unless --keep. A SHARED database does not -- there, "start fresh" means
+    deleting every collaborator's graph, and the command that does it is the
+    most ordinary one there is (`python -m app.cli "Some Name"`, since --keep
+    is opt-in). So on a shared graph this accumulates by default and says so,
+    and wiping requires an explicit --force-reset.
+    """
+    if not builder.graph_is_shared():
+        return True
+    if force_reset:
+        _progress("⚠ --force-reset: wiping the SHARED graph for everyone.")
+        return True
+    _progress("ℹ shared database — accumulating into the existing graph "
+              "(pass --force-reset to wipe it for everyone).")
+    return False
 
 
 MAX_CONNS_SHOWN = 30
@@ -109,11 +129,12 @@ def _print_provider_stats() -> None:
 
 
 def run(target_name: str, depth: int, keep: bool, show_all: bool = False,
-        context: str = "", seed_is_person: bool = True) -> None:
-    if keep:
+        context: str = "", seed_is_person: bool = True,
+        force_reset: bool = False) -> None:
+    if keep or not _start_clean(force_reset):
         init_db()
     else:
-        _reset_db()
+        _reset_db(force=force_reset)
 
     STATS.reset()
     provider_cache.purge_expired()
@@ -524,7 +545,11 @@ def _run_search(argv) -> None:
                         help="levels to explore: 1=target's direct relationships "
                              "(default, fast), 2=also expand top connections (slow)")
     parser.add_argument("--keep", action="store_true",
-                        help="accumulate into existing graph instead of starting fresh")
+                        help="accumulate into existing graph instead of starting fresh "
+                             "(always the default on a shared database)")
+    parser.add_argument("--force-reset", action="store_true", dest="force_reset",
+                        help="wipe a SHARED graph database before building — "
+                             "deletes every collaborator's data, not just yours")
     parser.add_argument("--all", action="store_true", dest="show_all",
                         help="show every extracted entity, including low-signal "
                              "'unknown' relationships (noisy)")
@@ -547,7 +572,7 @@ def _run_search(argv) -> None:
         print("No name given.", file=sys.stderr)
         sys.exit(1)
     run(target, max(1, min(args.depth, 3)), args.keep, args.show_all, context=args.context,
-        seed_is_person=not args.org)
+        seed_is_person=not args.org, force_reset=args.force_reset)
 
 
 def cmd_directory(argv) -> None:

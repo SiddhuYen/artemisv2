@@ -41,15 +41,68 @@ def _env_bool(name: str, default: str) -> bool:
 
 
 # --- storage ---------------------------------------------------------------
-DB_URL = os.environ.get("ARTEMIS_DB_URL", "sqlite:///./artemis.db")
+def _normalize_db_url(url: str) -> str:
+    """Accept the `postgres://` scheme that hosted providers hand out.
+
+    Supabase, Render and Heroku all still print connection strings starting
+    `postgres://`, but SQLAlchemy 1.4+ removed that alias and raises
+    NoSuchModuleError ("Can't load plugin: sqlalchemy.dialects:postgres") on
+    it. Rewriting here means a copy-pasted dashboard string just works instead
+    of failing at import time with an error that reads like a missing driver.
+    """
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+def _resolve_db_url() -> str:
+    """ARTEMIS_DB_URL wins; DATABASE_URL is the fallback; SQLite is the default.
+
+    DATABASE_URL is the convention every managed host and Postgres add-on
+    populates automatically (Render, Supabase, Heroku, Fly). Reading it means a
+    deploy needs no Artemis-specific database wiring at all -- attach the
+    database and the app finds it. ARTEMIS_DB_URL still takes precedence so a
+    local override can point somewhere else without unsetting the platform's
+    own variable.
+
+    The SQLite default is for local dev and the test suite ONLY. It is not
+    safe for a deployment: concurrent expansion has multiple writers, and
+    SQLite serializes them behind a single write lock (see DEPLOY.md).
+    """
+    return _normalize_db_url(
+        os.environ.get("ARTEMIS_DB_URL")
+        or os.environ.get("DATABASE_URL")
+        or "sqlite:///./artemis.db"
+    )
+
+
+DB_URL = _resolve_db_url()
+IS_POSTGRES = DB_URL.startswith("postgresql")
 # Per-session graph isolation (HTTP API): each browser session gets its own
 # SQLite file here, so concurrent users never clobber each other's public graph.
 GRAPH_DIR = os.environ.get("ARTEMIS_GRAPH_DIR", "./graphs")
-# Boards/pages live in their own SQLite file — they never reference the
-# discovery-graph tables, and isolating them means a board's frequent
-# autosave writes never hit "database is locked" behind a long /connect or
+# Boards/pages default to their OWN SQLite file: they never reference the
+# discovery-graph tables, and isolating them means a board's frequent autosave
+# writes never hit "database is locked" behind a long /connect or
 # /targets/search transaction on the (much busier) main DB_URL database.
-BOARDS_DB_URL = os.environ.get("ARTEMIS_BOARDS_DB_URL", "sqlite:///./artemis_boards.db")
+#
+# That whole rationale is SQLite-specific, so on Postgres boards default to
+# the SAME database instead -- there is no single write lock to contend for,
+# and a deployment should not need a second managed database (or a writable
+# local disk, which a container may not even have) just to hold two tables.
+BOARDS_DB_URL = _normalize_db_url(
+    os.environ.get("ARTEMIS_BOARDS_DB_URL")
+    or (DB_URL if IS_POSTGRES else "sqlite:///./artemis_boards.db")
+)
+# Postgres connection pool (ignored on SQLite, which has no network pool).
+# Sized against what expansion actually opens: one Session per concurrently
+# processed node (EXPAND_NODE_CONCURRENCY, below), doubled because
+# connect_people expands BOTH endpoints at once, plus the API's own
+# per-request sessions. Default 10+10 covers that with headroom while staying
+# far under the connection cap of a small managed tier -- which is shared with
+# psql, migrations, and any other client you have open.
+DB_POOL_SIZE = int(os.environ.get("ARTEMIS_DB_POOL_SIZE", "10"))
+DB_MAX_OVERFLOW = int(os.environ.get("ARTEMIS_DB_MAX_OVERFLOW", "10"))
 
 # --- HTTP ------------------------------------------------------------------
 USER_AGENT = (
@@ -226,6 +279,23 @@ EXPAND_TOP_STRONG = int(os.environ.get("ARTEMIS_EXPAND_TOP_STRONG", "15"))
 # fix for the self-inflicted request storm is the global cap + jittered
 # backoff, not a low number here.
 EXPAND_NODE_CONCURRENCY = int(os.environ.get("ARTEMIS_EXPAND_NODE_CONCURRENCY", "4"))
+# How many times to redo a whole node whose transaction died on a lock or
+# deadlock (expansion._process_one). Distinct from the statement-level retries
+# in graph.builder, which cannot fix a Postgres deadlock: there both workers
+# hold locks the other needs, so only discarding the entire transaction breaks
+# the cycle.
+#
+# 5, not a token 2, because the retries have to OUTLAST the transaction that
+# won the deadlock. The loser can only get through once the winner commits and
+# releases its locks, and a node's transaction runs for seconds (extraction
+# plus a round trip per write). Measured against a real Postgres with two
+# workers inserting the same 40 people in opposite orders: at 2 attempts every
+# round still lost a worker, because all its retries fired before the winner
+# finished; at 5 -- whose backoff spreads ~0.3s to ~4.8s -- nothing was lost
+# across four rounds. Retries are cheap relative to losing the node: the
+# searches behind one are served from the provider cache, so the cost is
+# re-extraction, not re-buying data.
+NODE_DB_RETRY_ATTEMPTS = int(os.environ.get("ARTEMIS_NODE_DB_RETRY_ATTEMPTS", "5"))
 # Reachability mode: when expanding, prefer the LEAST-famous real connections
 # (no Wikipedia page, fewer sources) instead of the strongest/most-famous ones.
 # This walks the graph DOWN the fame gradient toward a normal person's network,
