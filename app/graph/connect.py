@@ -4,7 +4,9 @@ Expand BOTH people's graphs depth-wise into one combined graph, then find the
 best path connecting them over public person-person edges. Where their
 neighborhoods overlap, a bridge node appears and a path exists.
 
-No Claude verification — the path is evidence-grounded but unverified.
+Candidate routes are Claude-verified hop by hop before being returned (see
+hop_verify.verify) -- only the hops in a route actually found, not every edge
+considered during search.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from ..models import Person, RelationshipEdge, Source
 from ..silos import COLLEAGUE_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import mention_patterns, person_norm_key
-from . import builder
+from . import builder, hop_verify
 from .expansion import ORCH, expand_graph
 
 # relationship strength multiplier (shared with candidate-path scoring)
@@ -192,6 +194,36 @@ def _diverse_paths(adj, start: str, target: str, max_hops: int, k: int,
         for pid, _edge in hops[1:-1]:  # exclude this route's bridges next time
             excluded.add(pid)
     return paths
+
+
+def _verified_routes(db: Session, routes, person_by_id, cancel_checker=None):
+    """Drop any candidate route with a hop that fails verification.
+
+    Verifies only the hops in routes _diverse_paths already found -- not
+    every edge considered during search -- so cost scales with what's shown
+    to users. A rejected hop drops its WHOLE route rather than triggering a
+    live re-search excluding just that edge: _diverse_paths already computed
+    several genuinely different candidates (that's what "diverse" means
+    here), so filtering the list it returns is enough without new search
+    machinery."""
+    kept = []
+    for hops in routes:
+        if cancel_checker:
+            cancel_checker()
+        ok = True
+        for pid, edge in hops:
+            if edge is None:
+                continue
+            a_name = person_by_id.get(edge.person_a_id)
+            b_name = person_by_id.get(edge.person_b_id)
+            a_name = a_name.canonical_name if a_name else edge.person_a_id
+            b_name = b_name.canonical_name if b_name else edge.person_b_id
+            if not hop_verify.verify(db, edge, a_name, b_name):
+                ok = False
+                break
+        if ok:
+            kept.append(hops)
+    return kept
 
 
 def _score(edges: List[RelationshipEdge]) -> float:
@@ -887,12 +919,29 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                             person_by_id, degree)
     if cancel_checker:
         cancel_checker()
+    had_candidates = bool(routes)
+    verified = config.CLAUDE_VERIFY_HOPS and hop_verify.claude_available()
+    if verified:
+        routes = _verified_routes(db, routes, person_by_id, cancel_checker)
+    if cancel_checker:
+        cancel_checker()
     if not routes:
+        # A distinct reason when candidates existed but none survived
+        # verification -- "try a higher depth" would be actively misleading
+        # there, since more expansion won't fix a hop that failed on its
+        # own evidence.
+        reason = (
+            f"{config.CONNECT_MAX_PATHS} candidate route(s) found within "
+            f"{max_hops} hops, but none passed hop verification — the "
+            "evidence didn't hold up on inspection."
+            if had_candidates and verified else
+            f"no path within {max_hops} hops — their graphs don't overlap "
+            f"at depth {depth}. Try a higher depth."
+        )
         return {
             "connected": False,
             "person_a": a.canonical_name, "person_b": b.canonical_name,
-            "reason": f"no path within {max_hops} hops — their graphs don't overlap "
-                      f"at depth {depth}. Try a higher depth.",
+            "reason": reason,
             "explored": _build_explored(expand_stats, name_a, name_b),
         }
 
@@ -932,7 +981,8 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         "hops": best["hops"], "score": best["score"],
         "bridges": best["bridges"], "path": best["path"],
         "paths": paths,  # all diverse routes, best first
-        "warnings": ["Path is unverified", "Requires Claude verification before activation"],
+        "warnings": [] if verified else
+                    ["Path is unverified", "Requires Claude verification before activation"],
         "explored": _build_explored(expand_stats, name_a, name_b),
     }
 

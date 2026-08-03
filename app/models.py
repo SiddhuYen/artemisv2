@@ -109,6 +109,16 @@ class RelationshipEdge(Base):
     status = Column(String, default="weak")  # one of EDGE_STATUSES (tier)
     created_at = Column(String, default=lambda: _now().isoformat())
 
+    # Path-assembly-time hop verification (see graph.hop_verify): does THIS
+    # edge's own evidence actually support the claimed relationship, judged
+    # independently of whatever path it's being walked in (the cached verdict
+    # is reused across every path this edge appears in, so it can't depend on
+    # a specific path's surrounding context -- see hop_verify's docstring).
+    # One of "genuine" / "rejected", or None if never checked.
+    verified_status = Column(String, nullable=True)
+    verified_at = Column(String, nullable=True)
+    verified_reason = Column(Text, nullable=True)
+
     person_a = relationship("Person", foreign_keys=[person_a_id])
     person_b = relationship("Person", foreign_keys=[person_b_id])
     organization = relationship("Organization", foreign_keys=[organization_id])

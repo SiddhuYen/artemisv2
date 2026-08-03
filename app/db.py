@@ -195,6 +195,9 @@ def _migrate(bind) -> None:
         ("local_profiles", "connected_on", "TEXT"),
         ("enrichment_tasks", "kind", "TEXT DEFAULT 'contact'"),
         ("enrichment_tasks", "silo_weights", "JSON"),
+        ("relationship_edges", "verified_status", "TEXT"),
+        ("relationship_edges", "verified_at", "TEXT"),
+        ("relationship_edges", "verified_reason", "TEXT"),
     ])
 
 
