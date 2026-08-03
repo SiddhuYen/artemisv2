@@ -150,9 +150,17 @@ def get_or_create_person(db: Session, name: str, qid: Optional[str] = None,
 
     if qid:
         # 1) authoritative: an existing node already carrying this QID
+        #
+        # `.first()` for the same reason as the edge dedup below: wikidata_qid
+        # is indexed but NOT unique, and case 3 deliberately creates a second,
+        # QID-suffixed node carrying a qid another row may already hold. A
+        # strict one-or-none here turns that intended state into a crash that
+        # costs the whole node. Ordered so the answer is at least stable
+        # rather than whatever the planner returns first.
         by_qid = db.execute(
             select(Person).where(Person.wikidata_qid == qid)
-        ).scalar_one_or_none()
+            .order_by(Person.created_at, Person.id)
+        ).scalars().first()
         if by_qid:
             _merge_aliases(by_qid, name)
             return by_qid
@@ -828,6 +836,20 @@ def add_edge_from_extraction(
     conf = edge.confidence_adjusted
 
     # Dedup rule: same (person_a, counterpart, relationship_type, source_url).
+    #
+    # `.first()`, not `.scalar_one_or_none()`: that tuple carries no DB-level
+    # uniqueness constraint, so this check-then-insert is not atomic. Two
+    # workers researching people who share a counterpart can each miss the
+    # other's uncommitted edge and both insert -- and then this lookup finds
+    # two rows and raises MultipleResultsFound, which kills the whole node.
+    # Confirmed live on the shared Postgres graph: 45 duplicate tuples had
+    # accumulated, and one of them dropped a node from a /connect walk.
+    # Exactly the race save_source above already documents for `url`.
+    #
+    # Tolerating the duplicate is right, not merely expedient: a repeated edge
+    # is the same evidence recorded twice, which pathfinding already collapses
+    # (connect._adjacency keeps the highest-confidence edge per pair). Losing
+    # the node loses real discoveries.
     existing = db.execute(
         select(RelationshipEdge).where(
             RelationshipEdge.person_a_id == subject.id,
@@ -836,7 +858,7 @@ def add_edge_from_extraction(
             RelationshipEdge.relationship_type == edge.relationship_type,
             RelationshipEdge.source_id == source_id,
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if existing:
         if conf > (existing.confidence_raw or 0):
             existing.confidence_raw = conf
