@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
-from ..extraction import extract, relation_classifier, spacy_extractor
+from ..extraction import bridge_strategy, extract, relation_classifier, spacy_extractor
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..network.cliques import materialize_contact_cliques
@@ -552,7 +552,8 @@ def _bridge_target(db: Session, name: str, context: str) -> BridgeTarget:
 
 
 def _bridge_contacts(db: Session, target: BridgeTarget,
-                     limit: int, progress=None) -> List[ScoredContact]:
+                     limit: int, progress=None,
+                     origin_name: str = "", origin_context: str = "") -> List[ScoredContact]:
     """The operator's own contacts most likely to bridge to `target`.
 
     This is the third expansion front, and the reason /connect no longer
@@ -564,15 +565,46 @@ def _bridge_contacts(db: Session, target: BridgeTarget,
     Contacts with no org context are skipped by score_contacts itself (a bare
     name can't be searched without attaching a namesake's network), so they
     never reach the front.
+
+    Two stages, in this order for a reason. score_contacts is exact, free and
+    handles the whole export; bridge_strategy then reasons over the top of that
+    ranking about which overlap actually matters for THIS target. Reasoning
+    only REORDERS — the queue is still `limit` long either way, so a good call
+    front-loads the right contact and a bad one costs nothing beyond the call
+    itself, because expansion runs the queue sequentially and stops the moment
+    any of them closes the route.
     """
     if limit <= 0:
         return []
     scored = score_contacts(db, target=target)
-    picked = [c for c in scored if c.skip_reason is None][:limit]
+    eligible = [c for c in scored if c.skip_reason is None]
+    picked = eligible[:limit]
+    decision = None
+
+    if bridge_strategy.is_active() and len(eligible) > 1:
+        shortlist = eligible[:max(limit, config.BRIDGE_SHORTLIST)]
+        try:
+            decision = bridge_strategy.choose(
+                origin_name or "the operator", origin_context,
+                target.name, target.context, sorted(target.orgs()), shortlist)
+        except Exception:
+            decision = None  # speculative front: never let ranking fail a connect
+        if decision and decision["picks"]:
+            promoted = [shortlist[i] for i in decision["picks"]]
+            promoted_ids = {c.local_profile_id for c in promoted}
+            # Everything not promoted keeps its deterministic order behind the
+            # picks. This is the fallback that makes a wrong pick survivable.
+            rest = [c for c in eligible if c.local_profile_id not in promoted_ids]
+            picked = (promoted + rest)[:limit]
+
     if picked and progress:
-        for contact in picked:
+        if decision:
+            progress(f"  [strategy] {decision['angle']} — {decision['why']}")
+        promoted_n = len(decision["picks"]) if decision else 0
+        for rank, contact in enumerate(picked):
             why = ", ".join(contact.bridge_reasons) or "best available"
-            progress(f"  · {contact.display_name} ({contact.context}) — {why}")
+            mark = " ←first" if decision and rank < promoted_n else ""
+            progress(f"  · {contact.display_name} ({contact.context}) — {why}{mark}")
     return picked
 
 
@@ -747,7 +779,8 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     # otherwise have succeeded.
     try:
         bridges = _bridge_contacts(db, _bridge_target(db, name_b, context_b),
-                                   config.CONNECT_BRIDGE_CONTACTS, progress=progress)
+                                   config.CONNECT_BRIDGE_CONTACTS, progress=progress,
+                                   origin_name=name_a, origin_context=context_a)
     except Exception as exc:
         if progress:
             progress(f"[bridge] contact ranking unavailable "

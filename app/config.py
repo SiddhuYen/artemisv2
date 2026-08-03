@@ -474,6 +474,18 @@ SUBJECT_WINDOW_MIN_CHARS = int(
 # unbounded walk would happily bind a "he" on line 400 to a name on line 1.
 SUBJECT_WINDOW_PRONOUN_LOOKBACK = int(
     os.environ.get("ARTEMIS_SUBJECT_WINDOW_LOOKBACK", "4"))
+# Hard ceiling, in sentences, on a single merged span. An author-archive or
+# listing page repeats the subject's name as a byline every few sentences, so
+# each mention's own window overlaps the next and the merge loop chains them
+# into one span covering nearly the whole page -- including whatever unrelated
+# teaser text sits between two bylines, with no elision marker to warn the
+# model it's reading glued-together boilerplate. Once a chain would grow past
+# this many sentences, split it instead: the next anchor starts a new span,
+# and the elision marker between them tells the model (correctly) that
+# something was cut, rather than presenting repeated-byline noise as one
+# continuous passage about the subject.
+SUBJECT_WINDOW_MAX_MERGED_SENTENCES = int(
+    os.environ.get("ARTEMIS_SUBJECT_WINDOW_MAX_MERGED", "20"))
 # spaCy NER extraction (Tier 4): grammar-aware, kills prose-fragment noise.
 # Preferred over the heuristic when installed; far cheaper than Claude extraction.
 SPACY_EXTRACT = _env_bool("ARTEMIS_SPACY_EXTRACT", "1")
@@ -612,6 +624,24 @@ NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CH
 # fully deterministic and inspectable query surface. "generic" intentionally
 # maps to no extra queries: the existing broad silo search already runs
 # regardless, this only ever ADDS a couple of targeted queries on top.
+# Hop-0 counterpart to STRATEGY below (see extraction/bridge_strategy.py):
+# reasons about WHICH of the operator's contacts to walk first, before any
+# expansion has happened, from the origin's and target's contexts.
+#
+# The deterministic ranker still runs first and still decides the shortlist --
+# a 1,188-contact export doesn't fit in a prompt, and its formula encodes real
+# signal cheaply and exactly. The model only reorders the top of that ranking.
+BRIDGE_STRATEGY_ENABLED = _env_bool("ARTEMIS_BRIDGE_STRATEGY", "1")
+BRIDGE_STRATEGY_MODEL = os.environ.get("ARTEMIS_BRIDGE_STRATEGY_MODEL", CLAUDE_BATCH_MODEL)
+# How many top-ranked contacts are shown to the model to choose among.
+BRIDGE_SHORTLIST = int(os.environ.get("ARTEMIS_BRIDGE_SHORTLIST", "15"))
+# How many it may promote to the front of the queue. The REST of the ranked
+# contacts stay queued behind them as fallback rather than being dropped:
+# expansion is sequential and stops the instant a route closes, so a correct
+# pick costs exactly these two and a wrong one degrades to today's behavior
+# instead of losing the walk. Cutting the queue to the picks would save nothing
+# on a good run and cost recall on a bad one.
+BRIDGE_PRIORITY_PICKS = int(os.environ.get("ARTEMIS_BRIDGE_PRIORITY_PICKS", "2"))
 STRATEGY_ENABLED = _env_bool("ARTEMIS_STRATEGY", "1")
 STRATEGY_MODEL = os.environ.get("ARTEMIS_STRATEGY_MODEL", CLAUDE_BATCH_MODEL)
 STRATEGY_ANGLE_QUERIES = {
