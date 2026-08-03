@@ -1,0 +1,387 @@
+target_name,target_context,connection_name,connection_context,relationship_type,evidence_note,source_url
+Elon Musk,CEO of Tesla and SpaceX,Andrej Karpathy,"Eureka Labs founder, OpenAI founding member",colleague,Hired by Musk as Tesla AI director 2017-2022,https://en.wikipedia.org/wiki/Andrej_Karpathy
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Antonio Gracias,Valor Equity founder,friend,Close friend; longtime Tesla and SpaceX board member,https://en.wikipedia.org/wiki/Antonio_Gracias
+Elon Musk,CEO of Tesla and SpaceX,David Sacks,"Craft Ventures founder, White House AI and crypto czar",friend,PayPal colleagues; close ally in the Twitter takeover and Washington era,https://en.wikipedia.org/wiki/David_Sacks
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Errol Musk,South African engineer,family,Father; relationship publicly documented as estranged,https://en.wikipedia.org/wiki/Errol_Musk
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Grimes,musician Claire Boucher,ex-partner,"Former partner; three children together, extensively documented",https://en.wikipedia.org/wiki/Grimes_(musician)
+Elon Musk,CEO of Tesla and SpaceX,Gwynne Shotwell,SpaceX president and COO,executive,SpaceX employee 11; has run SpaceX operations under Musk for two decades,https://en.wikipedia.org/wiki/Gwynne_Shotwell
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",JB Straubel,"Redwood Materials founder, Tesla board member",cofounder,Longtime Tesla CTO recognized as a Tesla cofounder; rejoined board 2023,"https://en.wikipedia.org/wiki/Tesla,_Inc."
+Elon Musk,CEO of Tesla and SpaceX,Joe Gebbia,"Airbnb cofounder, Samara founder",board,Tesla board member since 2022; joined the DOGE effort in 2025,https://en.wikipedia.org/wiki/Joe_Gebbia
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Justine Musk,author,ex-spouse,First wife (2000-2008); has written publicly about the marriage,https://en.wikipedia.org/wiki/Justine_Musk
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Kimbal Musk,restaurateur and entrepreneur,family,Brothers; Kimbal has served on Tesla and SpaceX boards,https://en.wikipedia.org/wiki/Kimbal_Musk
+Elon Musk,CEO of Tesla and SpaceX,Larry Ellison,Oracle cofounder and CTO,friend,Close friends; Ellison served on Tesla board and backed the Twitter buyout,https://en.wikipedia.org/wiki/Larry_Ellison
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Linda Yaccarino,media executive,executive,"CEO of X 2023-2025, hired by and reported to Musk",https://en.wikipedia.org/wiki/Linda_Yaccarino
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Marc Tarpenning,Tesla cofounder,cofounder,Founded Tesla with Eberhard in 2003 before Musk led the Series A,https://en.wikipedia.org/wiki/Marc_Tarpenning
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Martin Eberhard,Tesla founding CEO,cofounder,Original Tesla founder; founder-title dispute with Musk settled 2009,https://en.wikipedia.org/wiki/Martin_Eberhard
+Elon Musk,CEO of Tesla and SpaceX,Max Levchin,"Affirm founder, PayPal cofounder",colleague,PayPal CTO through the X.com merger with Musk,https://en.wikipedia.org/wiki/Max_Levchin
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Maye Musk,model and dietitian,family,Mother; author of A Woman Makes a Plan,https://en.wikipedia.org/wiki/Maye_Musk
+Elon Musk,CEO of Tesla and SpaceX,Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",cofounder,PayPal merger partners; decades-long documented relationship,https://en.wikipedia.org/wiki/PayPal
+Elon Musk,CEO of Tesla and SpaceX,Reid Hoffman,"LinkedIn cofounder, Greylock partner",colleague,PayPal executive team together,https://en.wikipedia.org/wiki/Reid_Hoffman
+Elon Musk,CEO of Tesla and SpaceX,Roelof Botha,Sequoia Capital senior steward,colleague,Joined PayPal in the Musk era; rose to CFO,https://en.wikipedia.org/wiki/Roelof_Botha
+Elon Musk,CEO of Tesla and SpaceX,Sam Altman,OpenAI CEO,cofounder,Co-chaired OpenAI at its 2015 founding; relationship since litigated publicly,https://en.wikipedia.org/wiki/OpenAI
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Shivon Zilis,Neuralink director of special projects,colleague,Senior Neuralink executive; publicly reported to share children with Musk,https://en.wikipedia.org/wiki/Shivon_Zilis
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Steve Davis,president of the Boring Company,executive,"Longtime Musk lieutenant at SpaceX, Boring Company and DOGE",https://en.wikipedia.org/wiki/The_Boring_Company
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Talulah Riley,actress,ex-spouse,"Twice married and divorced (2010-2012, 2013-2016)",https://en.wikipedia.org/wiki/Talulah_Riley
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Tom Mueller,"founding SpaceX propulsion engineer, Impulse Space CEO",early_employee,SpaceX founding employee; built the Merlin engine program under Musk,https://en.wikipedia.org/wiki/SpaceX
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Tosca Musk,"filmmaker, founder of Passionflix",family,Sister,https://en.wikipedia.org/wiki/Tosca_Musk
+Elon Musk,"CEO of Tesla and SpaceX, owner of xAI and X",Walter Isaacson,biographer,biographer,Wrote the 2023 authorized biography after shadowing Musk for two years,https://en.wikipedia.org/wiki/Walter_Isaacson
+Jeff Bezos,Amazon founder,Andy Jassy,Amazon CEO,successor,Longtime Bezos deputy who founded AWS and succeeded him as CEO in 2021,https://en.wikipedia.org/wiki/Andy_Jassy
+Jeff Bezos,Amazon founder,Aravind Srinivas,Perplexity cofounder and CEO,portfolio_founder,Early Perplexity investor,https://en.wikipedia.org/wiki/Perplexity_AI
+Jeff Bezos,Amazon founder,John Doerr,Kleiner Perkins chairman,board,Kleiner backed Amazon in 1996; Doerr spent a decade on its board,https://en.wikipedia.org/wiki/John_Doerr
+Jeff Bezos,"Amazon founder and executive chairman, Blue Origin founder",Lauren Sanchez Bezos,journalist and philanthropist,spouse,Married June 2025 in Venice,https://en.wikipedia.org/wiki/Lauren_S%C3%A1nchez
+Jeff Bezos,"Amazon founder and executive chairman, Blue Origin founder",MacKenzie Scott,philanthropist and novelist,ex-spouse,Married 1993-2019; early Amazon employee,https://en.wikipedia.org/wiki/MacKenzie_Scott
+Jeff Bezos,"Amazon founder and executive chairman, Blue Origin founder",Mark Bezos,investor and volunteer firefighter,family,Brother; flew with Jeff on Blue Origin NS-16,https://en.wikipedia.org/wiki/Mark_Bezos
+Jeff Bezos,"Amazon founder and executive chairman, Blue Origin founder",Werner Vogels,Amazon CTO,executive,Amazon CTO since 2005 under Bezos,https://en.wikipedia.org/wiki/Werner_Vogels
+Bill Gates,"Microsoft cofounder, Gates Foundation chair",Mark Suzman,Gates Foundation CEO,executive,Runs the Gates Foundation reporting to Gates as chair,https://en.wikipedia.org/wiki/Mark_Suzman
+Bill Gates,"Microsoft cofounder, Gates Foundation chair",Melinda French Gates,Pivotal Ventures founder,ex-spouse,Married 1994-2021; co-led the Gates Foundation for decades,https://en.wikipedia.org/wiki/Melinda_French_Gates
+Bill Gates,Microsoft cofounder,Satya Nadella,Microsoft CEO and chairman,protege,Worked closely with Gates on technical strategy after becoming CEO in 2014,https://en.wikipedia.org/wiki/Satya_Nadella
+Bill Gates,Microsoft cofounder,Steve Ballmer,"former Microsoft CEO, Clippers owner",friend,Harvard dormmates; Microsoft's 30th employee and Gates's successor,https://en.wikipedia.org/wiki/Steve_Ballmer
+Bill Gates,"Microsoft cofounder, Gates Foundation chair",Warren Buffett,Berkshire Hathaway chairman,friend,Decades-long documented friendship; cofounded the Giving Pledge in 2010,https://www.forbes.com/profile/warren-buffett/
+Mark Zuckerberg,Meta founder and CEO,Adam D'Angelo,"Quora cofounder, OpenAI board member",friend,Exeter classmates; first Facebook CTO,https://en.wikipedia.org/wiki/Adam_D%27Angelo
+Mark Zuckerberg,Meta founder and CEO,Alexandr Wang,"Scale AI cofounder, Meta chief AI officer",executive,Recruited by Zuckerberg in the 2025 Meta-Scale deal to lead superintelligence work,https://en.wikipedia.org/wiki/Alexandr_Wang
+Mark Zuckerberg,Meta founder and CEO,Andrew Bosworth,Meta CTO,executive,"Meta CTO; at the company since 2006, longtime Zuckerberg deputy",https://en.wikipedia.org/wiki/Andrew_Bosworth
+Mark Zuckerberg,Meta founder and CEO,Andrew McCollum,venture investor,cofounder,Facebook cofounder from the Harvard founding team,https://en.wikipedia.org/wiki/Andrew_McCollum
+Mark Zuckerberg,Meta founder and CEO,Chamath Palihapitiya,Social Capital founder,executive,Ran the Facebook growth team 2007-2011,https://en.wikipedia.org/wiki/Chamath_Palihapitiya
+Mark Zuckerberg,Meta founder and CEO,Chris Cox,Meta chief product officer,executive,Meta CPO; senior lieutenant since 2005,https://en.wikipedia.org/wiki/Chris_Cox_(Facebook)
+Mark Zuckerberg,Meta founder and CEO,Chris Hughes,Economic Security Project cofounder,cofounder,Harvard roommate and Facebook cofounder,https://en.wikipedia.org/wiki/Chris_Hughes
+Mark Zuckerberg,Meta founder and CEO,Drew Houston,Dropbox cofounder and CEO,board,Meta board member since 2020,https://en.wikipedia.org/wiki/Drew_Houston
+Mark Zuckerberg,Meta founder and CEO,Dustin Moskovitz,Asana cofounder,cofounder,Harvard roommate and Facebook cofounder,https://en.wikipedia.org/wiki/Dustin_Moskovitz
+Mark Zuckerberg,Meta founder and CEO,Eduardo Saverin,"venture investor, B Capital",cofounder,Facebook cofounder; early split documented and litigated,https://en.wikipedia.org/wiki/Eduardo_Saverin
+Mark Zuckerberg,Meta founder and CEO,Jan Koum,WhatsApp cofounder,board,Sold WhatsApp to Facebook for 19B; served on Facebook board 2014-2018,https://en.wikipedia.org/wiki/Jan_Koum
+Mark Zuckerberg,Meta founder and CEO,Kevin Systrom,Instagram cofounder,executive,Sold Instagram to Facebook in 2012; ran it under Zuckerberg until 2018,https://en.wikipedia.org/wiki/Kevin_Systrom
+Mark Zuckerberg,Meta founder and CEO,Priscilla Chan,"pediatrician, CZI co-CEO",spouse,Married 2012; cofounded the Chan Zuckerberg Initiative together,https://en.wikipedia.org/wiki/Priscilla_Chan
+Mark Zuckerberg,Meta founder and CEO,Randi Zuckerberg,media entrepreneur,family,Sister; early Facebook marketing lead,https://en.wikipedia.org/wiki/Randi_Zuckerberg
+Mark Zuckerberg,Meta founder and CEO,Sheryl Sandberg,"former Meta COO, Lean In founder",executive,"Meta COO 2008-2022, Zuckerberg's top deputy",https://en.wikipedia.org/wiki/Sheryl_Sandberg
+Mark Zuckerberg,Meta founder and CEO,Yann LeCun,"Turing laureate, AMI Labs founder, former Meta chief AI scientist",colleague,Hired by Zuckerberg in 2013 to found FAIR; left Meta in late 2025,https://www.cnbc.com/2025/11/19/meta-chief-ai-scientist-yann-lecun-is-leaving-the-company-.html
+Mark Zuckerberg,Meta founder and CEO,Yuri Milner,DST Global founder,investor,Led the landmark 2009 DST investment; later Breakthrough Prize partners,https://en.wikipedia.org/wiki/Yuri_Milner
+Larry Page,"Google cofounder, Alphabet board member",Carl Page,eGroups cofounder,family,Older brother and fellow internet entrepreneur,https://en.wikipedia.org/wiki/Larry_Page
+Larry Page,Google cofounder,Eric Schmidt,former Google CEO and chairman,colleague,Hired by Page and Brin as Google CEO in 2001,https://en.wikipedia.org/wiki/Eric_Schmidt
+Larry Page,Google cofounder,John Doerr,Kleiner Perkins chairman,board,Co-led Google's 1999 round; longtime Google board member,https://en.wikipedia.org/wiki/John_Doerr
+Larry Page,"Google cofounder, Alphabet board member",Lucy Southworth,research scientist,spouse,Married 2007,https://en.wikipedia.org/wiki/Lucy_Southworth
+Larry Page,"Google cofounder, Alphabet board member",Sergey Brin,Google cofounder,cofounder,Met at Stanford in 1995; cofounded Google in 1998,https://en.wikipedia.org/wiki/Larry_Page
+Larry Page,Google cofounder,Sundar Pichai,Google and Alphabet CEO,protege,Page picked Pichai as Google CEO in the 2015 Alphabet restructuring,https://en.wikipedia.org/wiki/Sundar_Pichai
+Sergey Brin,Google cofounder,Anne Wojcicki,23andMe cofounder,ex-spouse,Married 2007-2015; Brin was an early 23andMe backer,https://en.wikipedia.org/wiki/Anne_Wojcicki
+Sergey Brin,Google cofounder,Eric Schmidt,former Google CEO and chairman,colleague,Hired Schmidt as CEO in 2001 and worked alongside him for a decade,https://en.wikipedia.org/wiki/Sergey_Brin
+Sergey Brin,Google cofounder,Larry Page,"Google cofounder, Alphabet board member",cofounder,Met at Stanford in 1995; cofounded Google in 1998,https://en.wikipedia.org/wiki/Larry_Page
+Sergey Brin,Google cofounder,Nicole Shanahan,"attorney, 2024 VP candidate",ex-spouse,Married 2018-2023,https://en.wikipedia.org/wiki/Nicole_Shanahan
+Sergey Brin,Google cofounder,Yuri Milner,DST Global founder,cofounder,Cofounded the Breakthrough Prize together in 2012,https://en.wikipedia.org/wiki/Breakthrough_Prize
+Sundar Pichai,Google and Alphabet CEO,Anjali Pichai,chemical engineer,spouse,Married since their IIT Kharagpur years,https://en.wikipedia.org/wiki/Sundar_Pichai
+Sundar Pichai,Google and Alphabet CEO,Larry Page,Google cofounder,mentor,Page picked Pichai as Google CEO in the 2015 Alphabet restructuring,https://en.wikipedia.org/wiki/Sundar_Pichai
+Sundar Pichai,Google and Alphabet CEO,Neal Mohan,YouTube CEO,executive,Senior Google executive named YouTube CEO in 2023 under Pichai,https://en.wikipedia.org/wiki/Neal_Mohan
+Satya Nadella,Microsoft CEO and chairman,Anu Nadella,architect,spouse,Married 1992,https://en.wikipedia.org/wiki/Satya_Nadella
+Satya Nadella,Microsoft CEO and chairman,Bill Gates,Microsoft cofounder,mentor,Worked closely with Gates on technical strategy after becoming CEO in 2014,https://en.wikipedia.org/wiki/Satya_Nadella
+Satya Nadella,Microsoft CEO and chairman,Kevin Scott,Microsoft CTO,executive,Microsoft CTO and key AI strategy deputy,https://en.wikipedia.org/wiki/Kevin_Scott_(computer_scientist)
+Satya Nadella,Microsoft CEO,Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",executive,Hired by Nadella in 2024 to run Microsoft AI,https://en.wikipedia.org/wiki/Mustafa_Suleyman
+Satya Nadella,Microsoft CEO,Nat Friedman,"investor, former GitHub CEO",executive,Ran GitHub under Nadella after the 2018 acquisition,https://en.wikipedia.org/wiki/Nat_Friedman
+Satya Nadella,Microsoft CEO and chairman,Sam Altman,OpenAI CEO,partner,Architects of the Microsoft-OpenAI partnership since 2019,https://en.wikipedia.org/wiki/OpenAI
+Satya Nadella,Microsoft CEO,Steve Ballmer,"former Microsoft CEO, Clippers owner",predecessor,Chose and preceded Nadella as Microsoft CEO,https://en.wikipedia.org/wiki/Steve_Ballmer
+Tim Cook,Apple CEO,Craig Federighi,Apple SVP software engineering,executive,Senior Apple executive under Cook,https://en.wikipedia.org/wiki/Craig_Federighi
+Tim Cook,Apple CEO,Eddy Cue,Apple SVP services,executive,Senior Apple executive under Cook,https://en.wikipedia.org/wiki/Eddy_Cue
+Tim Cook,Apple CEO,Jeff Williams,longtime Apple COO,executive,Apple COO and closest operational deputy for over a decade,https://en.wikipedia.org/wiki/Jeff_Williams_(Apple)
+Tim Cook,Apple CEO,Jony Ive,"LoveFrom founder, former Apple design chief",colleague,Apple chief design officer under Cook until 2019,https://en.wikipedia.org/wiki/Jony_Ive
+Jensen Huang,Nvidia founder and CEO,Chris Malachowsky,Nvidia cofounder,cofounder,Cofounded Nvidia in 1993,https://en.wikipedia.org/wiki/Chris_Malachowsky
+Jensen Huang,Nvidia founder and CEO,Curtis Priem,Nvidia cofounder,cofounder,Cofounded Nvidia in 1993; major RPI benefactor,https://en.wikipedia.org/wiki/Curtis_Priem
+Jensen Huang,Nvidia founder and CEO,Lisa Su,AMD CEO,family,Publicly confirmed distant cousins (first cousins once removed),https://en.wikipedia.org/wiki/Lisa_Su
+Jensen Huang,Nvidia founder and CEO,Lori Huang,philanthropist,spouse,Married since Oregon State; co-leads the Huang family philanthropy,https://en.wikipedia.org/wiki/Jensen_Huang
+Lisa Su,AMD CEO,Jensen Huang,Nvidia founder and CEO,family,Publicly confirmed distant cousins (first cousins once removed),https://en.wikipedia.org/wiki/Lisa_Su
+Lisa Su,AMD CEO,Mark Papermaster,AMD CTO,executive,Longtime AMD CTO under Su,https://en.wikipedia.org/wiki/Mark_Papermaster
+Lisa Su,AMD CEO,Victor Peng,former AMD president,executive,AMD president after the Xilinx acquisition Su led (2022-2024),https://en.wikipedia.org/wiki/Victor_Peng
+Sam Altman,OpenAI CEO,Bret Taylor,"Sierra cofounder, OpenAI board chair",board,OpenAI board chair since the November 2023 crisis,https://en.wikipedia.org/wiki/Bret_Taylor
+Sam Altman,OpenAI CEO,Daniel Gross,"investor, former Safe Superintelligence cofounder",colleague,YC partner while Altman was president; longtime friends,https://en.wikipedia.org/wiki/Daniel_Gross_(entrepreneur)
+Sam Altman,OpenAI CEO,Elon Musk,CEO of Tesla and SpaceX,cofounder,Co-chaired OpenAI at its 2015 founding; relationship since litigated publicly,https://en.wikipedia.org/wiki/OpenAI
+Sam Altman,OpenAI CEO,Greg Brockman,OpenAI president,cofounder,OpenAI cofounders; Brockman is his longest-standing ally there,https://en.wikipedia.org/wiki/Greg_Brockman
+Sam Altman,OpenAI CEO,Ilya Sutskever,"Safe Superintelligence cofounder, former OpenAI chief scientist",colleague,OpenAI cofounders; central figures in the November 2023 board crisis,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Sam Altman,OpenAI CEO,Jack Altman,"Lattice founder, Alt Capital",family,Brother; they co-invest and appear together publicly,https://en.wikipedia.org/wiki/Jack_Altman
+Sam Altman,OpenAI CEO,Jessica Livingston,Y Combinator cofounder,colleague,YC founding partner through Altman's presidency,https://en.wikipedia.org/wiki/Jessica_Livingston
+Sam Altman,OpenAI CEO,Jony Ive,"LoveFrom founder, former Apple design chief",partner,OpenAI acquired his io hardware startup in 2025; building devices together,https://en.wikipedia.org/wiki/Jony_Ive
+Sam Altman,OpenAI CEO,Mira Murati,"Thinking Machines Lab founder, former OpenAI CTO",executive,OpenAI CTO under Altman 2022-2024; brief interim CEO in the 2023 crisis,https://en.wikipedia.org/wiki/Mira_Murati
+Sam Altman,OpenAI CEO,Oliver Mulherin,software engineer,spouse,Married 2024,https://en.wikipedia.org/wiki/Sam_Altman
+Sam Altman,OpenAI CEO,Paul Graham,Y Combinator cofounder,mentor,Funded Loopt in the first YC batch and named Altman YC president in 2014,https://en.wikipedia.org/wiki/Sam_Altman
+Sam Altman,OpenAI CEO,Reid Hoffman,"LinkedIn cofounder, Greylock partner",friend,Early OpenAI donor and board member alongside Altman,https://en.wikipedia.org/wiki/Reid_Hoffman
+Sam Altman,OpenAI CEO,Satya Nadella,Microsoft CEO and chairman,partner,Architects of the Microsoft-OpenAI partnership since 2019,https://en.wikipedia.org/wiki/OpenAI
+Greg Brockman,OpenAI president and cofounder,Ilya Sutskever,Safe Superintelligence cofounder,cofounder,OpenAI cofounders who led research together from 2015,https://en.wikipedia.org/wiki/OpenAI
+Greg Brockman,OpenAI president,Sam Altman,OpenAI CEO,cofounder,OpenAI cofounders; Brockman is his longest-standing ally there,https://en.wikipedia.org/wiki/Greg_Brockman
+Greg Brockman,OpenAI president and cofounder,Wojciech Zaremba,OpenAI cofounder,cofounder,OpenAI cofounders 2015,https://en.wikipedia.org/wiki/Wojciech_Zaremba
+Ilya Sutskever,"Safe Superintelligence cofounder, former OpenAI chief scientist",Alex Krizhevsky,AlexNet co-creator,cofounder,AlexNet co-creators and DNNresearch cofounders,https://en.wikipedia.org/wiki/Alex_Krizhevsky
+Ilya Sutskever,Safe Superintelligence cofounder,Andrej Karpathy,"Eureka Labs founder, OpenAI founding member",colleague,OpenAI founding team; Karpathy worked in Sutskever's research org,https://en.wikipedia.org/wiki/Andrej_Karpathy
+Ilya Sutskever,Safe Superintelligence cofounder,Daniel Gross,"investor, former Safe Superintelligence cofounder",cofounder,Cofounded Safe Superintelligence in 2024; left for Meta in 2025,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Ilya Sutskever,"Safe Superintelligence cofounder, former OpenAI chief scientist",Daniel Levy,Safe Superintelligence cofounder,cofounder,Cofounded Safe Superintelligence in 2024,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Ilya Sutskever,"Safe Superintelligence cofounder, former OpenAI chief scientist",Geoffrey Hinton,deep learning pioneer,phd_advisor,Hinton supervised his PhD; DNNresearch acquired by Google in 2013,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Ilya Sutskever,Safe Superintelligence cofounder,Greg Brockman,OpenAI president and cofounder,cofounder,OpenAI cofounders who led research together from 2015,https://en.wikipedia.org/wiki/OpenAI
+Ilya Sutskever,"Safe Superintelligence cofounder, former OpenAI chief scientist",Sam Altman,OpenAI CEO,colleague,OpenAI cofounders; central figures in the November 2023 board crisis,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Mira Murati,"Thinking Machines Lab founder, former OpenAI CTO",Barret Zoph,former OpenAI VP of research,cofounder,Thinking Machines cofounder,https://en.wikipedia.org/wiki/Thinking_Machines_Lab
+Mira Murati,"Thinking Machines Lab founder, former OpenAI CTO",John Schulman,OpenAI cofounder,cofounder,OpenAI cofounder who joined Thinking Machines as a cofounder in 2025,https://en.wikipedia.org/wiki/John_Schulman
+Mira Murati,"Thinking Machines Lab founder, former OpenAI CTO",Lilian Weng,former OpenAI safety research VP,cofounder,Joined Thinking Machines as a cofounder in 2025,https://en.wikipedia.org/wiki/Thinking_Machines_Lab
+Mira Murati,"Thinking Machines Lab founder, former OpenAI CTO",Sam Altman,OpenAI CEO,executive,OpenAI CTO under Altman 2022-2024; brief interim CEO in the 2023 crisis,https://en.wikipedia.org/wiki/Mira_Murati
+Dario Amodei,Anthropic cofounder and CEO,Chris Olah,"Anthropic cofounder, interpretability lead",cofounder,Anthropic cofounders in 2021,https://en.wikipedia.org/wiki/Anthropic
+Dario Amodei,Anthropic cofounder and CEO,Daniela Amodei,Anthropic cofounder and president,family,Siblings who cofounded Anthropic in 2021,https://en.wikipedia.org/wiki/Anthropic
+Dario Amodei,Anthropic cofounder and CEO,Jack Clark,"Anthropic cofounder, policy lead",cofounder,Anthropic cofounders in 2021,https://en.wikipedia.org/wiki/Anthropic
+Dario Amodei,Anthropic cofounder and CEO,Jared Kaplan,Anthropic cofounder and chief science officer,cofounder,Anthropic cofounder; scaling laws co-author,https://en.wikipedia.org/wiki/Jared_Kaplan
+Dario Amodei,Anthropic cofounder and CEO,Sam McCandlish,Anthropic cofounder,cofounder,Anthropic cofounders in 2021,https://en.wikipedia.org/wiki/Anthropic
+Dario Amodei,Anthropic cofounder and CEO,Tom Brown,Anthropic cofounder,cofounder,Anthropic cofounder who led GPT-3 training at OpenAI,https://en.wikipedia.org/wiki/Anthropic
+Daniela Amodei,Anthropic cofounder and president,Dario Amodei,Anthropic cofounder and CEO,family,Siblings who cofounded Anthropic in 2021,https://en.wikipedia.org/wiki/Anthropic
+Daniela Amodei,Anthropic cofounder and president,Holden Karnofsky,Open Philanthropy cofounder,spouse,Married; Karnofsky later joined Anthropic,https://en.wikipedia.org/wiki/Holden_Karnofsky
+Daniela Amodei,Anthropic cofounder and president,Mike Krieger,"Anthropic chief product officer, Instagram cofounder",executive,Joined Anthropic as CPO in 2024 under the Amodeis,https://en.wikipedia.org/wiki/Mike_Krieger
+Demis Hassabis,"DeepMind cofounder and CEO, Nobel laureate",David Silver,DeepMind principal scientist,colleague,Longtime collaborator who led AlphaGo at DeepMind,https://en.wikipedia.org/wiki/David_Silver_(computer_scientist)
+Demis Hassabis,"DeepMind cofounder and CEO, Nobel laureate",Lila Ibrahim,DeepMind COO,executive,DeepMind chief operating officer since 2018,https://en.wikipedia.org/wiki/Lila_Ibrahim
+Demis Hassabis,DeepMind cofounder and CEO,Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",cofounder,DeepMind cofounders; childhood family friends in London,https://en.wikipedia.org/wiki/Mustafa_Suleyman
+Demis Hassabis,"DeepMind cofounder and CEO, Nobel laureate",Shane Legg,DeepMind cofounder and chief AGI scientist,cofounder,DeepMind cofounders in 2010,https://en.wikipedia.org/wiki/Shane_Legg
+Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",Demis Hassabis,DeepMind cofounder and CEO,cofounder,DeepMind cofounders; childhood family friends in London,https://en.wikipedia.org/wiki/Mustafa_Suleyman
+Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",Karen Simonyan,AI researcher,cofounder,Inflection cofounder who joined Microsoft AI with Suleyman as chief scientist,https://en.wikipedia.org/wiki/Inflection_AI
+Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",Reid Hoffman,LinkedIn cofounder,cofounder,Cofounded Inflection AI together in 2022,https://en.wikipedia.org/wiki/Inflection_AI
+Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",Satya Nadella,Microsoft CEO,executive,Hired by Nadella in 2024 to run Microsoft AI,https://en.wikipedia.org/wiki/Mustafa_Suleyman
+Geoffrey Hinton,"Turing and Nobel laureate, deep learning pioneer",Alex Krizhevsky,AlexNet co-creator,student,Doctoral student; AlexNet and DNNresearch together,https://en.wikipedia.org/wiki/Alex_Krizhevsky
+Geoffrey Hinton,deep learning pioneer,Ilya Sutskever,"Safe Superintelligence cofounder, former OpenAI chief scientist",phd_student,Hinton supervised his PhD; DNNresearch acquired by Google in 2013,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Geoffrey Hinton,"Turing and Nobel laureate, deep learning pioneer",Yann LeCun,Turing laureate,student,LeCun did postdoctoral work with Hinton; 2018 Turing co-recipients,https://en.wikipedia.org/wiki/Yann_LeCun
+Geoffrey Hinton,"Turing and Nobel laureate, deep learning pioneer",Yoshua Bengio,"Turing laureate, Mila founder",colleague,2018 Turing Award co-recipients and longtime collaborators,https://en.wikipedia.org/wiki/Yoshua_Bengio
+Yann LeCun,"Turing laureate, AMI Labs founder, former Meta chief AI scientist",Alexandre LeBrun,"Nabla founder, AMI Labs CEO",cofounder,Chosen by LeCun as CEO of his AMI Labs startup,https://fortune.com/2025/12/19/yann-lecun-ami-labs-ai-startup-valuation-meta-departure/
+Yann LeCun,Turing laureate,Geoffrey Hinton,"Turing and Nobel laureate, deep learning pioneer",mentor,LeCun did postdoctoral work with Hinton; 2018 Turing co-recipients,https://en.wikipedia.org/wiki/Yann_LeCun
+Yann LeCun,"Turing laureate, AMI Labs founder, former Meta chief AI scientist",Mark Zuckerberg,Meta founder and CEO,colleague,Hired by Zuckerberg in 2013 to found FAIR; left Meta in late 2025,https://www.cnbc.com/2025/11/19/meta-chief-ai-scientist-yann-lecun-is-leaving-the-company-.html
+Yann LeCun,"Turing laureate, AMI Labs founder, former Meta chief AI scientist",Yoshua Bengio,"Turing laureate, Mila founder",colleague,Bell Labs colleagues in the 1990s; Turing co-laureates,https://en.wikipedia.org/wiki/Yann_LeCun
+Yoshua Bengio,"Turing laureate, Mila founder",Geoffrey Hinton,"Turing and Nobel laureate, deep learning pioneer",colleague,2018 Turing Award co-recipients and longtime collaborators,https://en.wikipedia.org/wiki/Yoshua_Bengio
+Yoshua Bengio,"Mila founder, Turing laureate",Ian Goodfellow,GAN inventor,student,Bengio supervised his PhD; co-wrote the Deep Learning textbook,https://en.wikipedia.org/wiki/Ian_Goodfellow
+Yoshua Bengio,"Mila founder, Turing laureate",Samy Bengio,senior AI researcher at Apple,family,"Brothers, both prominent machine learning researchers",https://en.wikipedia.org/wiki/Samy_Bengio
+Yoshua Bengio,"Turing laureate, Mila founder",Yann LeCun,"Turing laureate, AMI Labs founder, former Meta chief AI scientist",colleague,Bell Labs colleagues in the 1990s; Turing co-laureates,https://en.wikipedia.org/wiki/Yann_LeCun
+Andrew Ng,"Coursera and Google Brain cofounder, DeepLearning.AI founder",Carol Reiley,roboticist,spouse,Married; cofounded Drive.ai together,https://en.wikipedia.org/wiki/Carol_E._Reiley
+Andrew Ng,"Coursera and Google Brain cofounder, DeepLearning.AI founder",Daphne Koller,insitro founder,cofounder,Stanford colleagues who cofounded Coursera in 2012,https://en.wikipedia.org/wiki/Daphne_Koller
+Andrew Ng,Coursera cofounder,Jeff Dean,Google chief scientist,cofounder,Founded Google Brain together in 2011 with Greg Corrado,https://en.wikipedia.org/wiki/Google_Brain
+Fei-Fei Li,Stanford AI professor,Andrej Karpathy,"Eureka Labs founder, OpenAI founding member",phd_student,PhD advisor at Stanford; created CS231n together,https://en.wikipedia.org/wiki/Andrej_Karpathy
+Fei-Fei Li,"Stanford AI professor, World Labs cofounder",John Etchemendy,"Stanford philosopher, former provost",partner,Co-directors of the Stanford Institute for Human-Centered AI,https://en.wikipedia.org/wiki/Fei-Fei_Li
+Fei-Fei Li,"Stanford AI professor, World Labs cofounder",Justin Johnson,World Labs cofounder,cofounder,Former PhD student who cofounded World Labs with her in 2024,https://en.wikipedia.org/wiki/Fei-Fei_Li
+Fei-Fei Li,"Stanford AI professor, World Labs cofounder",Silvio Savarese,"AI professor, former Salesforce chief scientist",spouse,Married; both prominent computer vision researchers,https://en.wikipedia.org/wiki/Silvio_Savarese
+Andrej Karpathy,"Eureka Labs founder, OpenAI founding member",Elon Musk,CEO of Tesla and SpaceX,colleague,Hired by Musk as Tesla AI director 2017-2022,https://en.wikipedia.org/wiki/Andrej_Karpathy
+Andrej Karpathy,"Eureka Labs founder, OpenAI founding member",Fei-Fei Li,Stanford AI professor,phd_advisor,PhD advisor at Stanford; created CS231n together,https://en.wikipedia.org/wiki/Andrej_Karpathy
+Andrej Karpathy,"Eureka Labs founder, OpenAI founding member",Ilya Sutskever,Safe Superintelligence cofounder,colleague,OpenAI founding team; Karpathy worked in Sutskever's research org,https://en.wikipedia.org/wiki/Andrej_Karpathy
+Jeff Dean,Google chief scientist,Andrew Ng,Coursera cofounder,cofounder,Founded Google Brain together in 2011 with Greg Corrado,https://en.wikipedia.org/wiki/Google_Brain
+Jeff Dean,Google chief scientist,Greg Corrado,Google research scientist,cofounder,Google Brain cofounders,https://en.wikipedia.org/wiki/Google_Brain
+Jeff Dean,Google chief scientist,Sanjay Ghemawat,Google Senior Fellow,colleague,Legendary two-decade programming partnership at Google,https://en.wikipedia.org/wiki/Sanjay_Ghemawat
+Alexandr Wang,"Scale AI cofounder, Meta chief AI officer",Lucy Guo,Passes founder,cofounder,Cofounded Scale AI in 2016,https://en.wikipedia.org/wiki/Lucy_Guo
+Alexandr Wang,"Scale AI cofounder, Meta chief AI officer",Mark Zuckerberg,Meta founder and CEO,executive,Recruited by Zuckerberg in the 2025 Meta-Scale deal to lead superintelligence work,https://en.wikipedia.org/wiki/Alexandr_Wang
+Aravind Srinivas,Perplexity cofounder and CEO,Andy Konwinski,Perplexity and Databricks cofounder,cofounder,Perplexity cofounders; Konwinski also cofounded Databricks,https://en.wikipedia.org/wiki/Perplexity_AI
+Aravind Srinivas,Perplexity cofounder and CEO,Denis Yarats,Perplexity CTO,cofounder,Perplexity cofounders,https://en.wikipedia.org/wiki/Perplexity_AI
+Aravind Srinivas,Perplexity cofounder and CEO,Jeff Bezos,Amazon founder,investor,Early Perplexity investor,https://en.wikipedia.org/wiki/Perplexity_AI
+Aravind Srinivas,Perplexity cofounder and CEO,Johnny Ho,Perplexity chief strategy officer,cofounder,Perplexity cofounders,https://en.wikipedia.org/wiki/Perplexity_AI
+Arthur Mensch,Mistral AI cofounder and CEO,Cedric O,former French digital minister,cofounder,Mistral cofounder and public-affairs lead,https://en.wikipedia.org/wiki/Mistral_AI
+Arthur Mensch,Mistral AI cofounder and CEO,Guillaume Lample,Mistral chief scientist,cofounder,Cofounded Mistral in 2023; both ex-Meta AI researchers,https://en.wikipedia.org/wiki/Mistral_AI
+Arthur Mensch,Mistral AI cofounder and CEO,Timothee Lacroix,Mistral CTO,cofounder,Cofounded Mistral in 2023; ex-Meta AI,https://en.wikipedia.org/wiki/Mistral_AI
+Clement Delangue,Hugging Face cofounder and CEO,Julien Chaumond,Hugging Face CTO,cofounder,Hugging Face cofounders,https://en.wikipedia.org/wiki/Hugging_Face
+Clement Delangue,Hugging Face cofounder and CEO,Thomas Wolf,Hugging Face chief science officer,cofounder,Hugging Face cofounders,https://en.wikipedia.org/wiki/Hugging_Face
+Nat Friedman,"investor, former GitHub CEO",Daniel Gross,"investor, former Safe Superintelligence cofounder",partner,"Longtime investing partners (AI Grant, NFDG); joined Meta together in 2025",https://en.wikipedia.org/wiki/Nat_Friedman
+Nat Friedman,"investor, former GitHub CEO",Miguel de Icaza,GNOME and Xamarin cofounder,cofounder,Cofounded Ximian and Xamarin together,https://en.wikipedia.org/wiki/Miguel_de_Icaza
+Nat Friedman,"investor, former GitHub CEO",Satya Nadella,Microsoft CEO,executive,Ran GitHub under Nadella after the 2018 acquisition,https://en.wikipedia.org/wiki/Nat_Friedman
+Daniel Gross,"investor, former Safe Superintelligence cofounder",Ilya Sutskever,Safe Superintelligence cofounder,cofounder,Cofounded Safe Superintelligence in 2024; left for Meta in 2025,https://en.wikipedia.org/wiki/Ilya_Sutskever
+Daniel Gross,"investor, former Safe Superintelligence cofounder",Nat Friedman,"investor, former GitHub CEO",partner,"Longtime investing partners (AI Grant, NFDG); joined Meta together in 2025",https://en.wikipedia.org/wiki/Nat_Friedman
+Daniel Gross,"investor, former Safe Superintelligence cofounder",Sam Altman,OpenAI CEO,colleague,YC partner while Altman was president; longtime friends,https://en.wikipedia.org/wiki/Daniel_Gross_(entrepreneur)
+Larry Ellison,Oracle cofounder and CTO,David Agus,physician and researcher,partner,Cofounded the Ellison Institute for medical research,https://en.wikipedia.org/wiki/David_Agus
+Larry Ellison,Oracle cofounder and CTO,David Ellison,"Skydance founder, Paramount CEO",family,Son; led the 2025 Skydance-Paramount takeover,https://en.wikipedia.org/wiki/David_Ellison
+Larry Ellison,Oracle cofounder and CTO,Elon Musk,CEO of Tesla and SpaceX,friend,Close friends; Ellison served on Tesla board and backed the Twitter buyout,https://en.wikipedia.org/wiki/Larry_Ellison
+Larry Ellison,Oracle cofounder,Marc Benioff,Salesforce founder and CEO,protege,"13 years at Oracle under Ellison, who seeded Salesforce",https://en.wikipedia.org/wiki/Marc_Benioff
+Larry Ellison,Oracle cofounder and CTO,Safra Catz,Oracle CEO,executive,Ellison's top deputy for two decades,https://en.wikipedia.org/wiki/Safra_Catz
+Michael Dell,Dell Technologies founder and CEO,Egon Durban,Silver Lake co-CEO,partner,Partnered on the 2013 Dell take-private and EMC deal,https://en.wikipedia.org/wiki/Egon_Durban
+Michael Dell,Dell Technologies founder and CEO,Jeff Clarke,Dell vice chairman and COO,executive,Dell vice chairman and chief operating officer,https://en.wikipedia.org/wiki/Dell_Technologies
+Michael Dell,Dell Technologies founder and CEO,Susan Dell,philanthropist and designer,spouse,Married 1989; co-lead the Michael and Susan Dell Foundation,https://en.wikipedia.org/wiki/Susan_Dell
+Andy Jassy,Amazon CEO,Adam Selipsky,former AWS CEO,executive,AWS CEO 2021-2024 under Jassy,https://en.wikipedia.org/wiki/Adam_Selipsky
+Andy Jassy,Amazon CEO,Jeff Bezos,Amazon founder,predecessor,Longtime Bezos deputy who founded AWS and succeeded him as CEO in 2021,https://en.wikipedia.org/wiki/Andy_Jassy
+Andy Jassy,Amazon CEO,Matt Garman,AWS CEO,executive,AWS CEO appointed under Jassy in 2024,https://en.wikipedia.org/wiki/Matt_Garman
+Eric Schmidt,former Google CEO and chairman,Jared Cohen,Goldman Sachs president of global affairs,coauthor,Co-wrote The New Digital Age; cofounded Google Ideas work together,https://en.wikipedia.org/wiki/Jared_Cohen
+Eric Schmidt,former Google CEO and chairman,Larry Page,Google cofounder,colleague,Hired by Page and Brin as Google CEO in 2001,https://en.wikipedia.org/wiki/Eric_Schmidt
+Eric Schmidt,former Google CEO and chairman,Sergey Brin,Google cofounder,colleague,Hired Schmidt as CEO in 2001 and worked alongside him for a decade,https://en.wikipedia.org/wiki/Sergey_Brin
+Eric Schmidt,former Google CEO and chairman,Wendy Schmidt,philanthropist,spouse,Married 1980; co-lead Schmidt family philanthropy,https://en.wikipedia.org/wiki/Wendy_Schmidt
+Sheryl Sandberg,"former Meta COO, Lean In founder",Larry Summers,"economist, former Treasury secretary",mentor,Harvard thesis adviser; she was his chief of staff at Treasury,https://en.wikipedia.org/wiki/Sheryl_Sandberg
+Sheryl Sandberg,"former Meta COO, Lean In founder",Mark Zuckerberg,Meta founder and CEO,executive,"Meta COO 2008-2022, Zuckerberg's top deputy",https://en.wikipedia.org/wiki/Sheryl_Sandberg
+Sheryl Sandberg,"former Meta COO, Lean In founder",Tom Bernthal,Kelton Global founder,spouse,Married 2022,https://en.wikipedia.org/wiki/Sheryl_Sandberg
+Marc Benioff,Salesforce founder and CEO,Bret Taylor,"Sierra cofounder, OpenAI board chair",colleague,Salesforce co-CEO with Benioff 2021-2022,https://en.wikipedia.org/wiki/Bret_Taylor
+Marc Benioff,Salesforce founder and CEO,Larry Ellison,Oracle cofounder,mentor,"13 years at Oracle under Ellison, who seeded Salesforce",https://en.wikipedia.org/wiki/Marc_Benioff
+Marc Benioff,Salesforce founder and CEO,Lynne Benioff,philanthropist,spouse,Married; co-own TIME magazine,https://en.wikipedia.org/wiki/Marc_Benioff
+Marc Benioff,Salesforce founder and CEO,Parker Harris,Salesforce cofounder,cofounder,Cofounded Salesforce in 1999,https://en.wikipedia.org/wiki/Parker_Harris
+Bret Taylor,"Sierra cofounder, OpenAI board chair",Clay Bavor,Sierra cofounder,cofounder,Cofounded Sierra in 2023,https://en.wikipedia.org/wiki/Bret_Taylor
+Bret Taylor,"Sierra cofounder, OpenAI board chair",Marc Benioff,Salesforce founder and CEO,colleague,Salesforce co-CEO with Benioff 2021-2022,https://en.wikipedia.org/wiki/Bret_Taylor
+Bret Taylor,"Sierra cofounder, OpenAI board chair",Paul Buchheit,"Gmail creator, YC partner",cofounder,Cofounded FriendFeed together in 2007,https://en.wikipedia.org/wiki/Paul_Buchheit
+Bret Taylor,"Sierra cofounder, OpenAI board chair",Sam Altman,OpenAI CEO,board,OpenAI board chair since the November 2023 crisis,https://en.wikipedia.org/wiki/Bret_Taylor
+Marc Andreessen,a16z cofounder,Ben Horowitz,a16z cofounder,cofounder,"Partners across Netscape, Loudcloud/Opsware and a16z since the 1990s",https://en.wikipedia.org/wiki/Ben_Horowitz
+Marc Andreessen,"a16z cofounder, Netscape cofounder",Chris Dixon,a16z crypto lead,partner,Longtime a16z general partner,https://en.wikipedia.org/wiki/Chris_Dixon
+Marc Andreessen,"a16z cofounder, Netscape cofounder",Laura Arrillaga-Andreessen,Stanford philanthropy lecturer,spouse,Married 2006,https://en.wikipedia.org/wiki/Laura_Arrillaga-Andreessen
+Marc Andreessen,"a16z cofounder, Netscape cofounder",Sriram Krishnan,White House senior AI policy adviser,partner,Former a16z partner in Andreessen's circle,https://en.wikipedia.org/wiki/Sriram_Krishnan
+Ben Horowitz,a16z cofounder,Felicia Horowitz,philanthropist,spouse,Married since 1988,https://en.wikipedia.org/wiki/Ben_Horowitz
+Ben Horowitz,a16z cofounder,Marc Andreessen,a16z cofounder,cofounder,"Partners across Netscape, Loudcloud/Opsware and a16z since the 1990s",https://en.wikipedia.org/wiki/Ben_Horowitz
+Peter Thiel,Founders Fund cofounder,Alex Karp,Palantir cofounder and CEO,cofounder,Stanford Law classmates who cofounded Palantir in 2003,https://en.wikipedia.org/wiki/Alex_Karp
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",Blake Masters,Thiel Capital president,coauthor,Co-wrote Zero to One; ran Thiel Capital and Thiel Foundation,https://en.wikipedia.org/wiki/Blake_Masters
+Peter Thiel,Founders Fund cofounder,David Sacks,"Craft Ventures founder, White House AI and crypto czar",coauthor,Stanford Review circle; co-wrote The Diversity Myth; PayPal COO under Thiel,https://en.wikipedia.org/wiki/David_Sacks
+Peter Thiel,Founders Fund cofounder,Dylan Field,Figma cofounder and CEO,protege,2012 Thiel Fellow; the fellowship funded Figma's start,https://en.wikipedia.org/wiki/Dylan_Field
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",Elon Musk,CEO of Tesla and SpaceX,cofounder,PayPal merger partners; decades-long documented relationship,https://en.wikipedia.org/wiki/PayPal
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",JD Vance,US Vice President,protege,Thiel hired him at Mithril and bankrolled his Senate run,https://en.wikipedia.org/wiki/JD_Vance
+Peter Thiel,Founders Fund cofounder,Joe Lonsdale,"8VC founder, Palantir cofounder",protege,Worked at Thiel's Clarium before cofounding Palantir with him,https://en.wikipedia.org/wiki/Joe_Lonsdale
+Peter Thiel,Founders Fund cofounder,Keith Rabois,Khosla Ventures managing director,colleague,Stanford Review circle; PayPal executive; Founders Fund partner,https://en.wikipedia.org/wiki/Keith_Rabois
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",Ken Howery,PayPal and Founders Fund cofounder,cofounder,PayPal and Founders Fund cofounders; later US ambassador,https://en.wikipedia.org/wiki/Ken_Howery
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",Luke Nosek,PayPal and Founders Fund cofounder,cofounder,PayPal and Founders Fund cofounders,https://en.wikipedia.org/wiki/Luke_Nosek
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",Matt Danzeisen,investor at Thiel Capital,spouse,Married 2017,https://en.wikipedia.org/wiki/Peter_Thiel
+Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",Max Levchin,Affirm founder,cofounder,Cofounded Confinity/PayPal in 1998,https://en.wikipedia.org/wiki/Max_Levchin
+Peter Thiel,Founders Fund cofounder,Palmer Luckey,Anduril and Oculus founder,portfolio_founder,Founders Fund anchored Anduril; longtime Thiel network member,https://en.wikipedia.org/wiki/Palmer_Luckey
+Peter Thiel,Founders Fund cofounder,Reid Hoffman,"LinkedIn cofounder, Greylock partner",friend,Stanford friends since the 1980s; PayPal COO under Thiel,https://en.wikipedia.org/wiki/Reid_Hoffman
+Peter Thiel,Founders Fund cofounder,Roelof Botha,Sequoia Capital senior steward,colleague,PayPal CFO in the Thiel-Musk era,https://en.wikipedia.org/wiki/Roelof_Botha
+Reid Hoffman,"LinkedIn cofounder, Greylock partner",Allen Blue,LinkedIn cofounder,cofounder,LinkedIn cofounders 2002,https://en.wikipedia.org/wiki/Allen_Blue
+Reid Hoffman,"LinkedIn cofounder, Greylock partner",Brian Chesky,Airbnb cofounder and CEO,board,Greylock led Airbnb Series A; Hoffman joined the board,https://en.wikipedia.org/wiki/Brian_Chesky
+Reid Hoffman,"LinkedIn cofounder, Greylock partner",Elon Musk,CEO of Tesla and SpaceX,colleague,PayPal executive team together,https://en.wikipedia.org/wiki/Reid_Hoffman
+Reid Hoffman,"LinkedIn cofounder, Greylock partner",Mark Pincus,Zynga founder,friend,Close friends; jointly bought the SixDegrees social networking patent,https://en.wikipedia.org/wiki/Mark_Pincus
+Reid Hoffman,LinkedIn cofounder,Mustafa Suleyman,"Microsoft AI CEO, DeepMind and Inflection cofounder",cofounder,Cofounded Inflection AI together in 2022,https://en.wikipedia.org/wiki/Inflection_AI
+Reid Hoffman,"LinkedIn cofounder, Greylock partner",Peter Thiel,Founders Fund cofounder,friend,Stanford friends since the 1980s; PayPal COO under Thiel,https://en.wikipedia.org/wiki/Reid_Hoffman
+Reid Hoffman,"LinkedIn cofounder, Greylock partner",Sam Altman,OpenAI CEO,friend,Early OpenAI donor and board member alongside Altman,https://en.wikipedia.org/wiki/Reid_Hoffman
+Max Levchin,"Affirm founder, PayPal cofounder",Elon Musk,CEO of Tesla and SpaceX,colleague,PayPal CTO through the X.com merger with Musk,https://en.wikipedia.org/wiki/Max_Levchin
+Max Levchin,"Affirm founder, PayPal cofounder",Jeremy Stoppelman,Yelp cofounder,colleague,PayPal engineer whose Yelp was incubated at Levchin's MRL Ventures,https://en.wikipedia.org/wiki/Jeremy_Stoppelman
+Max Levchin,Affirm founder,Peter Thiel,"Founders Fund, Palantir and PayPal cofounder",cofounder,Cofounded Confinity/PayPal in 1998,https://en.wikipedia.org/wiki/Max_Levchin
+David Sacks,Craft Ventures founder,Chamath Palihapitiya,Social Capital founder,friend,All-In podcast co-hosts and longtime friends,https://en.wikipedia.org/wiki/Chamath_Palihapitiya
+David Sacks,"Craft Ventures founder, White House AI and crypto czar",David Friedberg,Ohalo CEO,friend,All-In podcast co-hosts,https://en.wikipedia.org/wiki/David_Friedberg
+David Sacks,"Craft Ventures founder, White House AI and crypto czar",Elon Musk,CEO of Tesla and SpaceX,friend,PayPal colleagues; close ally in the Twitter takeover and Washington era,https://en.wikipedia.org/wiki/David_Sacks
+David Sacks,"Craft Ventures founder, White House AI and crypto czar",Jason Calacanis,angel investor and podcaster,friend,All-In podcast co-hosts,https://en.wikipedia.org/wiki/Jason_Calacanis
+David Sacks,"Craft Ventures founder, White House AI and crypto czar",Peter Thiel,Founders Fund cofounder,coauthor,Stanford Review circle; co-wrote The Diversity Myth; PayPal COO under Thiel,https://en.wikipedia.org/wiki/David_Sacks
+Keith Rabois,Khosla Ventures managing director,Jack Dorsey,Block founder,executive,COO of Square under Dorsey 2010-2013,https://en.wikipedia.org/wiki/Keith_Rabois
+Keith Rabois,Khosla Ventures managing director,Jacob Helberg,senior State Department official,spouse,Married 2018,https://en.wikipedia.org/wiki/Jacob_Helberg
+Keith Rabois,Khosla Ventures managing director,Peter Thiel,Founders Fund cofounder,colleague,Stanford Review circle; PayPal executive; Founders Fund partner,https://en.wikipedia.org/wiki/Keith_Rabois
+Roelof Botha,Sequoia Capital senior steward,Alfred Lin,Sequoia partner,partner,Sequoia stewardship partners,https://en.wikipedia.org/wiki/Alfred_Lin
+Roelof Botha,Sequoia Capital senior steward,Elon Musk,CEO of Tesla and SpaceX,colleague,Joined PayPal in the Musk era; rose to CFO,https://en.wikipedia.org/wiki/Roelof_Botha
+Roelof Botha,Sequoia Capital senior steward,Peter Thiel,Founders Fund cofounder,colleague,PayPal CFO in the Thiel-Musk era,https://en.wikipedia.org/wiki/Roelof_Botha
+Chamath Palihapitiya,Social Capital founder,David Sacks,Craft Ventures founder,friend,All-In podcast co-hosts and longtime friends,https://en.wikipedia.org/wiki/Chamath_Palihapitiya
+Chamath Palihapitiya,Social Capital founder,Mark Zuckerberg,Meta founder and CEO,executive,Ran the Facebook growth team 2007-2011,https://en.wikipedia.org/wiki/Chamath_Palihapitiya
+Naval Ravikant,AngelList cofounder,Babak Nivi,AngelList cofounder,cofounder,Cofounded AngelList and Venture Hacks,https://en.wikipedia.org/wiki/Naval_Ravikant
+Naval Ravikant,AngelList cofounder,Eric Jorgenson,"author, Scribe Media CEO",coauthor,Compiled The Almanack of Naval Ravikant with Naval's cooperation,https://en.wikipedia.org/wiki/Naval_Ravikant
+Naval Ravikant,AngelList cofounder,Kamal Ravikant,author and investor,family,Brothers,https://en.wikipedia.org/wiki/Kamal_Ravikant
+Vinod Khosla,"Khosla Ventures founder, Sun cofounder",Andy Bechtolsheim,"Sun cofounder, Arista founder",cofounder,Sun Microsystems cofounders 1982,https://en.wikipedia.org/wiki/Andy_Bechtolsheim
+Vinod Khosla,"Khosla Ventures founder, Sun cofounder",Bill Joy,Sun cofounder,cofounder,Sun cofounders; later Kleiner Perkins partners together,https://en.wikipedia.org/wiki/Bill_Joy
+Vinod Khosla,"Khosla Ventures founder, Sun cofounder",John Doerr,Kleiner Perkins chairman,friend,Longtime Kleiner Perkins partners and friends,https://en.wikipedia.org/wiki/Vinod_Khosla
+Vinod Khosla,"Khosla Ventures founder, Sun cofounder",Scott McNealy,Sun Microsystems cofounder,cofounder,Sun Microsystems cofounders 1982,https://en.wikipedia.org/wiki/Scott_McNealy
+John Doerr,Kleiner Perkins chairman,Ann Doerr,Khan Academy chair,spouse,Married; Ann chairs Khan Academy,https://en.wikipedia.org/wiki/John_Doerr
+John Doerr,Kleiner Perkins chairman,Jeff Bezos,Amazon founder,board,Kleiner backed Amazon in 1996; Doerr spent a decade on its board,https://en.wikipedia.org/wiki/John_Doerr
+John Doerr,Kleiner Perkins chairman,Larry Page,Google cofounder,board,Co-led Google's 1999 round; longtime Google board member,https://en.wikipedia.org/wiki/John_Doerr
+John Doerr,Kleiner Perkins chairman,Mary Meeker,BOND founder,partner,Longtime Kleiner Perkins partners,https://en.wikipedia.org/wiki/Mary_Meeker
+John Doerr,Kleiner Perkins chairman,Vinod Khosla,"Khosla Ventures founder, Sun cofounder",friend,Longtime Kleiner Perkins partners and friends,https://en.wikipedia.org/wiki/Vinod_Khosla
+Bill Gurley,Benchmark general partner emeritus,Brad Gerstner,Altimeter founder,friend,BG2 podcast co-hosts and longtime friends,https://en.wikipedia.org/wiki/Brad_Gerstner
+Bill Gurley,Benchmark general partner emeritus,Matt Cohler,former Benchmark partner,partner,Longtime Benchmark partners,https://en.wikipedia.org/wiki/Matt_Cohler
+Bill Gurley,Benchmark general partner emeritus,Travis Kalanick,Uber cofounder,board,Led Benchmark's Uber investment; central figure in the 2017 CEO ouster,https://en.wikipedia.org/wiki/Bill_Gurley
+Paul Graham,Y Combinator cofounder,Garry Tan,Y Combinator president and CEO,colleague,YC partner 2011-2015; chosen to lead YC from 2023,https://en.wikipedia.org/wiki/Garry_Tan
+Paul Graham,Y Combinator cofounder,Jessica Livingston,Y Combinator cofounder,spouse,Married; cofounded Y Combinator together in 2005,https://en.wikipedia.org/wiki/Jessica_Livingston
+Paul Graham,Y Combinator cofounder,John Collison,Stripe cofounder and president,protege,Stripe backed via YC; PG famously recruited both Collison brothers,https://en.wikipedia.org/wiki/John_Collison
+Paul Graham,Y Combinator cofounder,Patrick Collison,Stripe cofounder and CEO,protege,Stripe backed via YC; documented long mentorship,https://en.wikipedia.org/wiki/Patrick_Collison
+Paul Graham,"Y Combinator cofounder, essayist",Robert Tappan Morris,MIT professor,cofounder,Viaweb and Y Combinator cofounders; friends since the Harvard era,https://en.wikipedia.org/wiki/Robert_Tappan_Morris
+Paul Graham,Y Combinator cofounder,Sam Altman,OpenAI CEO,protege,Funded Loopt in the first YC batch and named Altman YC president in 2014,https://en.wikipedia.org/wiki/Sam_Altman
+Paul Graham,"Y Combinator cofounder, essayist",Trevor Blackwell,roboticist,cofounder,Viaweb and Y Combinator cofounders,https://en.wikipedia.org/wiki/Trevor_Blackwell
+Jessica Livingston,Y Combinator cofounder,Paul Graham,Y Combinator cofounder,spouse,Married; cofounded Y Combinator together in 2005,https://en.wikipedia.org/wiki/Jessica_Livingston
+Jessica Livingston,Y Combinator cofounder,Sam Altman,OpenAI CEO,colleague,YC founding partner through Altman's presidency,https://en.wikipedia.org/wiki/Jessica_Livingston
+Garry Tan,Y Combinator president and CEO,Alexis Ohanian,"Reddit cofounder, Seven Seven Six founder",cofounder,Cofounded Initialized Capital together,https://en.wikipedia.org/wiki/Garry_Tan
+Garry Tan,Y Combinator president and CEO,Michael Seibel,"Y Combinator partner, Twitch cofounder",colleague,Longtime Y Combinator partners,https://en.wikipedia.org/wiki/Garry_Tan
+Garry Tan,Y Combinator president and CEO,Paul Graham,Y Combinator cofounder,colleague,YC partner 2011-2015; chosen to lead YC from 2023,https://en.wikipedia.org/wiki/Garry_Tan
+Michael Seibel,"Y Combinator partner, Twitch cofounder",Emmett Shear,Twitch cofounder,cofounder,Justin.tv/Twitch cofounders,https://en.wikipedia.org/wiki/Emmett_Shear
+Michael Seibel,"Y Combinator partner, Twitch cofounder",Garry Tan,Y Combinator president and CEO,colleague,Longtime Y Combinator partners,https://en.wikipedia.org/wiki/Garry_Tan
+Michael Seibel,"Y Combinator partner, Twitch cofounder",Justin Kan,Justin.tv cofounder,cofounder,Justin.tv/Twitch cofounders and housemates,https://en.wikipedia.org/wiki/Justin_Kan
+Michael Seibel,"Y Combinator partner, Twitch cofounder",Kyle Vogt,Cruise founder,cofounder,Justin.tv/Twitch cofounders; Vogt later founded Cruise,https://en.wikipedia.org/wiki/Kyle_Vogt
+Patrick Collison,Stripe cofounder and CEO,John Collison,Stripe cofounder and president,family,Brothers who cofounded Stripe in 2010,https://en.wikipedia.org/wiki/John_Collison
+Patrick Collison,Stripe cofounder and CEO,Paul Graham,Y Combinator cofounder,mentor,Stripe backed via YC; documented long mentorship,https://en.wikipedia.org/wiki/Patrick_Collison
+Patrick Collison,Stripe cofounder and CEO,Tyler Cowen,economist,coauthor,Co-wrote the progress studies essay; cofounded Fast Grants,https://en.wikipedia.org/wiki/Tyler_Cowen
+John Collison,Stripe cofounder and president,Patrick Collison,Stripe cofounder and CEO,family,Brothers who cofounded Stripe in 2010,https://en.wikipedia.org/wiki/John_Collison
+John Collison,Stripe cofounder and president,Paul Graham,Y Combinator cofounder,mentor,Stripe backed via YC; PG famously recruited both Collison brothers,https://en.wikipedia.org/wiki/John_Collison
+Brian Chesky,Airbnb cofounder and CEO,Joe Gebbia,"Airbnb cofounder, Samara founder",cofounder,RISD classmates who founded Airbnb together,https://en.wikipedia.org/wiki/Joe_Gebbia
+Brian Chesky,Airbnb cofounder and CEO,Nathan Blecharczyk,Airbnb cofounder,cofounder,Airbnb cofounders 2008,https://en.wikipedia.org/wiki/Nathan_Blecharczyk
+Brian Chesky,Airbnb cofounder and CEO,Reid Hoffman,"LinkedIn cofounder, Greylock partner",board,Greylock led Airbnb Series A; Hoffman joined the board,https://en.wikipedia.org/wiki/Brian_Chesky
+Joe Gebbia,"Airbnb cofounder, Samara founder",Brian Chesky,Airbnb cofounder and CEO,cofounder,RISD classmates who founded Airbnb together,https://en.wikipedia.org/wiki/Joe_Gebbia
+Joe Gebbia,"Airbnb cofounder, Samara founder",Elon Musk,CEO of Tesla and SpaceX,board,Tesla board member since 2022; joined the DOGE effort in 2025,https://en.wikipedia.org/wiki/Joe_Gebbia
+Drew Houston,Dropbox cofounder and CEO,Arash Ferdowsi,Dropbox cofounder,cofounder,"Dropbox cofounders 2007, met via MIT",https://en.wikipedia.org/wiki/Arash_Ferdowsi
+Drew Houston,Dropbox cofounder and CEO,Mark Zuckerberg,Meta founder and CEO,board,Meta board member since 2020,https://en.wikipedia.org/wiki/Drew_Houston
+Melanie Perkins,Canva cofounder and CEO,Cameron Adams,Canva cofounder and CPO,cofounder,Canva cofounders 2013,https://en.wikipedia.org/wiki/Canva
+Melanie Perkins,Canva cofounder and CEO,Cliff Obrecht,Canva cofounder and COO,cofounder,Canva cofounder and her husband,https://en.wikipedia.org/wiki/Cliff_Obrecht
+Daniel Ek,Spotify cofounder and CEO,Gustav Soderstrom,Spotify co-president,executive,Spotify co-president and chief product officer,https://en.wikipedia.org/wiki/Spotify
+Daniel Ek,Spotify cofounder and CEO,Martin Lorentzon,Spotify cofounder,cofounder,Spotify cofounders 2006,https://en.wikipedia.org/wiki/Martin_Lorentzon
+Reed Hastings,Netflix cofounder and chairman,Greg Peters,Netflix co-CEO,executive,Elevated to Netflix co-CEO in 2023,https://en.wikipedia.org/wiki/Netflix
+Reed Hastings,Netflix cofounder and chairman,Marc Randolph,Netflix cofounder,cofounder,Netflix cofounders 1997,https://en.wikipedia.org/wiki/Marc_Randolph
+Reed Hastings,Netflix cofounder and chairman,Ted Sarandos,Netflix co-CEO,executive,Longtime deputy elevated to Netflix co-CEO,https://en.wikipedia.org/wiki/Ted_Sarandos
+Jack Dorsey,"Block founder, Twitter cofounder",Biz Stone,Twitter cofounder,cofounder,Twitter cofounders,https://en.wikipedia.org/wiki/Biz_Stone
+Jack Dorsey,"Block founder, Twitter cofounder",Evan Williams,"Twitter cofounder, Medium founder",cofounder,Twitter cofounders; Williams was early backer and CEO,https://en.wikipedia.org/wiki/Evan_Williams_(Internet_entrepreneur)
+Jack Dorsey,"Block founder, Twitter cofounder",Jim McKelvey,Square cofounder,cofounder,Square cofounders; friends from St. Louis,https://en.wikipedia.org/wiki/Jim_McKelvey
+Jack Dorsey,Block founder,Keith Rabois,Khosla Ventures managing director,executive,COO of Square under Dorsey 2010-2013,https://en.wikipedia.org/wiki/Keith_Rabois
+Jack Dorsey,"Block founder, Twitter cofounder",Kevin Systrom,Instagram cofounder,friend,Odeo intern under Dorsey; Dorsey was an early Instagram backer,https://en.wikipedia.org/wiki/Kevin_Systrom
+Jack Dorsey,"Block founder, Twitter cofounder",Noah Glass,Odeo founder,cofounder,Odeo founder and Twitter cofounder who named the product,https://en.wikipedia.org/wiki/Jack_Dorsey
+Evan Spiegel,Snap cofounder and CEO,Bobby Murphy,Snap cofounder and CTO,cofounder,Stanford fraternity brothers who cofounded Snapchat,https://en.wikipedia.org/wiki/Bobby_Murphy
+Evan Spiegel,Snap cofounder and CEO,Miranda Kerr,"model, Kora Organics founder",spouse,Married 2017,https://en.wikipedia.org/wiki/Evan_Spiegel
+Evan Spiegel,Snap cofounder and CEO,Reggie Brown,original Snapchat cofounder,cofounder,Original Snapchat cofounder; settled lawsuit over founding,https://en.wikipedia.org/wiki/Snap_Inc.
+Kevin Systrom,Instagram cofounder,Jack Dorsey,"Block founder, Twitter cofounder",friend,Odeo intern under Dorsey; Dorsey was an early Instagram backer,https://en.wikipedia.org/wiki/Kevin_Systrom
+Kevin Systrom,Instagram cofounder,Mark Zuckerberg,Meta founder and CEO,executive,Sold Instagram to Facebook in 2012; ran it under Zuckerberg until 2018,https://en.wikipedia.org/wiki/Kevin_Systrom
+Kevin Systrom,Instagram cofounder,Mike Krieger,"Instagram cofounder, Anthropic CPO",cofounder,Instagram cofounders 2010; met at Stanford,https://en.wikipedia.org/wiki/Kevin_Systrom
+Mike Krieger,"Anthropic chief product officer, Instagram cofounder",Daniela Amodei,Anthropic cofounder and president,executive,Joined Anthropic as CPO in 2024 under the Amodeis,https://en.wikipedia.org/wiki/Mike_Krieger
+Mike Krieger,"Instagram cofounder, Anthropic CPO",Kevin Systrom,Instagram cofounder,cofounder,Instagram cofounders 2010; met at Stanford,https://en.wikipedia.org/wiki/Kevin_Systrom
+Jan Koum,WhatsApp cofounder,Brian Acton,"Signal Foundation cofounder, WhatsApp cofounder",cofounder,Met at Yahoo; cofounded WhatsApp in 2009,https://en.wikipedia.org/wiki/Brian_Acton
+Jan Koum,WhatsApp cofounder,Mark Zuckerberg,Meta founder and CEO,board,Sold WhatsApp to Facebook for 19B; served on Facebook board 2014-2018,https://en.wikipedia.org/wiki/Jan_Koum
+Brian Acton,"Signal Foundation cofounder, WhatsApp cofounder",Jan Koum,WhatsApp cofounder,cofounder,Met at Yahoo; cofounded WhatsApp in 2009,https://en.wikipedia.org/wiki/Brian_Acton
+Brian Acton,"Signal Foundation cofounder, WhatsApp cofounder",Moxie Marlinspike,Signal creator,cofounder,Cofounded the Signal Foundation in 2018,https://en.wikipedia.org/wiki/Moxie_Marlinspike
+Palmer Luckey,Anduril and Oculus founder,Brendan Iribe,Oculus cofounder,cofounder,Oculus cofounders,https://en.wikipedia.org/wiki/Brendan_Iribe
+Palmer Luckey,Anduril and Oculus founder,Joe Lonsdale,"8VC founder, Palantir cofounder",portfolio_founder,8VC was an early Anduril backer,https://en.wikipedia.org/wiki/Anduril_Industries
+Palmer Luckey,Anduril and Oculus founder,Peter Thiel,Founders Fund cofounder,investor,Founders Fund anchored Anduril; longtime Thiel network member,https://en.wikipedia.org/wiki/Palmer_Luckey
+Palmer Luckey,Anduril and Oculus founder,Trae Stephens,"Anduril cofounder, Founders Fund partner",cofounder,Anduril cofounders 2017,https://en.wikipedia.org/wiki/Trae_Stephens
+Alex Karp,Palantir cofounder and CEO,Joe Lonsdale,"8VC founder, Palantir cofounder",cofounder,Palantir cofounders,https://en.wikipedia.org/wiki/Joe_Lonsdale
+Alex Karp,Palantir cofounder and CEO,Peter Thiel,Founders Fund cofounder,cofounder,Stanford Law classmates who cofounded Palantir in 2003,https://en.wikipedia.org/wiki/Alex_Karp
+Alex Karp,Palantir cofounder and CEO,Stephen Cohen,Palantir cofounder and president,cofounder,Palantir cofounders,https://en.wikipedia.org/wiki/Palantir_Technologies
+Joe Lonsdale,"8VC founder, Palantir cofounder",Alex Karp,Palantir cofounder and CEO,cofounder,Palantir cofounders,https://en.wikipedia.org/wiki/Joe_Lonsdale
+Joe Lonsdale,"8VC founder, Palantir cofounder",Palmer Luckey,Anduril and Oculus founder,investor,8VC was an early Anduril backer,https://en.wikipedia.org/wiki/Anduril_Industries
+Joe Lonsdale,"8VC founder, Palantir cofounder",Peter Thiel,Founders Fund cofounder,mentor,Worked at Thiel's Clarium before cofounding Palantir with him,https://en.wikipedia.org/wiki/Joe_Lonsdale
+Dylan Field,Figma cofounder and CEO,Evan Wallace,Figma cofounder,cofounder,Brown classmates who cofounded Figma,https://en.wikipedia.org/wiki/Figma
+Dylan Field,Figma cofounder and CEO,Peter Thiel,Founders Fund cofounder,mentor,2012 Thiel Fellow; the fellowship funded Figma's start,https://en.wikipedia.org/wiki/Dylan_Field
+Aaron Levie,Box cofounder and CEO,Dylan Smith,Box cofounder and CFO,cofounder,Childhood friends who cofounded Box,https://en.wikipedia.org/wiki/Aaron_Levie
+Aaron Levie,Box cofounder and CEO,Jeff Queisser,Box cofounder,cofounder,Box cofounders,https://en.wikipedia.org/wiki/Aaron_Levie
+Stewart Butterfield,Slack and Flickr cofounder,Cal Henderson,Slack cofounder and CTO,cofounder,Slack cofounders,https://en.wikipedia.org/wiki/Cal_Henderson
+Stewart Butterfield,Slack and Flickr cofounder,Caterina Fake,Flickr cofounder,cofounder,Flickr cofounders; formerly married,https://en.wikipedia.org/wiki/Caterina_Fake
+Tobi Lutke,Shopify founder and CEO,Harley Finkelstein,Shopify president,executive,Shopify president and longtime deputy,https://en.wikipedia.org/wiki/Harley_Finkelstein
+Tobi Lutke,Shopify founder and CEO,Scott Lake,Shopify cofounder,cofounder,Shopify cofounders 2006,https://en.wikipedia.org/wiki/Shopify
+Ali Ghodsi,Databricks cofounder and CEO,Ion Stoica,"Databricks cofounder, Berkeley professor",cofounder,Databricks cofounders; Stoica was founding CEO,https://en.wikipedia.org/wiki/Ion_Stoica
+Ali Ghodsi,Databricks cofounder and CEO,Matei Zaharia,"Databricks cofounder, Spark creator",cofounder,Databricks cofounders from Berkeley AMPLab,https://en.wikipedia.org/wiki/Matei_Zaharia
+Ali Ghodsi,Databricks cofounder and CEO,Reynold Xin,Databricks cofounder,cofounder,Databricks cofounders,https://en.wikipedia.org/wiki/Databricks
+Travis Kalanick,Uber cofounder,Bill Gurley,Benchmark general partner emeritus,board,Led Benchmark's Uber investment; central figure in the 2017 CEO ouster,https://en.wikipedia.org/wiki/Bill_Gurley
+Travis Kalanick,Uber cofounder,Dara Khosrowshahi,Uber CEO,successor,Succeeded Kalanick as Uber CEO in 2017,https://en.wikipedia.org/wiki/Dara_Khosrowshahi
+Travis Kalanick,"Uber cofounder, CloudKitchens CEO",Garrett Camp,"Uber cofounder, StumbleUpon founder",cofounder,Uber cofounders 2009,https://en.wikipedia.org/wiki/Garrett_Camp
+Dara Khosrowshahi,Uber CEO,Barry Diller,IAC chairman,mentor,Ran Expedia under Diller's IAC; documented mentor relationship,https://en.wikipedia.org/wiki/Dara_Khosrowshahi
+Dara Khosrowshahi,Uber CEO,Travis Kalanick,Uber cofounder,predecessor,Succeeded Kalanick as Uber CEO in 2017,https://en.wikipedia.org/wiki/Dara_Khosrowshahi
+Brian Armstrong,Coinbase cofounder and CEO,Emilie Choi,Coinbase president and COO,executive,Coinbase president and chief operating officer,https://en.wikipedia.org/wiki/Coinbase
+Brian Armstrong,Coinbase cofounder and CEO,Fred Ehrsam,"Coinbase cofounder, Paradigm cofounder",cofounder,Coinbase cofounders 2012,https://en.wikipedia.org/wiki/Fred_Ehrsam
+Vitalik Buterin,Ethereum cofounder,Charles Hoskinson,Cardano founder,cofounder,Ethereum cofounder who left to found Cardano,https://en.wikipedia.org/wiki/Charles_Hoskinson
+Vitalik Buterin,Ethereum cofounder,Gavin Wood,"Ethereum cofounder, Polkadot founder",cofounder,Ethereum cofounders; Wood wrote the yellow paper,https://en.wikipedia.org/wiki/Gavin_Wood
+Vitalik Buterin,Ethereum cofounder,Joseph Lubin,ConsenSys founder,cofounder,Ethereum cofounders,https://en.wikipedia.org/wiki/Ethereum
+Changpeng Zhao,Binance founder,Richard Teng,Binance CEO,successor,Handpicked successor as Binance CEO in 2023,https://en.wikipedia.org/wiki/Richard_Teng
+Changpeng Zhao,Binance founder,Yi He,Binance cofounder,cofounder,Binance cofounder and longtime partner,https://en.wikipedia.org/wiki/Binance
+Tim Sweeney,Epic Games founder and CEO,Donald Mustard,former Epic chief creative officer,executive,Longtime Epic chief creative officer (retired 2023),https://en.wikipedia.org/wiki/Donald_Mustard
+Tim Sweeney,Epic Games founder and CEO,Mark Rein,Epic Games vice president,partner,Epic VP and business partner since the early 1990s,https://en.wikipedia.org/wiki/Mark_Rein_(businessman)
+Gabe Newell,Valve cofounder,Mike Harrington,Valve cofounder,cofounder,Ex-Microsoft colleagues who cofounded Valve in 1996,https://en.wikipedia.org/wiki/Valve_Corporation
+Gwynne Shotwell,SpaceX president and COO,Elon Musk,CEO of Tesla and SpaceX,executive,SpaceX employee 11; has run SpaceX operations under Musk for two decades,https://en.wikipedia.org/wiki/Gwynne_Shotwell
+Gwynne Shotwell,SpaceX president and COO,Tom Mueller,founding SpaceX propulsion engineer,colleague,SpaceX founding-era leadership together for nearly two decades,https://en.wikipedia.org/wiki/Gwynne_Shotwell
+Steve Wozniak,Apple cofounder,Alex Fielding,Privateer Space cofounder,cofounder,Cofounded Privateer Space in 2021,https://en.wikipedia.org/wiki/Steve_Wozniak
+Steve Wozniak,Apple cofounder,Moriba Jah,astrodynamicist,cofounder,Privateer Space cofounders,https://en.wikipedia.org/wiki/Moriba_Jah
+Steve Wozniak,Apple cofounder,Ronald Wayne,third Apple cofounder,cofounder,Third Apple cofounder who drafted the 1976 partnership,https://en.wikipedia.org/wiki/Ronald_Wayne
+Steve Ballmer,"former Microsoft CEO, Clippers owner",Bill Gates,Microsoft cofounder,friend,Harvard dormmates; Microsoft's 30th employee and Gates's successor,https://en.wikipedia.org/wiki/Steve_Ballmer
+Steve Ballmer,"former Microsoft CEO, Clippers owner",Satya Nadella,Microsoft CEO,successor,Chose and preceded Nadella as Microsoft CEO,https://en.wikipedia.org/wiki/Steve_Ballmer
+Linus Torvalds,Linux creator,Dirk Hohndel,Verizon open source chief,friend,Longtime friend; conducts Torvalds's recurring conference interviews,https://en.wikipedia.org/wiki/Dirk_Hohndel
+Linus Torvalds,Linux creator,Greg Kroah-Hartman,Linux kernel maintainer,colleague,Right-hand kernel maintainer for stable releases,https://en.wikipedia.org/wiki/Greg_Kroah-Hartman
+Tim Berners-Lee,inventor of the World Wide Web,Nigel Shadbolt,Open Data Institute cofounder,cofounder,Cofounded the Open Data Institute in 2012,https://en.wikipedia.org/wiki/Nigel_Shadbolt
+Tim Berners-Lee,inventor of the World Wide Web,Rosemary Leith,World Wide Web Foundation cofounder,spouse,Married 2014; cofounded the Web Foundation together,https://en.wikipedia.org/wiki/Rosemary_Leith
+Jack Ma,Alibaba cofounder,Eddie Wu,Alibaba Group CEO,executive,"Longtime lieutenant, now Alibaba Group CEO",https://en.wikipedia.org/wiki/Alibaba_Group
+Jack Ma,Alibaba cofounder,Jerry Yang,"Yahoo cofounder, AME Cloud founder",friend,Architected Yahoo's 2005 Alibaba stake; later Alibaba board member,https://en.wikipedia.org/wiki/Jerry_Yang
+Jack Ma,Alibaba cofounder,Joe Tsai,"Alibaba chairman, Brooklyn Nets owner",cofounder,Alibaba cofounder and closest business partner,https://en.wikipedia.org/wiki/Joseph_Tsai
+Jack Ma,Alibaba cofounder,Masayoshi Son,SoftBank founder,investor,Made the famous 20M Alibaba bet in 2000; decades on each other's boards,https://en.wikipedia.org/wiki/Masayoshi_Son
+Pony Ma,Tencent cofounder and CEO,Martin Lau,Tencent president,executive,Tencent president and top deputy since 2006,https://en.wikipedia.org/wiki/Martin_Lau
+Pony Ma,Tencent cofounder and CEO,Zhang Zhidong,Tencent cofounder,cofounder,Tencent cofounders 1998,https://en.wikipedia.org/wiki/Zhang_Zhidong
+Zhang Yiming,ByteDance founder,Liang Rubo,ByteDance CEO,cofounder,"College roommate, ByteDance cofounder and successor CEO",https://en.wikipedia.org/wiki/Liang_Rubo
+Zhang Yiming,ByteDance founder,Shou Zi Chew,TikTok CEO,executive,Recruited by Yiming; runs TikTok under ByteDance,https://en.wikipedia.org/wiki/Shou_Zi_Chew
+Shou Zi Chew,TikTok CEO,Vanessa Pappas,former TikTok COO,executive,TikTok COO alongside Chew until 2023,https://en.wikipedia.org/wiki/Vanessa_Pappas
+Shou Zi Chew,TikTok CEO,Zhang Yiming,ByteDance founder,executive,Recruited by Yiming; runs TikTok under ByteDance,https://en.wikipedia.org/wiki/Shou_Zi_Chew
+Masayoshi Son,SoftBank founder,Jack Ma,Alibaba cofounder,portfolio_founder,Made the famous 20M Alibaba bet in 2000; decades on each other's boards,https://en.wikipedia.org/wiki/Masayoshi_Son
+Masayoshi Son,SoftBank founder,Jerry Yang,"Yahoo cofounder, AME Cloud founder",partner,Yahoo Japan joint venture partners since 1996,https://en.wikipedia.org/wiki/Jerry_Yang
+Masayoshi Son,SoftBank founder,Nikesh Arora,Palo Alto Networks CEO,executive,Former SoftBank president once designated successor,https://en.wikipedia.org/wiki/Nikesh_Arora
+Jerry Yang,"Yahoo cofounder, AME Cloud founder",David Filo,Yahoo cofounder,cofounder,Stanford PhD students who cofounded Yahoo in 1994,https://en.wikipedia.org/wiki/David_Filo
+Jerry Yang,"Yahoo cofounder, AME Cloud founder",Jack Ma,Alibaba cofounder,friend,Architected Yahoo's 2005 Alibaba stake; later Alibaba board member,https://en.wikipedia.org/wiki/Jerry_Yang
+Jerry Yang,"Yahoo cofounder, AME Cloud founder",Masayoshi Son,SoftBank founder,partner,Yahoo Japan joint venture partners since 1996,https://en.wikipedia.org/wiki/Jerry_Yang
+Pierre Omidyar,eBay founder,Jeff Skoll,Participant Media founder,cofounder,eBay's first president and employee,https://en.wikipedia.org/wiki/Jeff_Skoll
+Pierre Omidyar,eBay founder,Pam Omidyar,Omidyar Network cofounder,spouse,Married; co-lead Omidyar Network,https://en.wikipedia.org/wiki/Pam_Omidyar
+Anne Wojcicki,23andMe cofounder,Esther Wojcicki,educator and author,family,Mother; Palo Alto High journalism educator,https://en.wikipedia.org/wiki/Esther_Wojcicki
+Anne Wojcicki,23andMe cofounder,Janet Wojcicki,UCSF professor of pediatrics,family,Sister,https://en.wikipedia.org/wiki/Esther_Wojcicki
+Anne Wojcicki,23andMe cofounder,Linda Avey,23andMe cofounder,cofounder,23andMe cofounders 2006,https://en.wikipedia.org/wiki/Linda_Avey
+Anne Wojcicki,23andMe cofounder,Sergey Brin,Google cofounder,ex-spouse,Married 2007-2015; Brin was an early 23andMe backer,https://en.wikipedia.org/wiki/Anne_Wojcicki
+Whitney Wolfe Herd,Bumble founder,Andrey Andreev,Badoo founder,partner,Badoo founder who partnered with her to launch Bumble,https://en.wikipedia.org/wiki/Andrey_Andreev
+Whitney Wolfe Herd,Bumble founder,Michael Herd,restaurateur,spouse,Married 2017,https://en.wikipedia.org/wiki/Whitney_Wolfe_Herd
+Jony Ive,"LoveFrom founder, former Apple design chief",Laurene Powell Jobs,Emerson Collective founder,friend,Close family friend; Emerson Collective backed LoveFrom,https://en.wikipedia.org/wiki/Laurene_Powell_Jobs
+Jony Ive,"LoveFrom founder, former Apple design chief",Marc Newson,"designer, LoveFrom partner",partner,Longtime design partner at LoveFrom,https://en.wikipedia.org/wiki/Marc_Newson
+Jony Ive,"LoveFrom founder, former Apple design chief",Sam Altman,OpenAI CEO,partner,OpenAI acquired his io hardware startup in 2025; building devices together,https://en.wikipedia.org/wiki/Jony_Ive
+Jony Ive,"LoveFrom founder, former Apple design chief",Tim Cook,Apple CEO,colleague,Apple chief design officer under Cook until 2019,https://en.wikipedia.org/wiki/Jony_Ive
