@@ -16,7 +16,7 @@ import re
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import unquote
 
 from sqlalchemy import select
@@ -400,6 +400,26 @@ def _strip_trailing_context(name: str) -> str:
     return stripped or name
 
 
+def _notable_endpoints(name_a: str, name_b: str) -> Tuple[bool, bool]:
+    """(a_notable, b_notable) -- is each endpoint an independently famous person?
+
+    Checks both the raw name and its context-stripped form (see
+    _strip_trailing_context) in one batched lookup -- a person counts as
+    notable if either resolves, so "Larry Ellison of Oracle" still gets caught
+    even though the exact string never has its own Wikipedia page.
+
+    (False, False) when the lookup fails, so every caller degrades to the
+    unenhanced, symmetric behavior rather than to a guess.
+    """
+    stripped_a, stripped_b = _strip_trailing_context(name_a), _strip_trailing_context(name_b)
+    try:
+        notable = ORCH.notable_set(list({name_a, stripped_a, name_b, stripped_b}))
+    except Exception:
+        return False, False
+    return (name_a in notable or stripped_a in notable,
+            name_b in notable or stripped_b in notable)
+
+
 def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int, int]:
     """(depth_a, depth_b) for _expand_both_concurrently.
 
@@ -418,13 +438,7 @@ def _resolve_expansion_depths(name_a: str, name_b: str, depth: int) -> Tuple[int
     (origin) side's full depth is bumped by one hop to partially offset the
     famous side's fixed 1-hop cap not scaling with `depth`.
     """
-    stripped_a, stripped_b = _strip_trailing_context(name_a), _strip_trailing_context(name_b)
-    try:
-        notable = ORCH.notable_set(list({name_a, stripped_a, name_b, stripped_b}))
-    except Exception:
-        return depth, depth
-    a_notable = name_a in notable or stripped_a in notable
-    b_notable = name_b in notable or stripped_b in notable
+    a_notable, b_notable = _notable_endpoints(name_a, name_b)
     if a_notable == b_notable:
         return depth, depth
     shallow = min(SHALLOW_FAMOUS_DEPTH, depth)
@@ -723,14 +737,24 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     WorkerSession = sessionmaker(bind=engine, autoflush=False,
                                  expire_on_commit=False, future=True)
 
-    # Asymmetric depth (see _resolve_expansion_depths) means exactly one side
-    # is famous and shallow -- the OTHER, full-depth side is the one actually
-    # walking TOWARD a famous target, which is the situation
-    # expansion._process_person's targeted-recheck phase (4c) exists for. No
-    # asymmetry (both/neither notable) -> no clear famous target to walk
-    # toward -> neither side gets it, same as today.
-    enhanced_a = depth_a > depth_b
-    enhanced_b = depth_b > depth_a
+    # Alpha (targeted recheck 4c, strategy angles 4e, the top-5 narrowing at
+    # step 7) belongs to a side that is walking TOWARD a famous target -- that
+    # is the situation expansion._process_person's targeted-recheck phase
+    # exists for. So the question is simply "is the OTHER endpoint notable",
+    # and it is asked directly.
+    #
+    # It used to be inferred from `depth_a > depth_b`. Depth asymmetry is set
+    # by _resolve_expansion_depths only when EXACTLY ONE endpoint is notable,
+    # so on a famous<->famous pair both differences were zero and Alpha
+    # silently switched itself off on both sides -- for the pairs most likely
+    # to need it. Sanjay Ghemawat <-> Larry Page resolved to (2, 2), so the
+    # top-5 narrowing and every targeted phase were unreachable, and the walk
+    # fell back to the generic 15-node beam with no targeted recheck at all.
+    #
+    # Neither notable is unchanged: no famous target to walk toward, no Alpha.
+    a_notable, b_notable = _notable_endpoints(name_a, name_b)
+    enhanced_a = b_notable
+    enhanced_b = a_notable
     # Mirror image, to the OTHER side: once the full-depth side's targeted
     # search has effectively concluded "the bridge is professional" (that's
     # what triggered the asymmetric depth to begin with), the famous side's
@@ -925,9 +949,45 @@ def _fetch_result_text(res) -> str:
         return res.snippet
 
 
+class _PairPage(NamedTuple):
+    """One fetched result, kept whole so every consumer reads the same bytes."""
+    source: Source
+    text: str
+    snippet: str
+    url: str
+
+
+class _PageExtractions:
+    """extract() memoized per (page, subject).
+
+    Two consumers now read the same pages -- the keyword path, asking "is B
+    here", and the harvest, asking "who else is here" -- and both want the
+    subject=A extraction of the same page. With per-source Claude extraction
+    enabled that is a whole-page model call, so computing it twice would
+    literally double the cost of a page for no new information.
+    """
+
+    def __init__(self, pages: List[_PairPage]):
+        self._pages = pages
+        self._cache: Dict[Tuple[int, str], object] = {}
+
+    def get(self, idx: int, subject: str):
+        """The extraction for one (page, subject), or None if it failed."""
+        key = (idx, person_norm_key(subject))
+        if key not in self._cache:
+            page = self._pages[idx]
+            try:
+                self._cache[key] = extract(subject, page.text, COLLEAGUE_SILO,
+                                           page.snippet, page.url)
+            except Exception:
+                self._cache[key] = None
+        return self._cache[key]
+
+
 def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = "",
                         context_b: str = "",
-                        cancel_checker: Optional[Callable[[], None]] = None) -> Tuple[bool, bool]:
+                        cancel_checker: Optional[Callable[[], None]] = None,
+                        progress: Optional[Callable[[str], None]] = None) -> Tuple[bool, bool]:
     """Cheap first-pass: search for the two people TOGETHER and extract any
     edge found directly between them, before paying for a full bidirectional
     neighborhood walk.
@@ -974,13 +1034,43 @@ def _direct_pair_search(db: Session, name_a: str, name_b: str, context_a: str = 
     if not results:
         return False, False
 
+    # Fetch ONCE, here, rather than inside each variant. Both variants need the
+    # same page text, and so does the harvest below -- re-fetching per consumer
+    # would pay for the same HTML two or three times.
+    pages: List[_PairPage] = []
+    for res in results:
+        if cancel_checker:
+            cancel_checker()
+        text = _fetch_result_text(res)
+        if not text:
+            continue
+        pages.append(_PairPage(source=builder.save_source(db, res, query, text),
+                               text=text, snippet=res.snippet, url=res.url))
+    if not pages:
+        return False, False
+
+    extractions = _PageExtractions(pages)
     if relation_classifier.is_active():
-        return _direct_pair_search_via_claude(db, name_a, name_b, query, results, cancel_checker)
-    return _direct_pair_search_via_keywords(db, name_a, name_b, query, results, cancel_checker)
+        found, confident = _direct_pair_search_via_claude(
+            db, name_a, name_b, pages, cancel_checker)
+    else:
+        found, confident = _direct_pair_search_via_keywords(
+            db, name_a, name_b, pages, extractions, cancel_checker)
+
+    # Deliberately AFTER, and deliberately not folded into (found, confident):
+    # the harvest answers "who else is standing here", which is a different
+    # question from "are these two directly tied". Letting it move `confident`
+    # would short-circuit the paid walk on the strength of an edge that does
+    # not involve the target at all -- see _route_exists's use in
+    # connect_people, where a confident direct hit skips expansion entirely.
+    _harvest_pair_page_entities(db, name_a, name_b, pages, extractions,
+                                cancel_checker, progress)
+    return found, confident
 
 
-def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query: str,
-                                   results, cancel_checker) -> Tuple[bool, bool]:
+def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str,
+                                   pages: List[_PairPage],
+                                   cancel_checker) -> Tuple[bool, bool]:
     a_pat, a_conflict = _name_mention_pattern(name_a, other_name=name_b)
     b_pat, b_conflict = _name_mention_pattern(name_b, other_name=name_a)
 
@@ -995,14 +1085,11 @@ def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query:
     # likely about that other person, not evidence naming the actual target.
     seen_windows = set()
     candidates: List[Tuple[Source, str]] = []
-    for res in results:
+    for page in pages:
         if cancel_checker:
             cancel_checker()
-        text = _fetch_result_text(res)
-        if not text:
-            continue
-        source = builder.save_source(db, res, query, text)
-        for window in _sentence_windows(_split_sentences(text)):
+        source = page.source
+        for window in _sentence_windows(_split_sentences(page.text)):
             if window in seen_windows:
                 continue
             if a_conflict and a_conflict.search(window):
@@ -1072,8 +1159,10 @@ def _direct_pair_search_via_claude(db: Session, name_a: str, name_b: str, query:
     return found, confident
 
 
-def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, query: str,
-                                     results, cancel_checker) -> Tuple[bool, bool]:
+def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str,
+                                     pages: List[_PairPage],
+                                     extractions: "_PageExtractions",
+                                     cancel_checker) -> Tuple[bool, bool]:
     """Degraded-mode fallback when Claude isn't configured: one
     spaCy/heuristic extraction pass per result, typed by a keyword-signal
     table instead of real reasoning.
@@ -1091,18 +1180,19 @@ def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, quer
     instead of guessing."""
     b_norm = person_norm_key(name_b)
     candidates: List[Tuple[ExtractedEdge, Source]] = []
-    for res in results:
+    for idx, page in enumerate(pages):
         if cancel_checker:
             cancel_checker()
-        text = _fetch_result_text(res)
-        if not text:
+        out = extractions.get(idx, name_a)
+        if out is None:
             continue
-        source = builder.save_source(db, res, query, text)
-        out = extract(name_a, text, COLLEAGUE_SILO, res.snippet, res.url)
         for edge in out.edges:
+            # Only the A-B edge here -- everyone ELSE this extraction found is
+            # not thrown away any more, but claimed by _harvest_pair_page_entities,
+            # which owns the "who else is on this page" question for both paths.
             if edge.other_kind != "person" or person_norm_key(edge.person_b) != b_norm:
                 continue
-            candidates.append((edge, source))
+            candidates.append((edge, page.source))
 
     if not candidates:
         return False, False
@@ -1131,6 +1221,79 @@ def _direct_pair_search_via_keywords(db: Session, name_a: str, name_b: str, quer
         # transaction's first write (see builder.commit_with_retry).
         builder.commit_with_retry(db)
     return found, confident
+
+
+def _harvest_pair_page_entities(db: Session, name_a: str, name_b: str,
+                                pages: List[_PairPage],
+                                extractions: "_PageExtractions",
+                                cancel_checker, progress=None) -> int:
+    """Record the OTHER people named on the pair-search pages. Returns edges written.
+
+    The pages are already fetched and already saved as Sources; until now both
+    direct-pair paths read each one for a single A-B fact and discarded
+    everyone else on it. The keyword path did so most visibly -- it ran a full
+    extraction and dropped every edge whose counterpart was not exactly B --
+    and the Claude path never even looked, since it only built windows naming
+    both endpoints.
+
+    That discard is what makes a three-hop pair report "no connection". A query
+    naming both endpoints returns pages about the world they share, so the
+    people on them are precisely the plausible intermediaries; Sanjay Ghemawat
+    and Larry Page are two hops apart through Jeff Dean, who is named on the
+    Google-engineering pages this search already downloads.
+
+    Runs per ENDPOINT, not just the origin: an intermediary is only useful if
+    it can be reached from both directions, and extracting solely around A
+    would build half a bridge. The A-B edge itself is skipped -- the callers
+    own that question, and writing it here too would double-persist it and
+    muddy the (found, confident) verdict they return.
+
+    Best-effort throughout. This is an opportunistic bonus on top of a search
+    that has already produced its real answer, so a failure here must cost the
+    caller nothing.
+    """
+    if not config.CONNECT_HARVEST_PAIR_PAGES or not pages:
+        return 0
+    endpoint_norms = {person_norm_key(name_a), person_norm_key(name_b)}
+    written = 0
+    # Highest-ranked results only: relevance falls off down the list, and every
+    # page here costs one per-source extraction call PER endpoint.
+    for idx, page in enumerate(pages[:max(0, config.CONNECT_HARVEST_MAX_PAGES)]):
+        for subject in (name_a, name_b):
+            if cancel_checker:
+                cancel_checker()
+            # Memoized: on the keyword path subject=A was already extracted for
+            # the A-B question, so that half of this costs nothing.
+            out = extractions.get(idx, subject)
+            if out is None:
+                continue
+            person = builder.get_or_create_person(db, subject)
+            if person is None:
+                continue
+            for edge in out.edges:
+                if edge.other_kind != "person":
+                    continue
+                if person_norm_key(edge.person_b) in endpoint_norms:
+                    continue      # the A-B edge belongs to the caller
+                try:
+                    counterpart = builder.get_or_create_person(db, edge.person_b)
+                    if counterpart is None:
+                        continue   # node cap, or a name that isn't one
+                    if builder.add_edge_from_extraction(
+                            db, person, edge, 0, page.source, counterpart) is not None:
+                        written += 1
+                except Exception:
+                    continue
+    if written:
+        try:
+            builder.commit_with_retry(db)
+        except Exception:
+            return written
+        if progress:
+            progress(f"[direct] harvested {written} edge(s) to other people named "
+                     f"on the {min(len(pages), config.CONNECT_HARVEST_MAX_PAGES)} "
+                     "page(s) already fetched for the pair query")
+    return written
 
 
 def _build_explored(expand_stats: Optional[dict], name_a: str, name_b: str) -> Optional[dict]:
@@ -1251,14 +1414,19 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                 progress("[origin] connected through the origin's own network — "
                          "no search needed")
 
-    if not route_found.is_set():
+    # The two paid stages, as callables rather than inline blocks: everything
+    # above can decide a route already exists and skip them, and if that
+    # decision is later overturned by hop verification they have to be
+    # runnable a second time. See the resume block below.
+    def _run_direct_pair() -> None:
         # _direct_pair_search already tries every returned result (not just
         # the first few) whenever what it's found so far is only weak, so by
         # the time it returns there's nothing more to gain from SEARCHING
         # further here. Whether it found something worth STOPPING for is a
         # different question, and `confident` is what answers it.
         found, confident = _direct_pair_search(db, name_a, name_b, context_a, context_b,
-                                              cancel_checker=cancel_checker)
+                                              cancel_checker=cancel_checker,
+                                              progress=progress)
         if found and confident:
             route_found.set()
             if progress:
@@ -1279,11 +1447,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                 progress("[direct] found only a weak direct mention — keeping it "
                          "as evidence and continuing to full expansion")
 
-    # Populated only when a fresh expansion actually ran (not when a route
-    # was already known, or found via the cheap direct-pair check) -- see
-    # _build_explored below and its use in both return paths.
-    expand_stats: Optional[dict] = None
-    if not route_found.is_set():
+    def _run_expansion() -> dict:
         if cancel_checker:
             cancel_checker()
         depth_a, depth_b = _resolve_expansion_depths(name_a, name_b, depth)
@@ -1292,11 +1456,21 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             progress(f"[reachable] side {shallow_side} is a public figure — "
                      f"capping their expansion to depth {min(depth_a, depth_b)} "
                      "(immediate circle only) instead of matching the other side")
-        expand_stats = _expand_both_concurrently(
+        return _expand_both_concurrently(
             db, name_a, name_b, depth_a, depth_b, both, progress,
             context_a, context_b, on_step=on_step,
             cancel_checker=cancel_checker,
             should_stop=should_stop)
+
+    if not route_found.is_set():
+        _run_direct_pair()
+
+    # Populated only when a fresh expansion actually ran (not when a route
+    # was already known, or found via the cheap direct-pair check) -- see
+    # _build_explored below and its use in both return paths.
+    expand_stats: Optional[dict] = None
+    if not route_found.is_set():
+        expand_stats = _run_expansion()
 
     if cancel_checker:
         cancel_checker()
@@ -1310,29 +1484,72 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         missing = name_a if a is None else name_b
         return {"connected": False, "reason": f"'{missing}' not found in the graph"}
 
-    adj, person_by_id, src_by_id, degree = _adjacency(db)
-    if cancel_checker:
-        cancel_checker()
-    routes = _diverse_paths(adj, a.id, b.id, max_hops, config.CONNECT_MAX_PATHS,
-                            person_by_id, degree)
-    if cancel_checker:
-        cancel_checker()
-    had_candidates = bool(routes)
-    verified = config.CLAUDE_VERIFY_HOPS and hop_verify.claude_available()
-    if verified:
-        routes = _verified_routes(db, routes, person_by_id, cancel_checker)
-    if cancel_checker:
-        cancel_checker()
+    def _routes_now():
+        """(surviving routes, how many candidates there were, person_by_id, …).
+
+        Recomputed rather than cached because the resume below can persist new
+        edges, and because verification MUTATES the graph -- a rejected hop is
+        written back as status='rejected', which _path_worthy then treats as
+        untraversable. The second call therefore cannot re-propose a route the
+        first one just disproved, which is what bounds the resume.
+        """
+        adjacency, by_id, src, deg = _adjacency(db)
+        if cancel_checker:
+            cancel_checker()
+        found = _diverse_paths(adjacency, a.id, b.id, max_hops,
+                               config.CONNECT_MAX_PATHS, by_id, deg)
+        if cancel_checker:
+            cancel_checker()
+        candidate_count = len(found)
+        was_verified = config.CLAUDE_VERIFY_HOPS and hop_verify.claude_available()
+        if was_verified:
+            found = _verified_routes(db, found, by_id, cancel_checker)
+        if cancel_checker:
+            cancel_checker()
+        return found, candidate_count, was_verified, adjacency, by_id, src, deg
+
+    routes, n_candidates, verified, adj, person_by_id, src_by_id, degree = _routes_now()
+
+    # The short-circuit is not self-correcting, and that is what this fixes.
+    # Every check above ("already in the graph", "connected through the
+    # origin's own network") skips the paid walk on the strength of edges
+    # nothing has inspected yet. When verification then rejects all of them,
+    # the skip was made on a false premise -- and until now the walk simply
+    # reported "no connection", having never searched at all.
+    #
+    # Observed: Sanjay Ghemawat -> Larry Page. A 0.39-confidence heuristic edge
+    # (Ghemawat -> Eric Schmidt, off a PDF whose evidence sentence names
+    # Schmidt, Page and Brin but not Ghemawat) made a two-hop route appear to
+    # exist. The walk was skipped, verification correctly rejected the edge,
+    # and the caller got "no connection" for $0.0007 and zero searches.
+    #
+    # Runs at most once, and only when nothing was searched. If expansion had
+    # already run, its edges are the ones being rejected and repeating it would
+    # rediscover the same pages. Bounded further by the fact that verification
+    # persists its rejections, so the disproved route is gone from the graph
+    # before the retry re-reads it.
+    if not routes and n_candidates and verified and expand_stats is None:
+        if progress:
+            progress(f"\n[verify] all {n_candidates} candidate route(s) were "
+                     "rejected on their own evidence — the earlier 'already "
+                     "connected' shortcut was wrong. Resuming the search it skipped…")
+        route_found.clear()
+        _run_direct_pair()
+        if not route_found.is_set():
+            expand_stats = _run_expansion()
+        routes, n_after, verified, adj, person_by_id, src_by_id, degree = _routes_now()
+        n_candidates = max(n_candidates, n_after)
+
     if not routes:
         # A distinct reason when candidates existed but none survived
         # verification -- "try a higher depth" would be actively misleading
         # there, since more expansion won't fix a hop that failed on its
         # own evidence.
         reason = (
-            f"{config.CONNECT_MAX_PATHS} candidate route(s) found within "
+            f"{n_candidates} candidate route(s) found within "
             f"{max_hops} hops, but none passed hop verification — the "
             "evidence didn't hold up on inspection."
-            if had_candidates and verified else
+            if n_candidates and verified else
             f"no path within {max_hops} hops — their graphs don't overlap "
             f"at depth {depth}. Try a higher depth."
         )

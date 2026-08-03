@@ -333,7 +333,9 @@ def test_keyword_fallback_uses_a_broad_signal_silo_not_the_news_silo(db, monkeyp
 
     C._direct_pair_search(db, "Alpha Person", "Beta Person")
 
-    assert calls == [C.COLLEAGUE_SILO]
+    # Every extraction, whichever consumer asked for it (the A-B question or
+    # the harvest), uses the broad silo -- not just the first one.
+    assert calls and all(silo is C.COLLEAGUE_SILO for silo in calls)
 
 
 def test_dispatches_to_keyword_fallback_when_claude_inactive(db, monkeypatch):
@@ -351,7 +353,17 @@ def test_dispatches_to_keyword_fallback_when_claude_inactive(db, monkeypatch):
     assert confident is True  # the raw guess's own confidence (0.7) stands unmodified
 
 
-def test_keyword_fallback_extracts_once_per_result_not_once_per_silo(db, monkeypatch):
+def test_keyword_fallback_extracts_once_per_endpoint_per_result(db, monkeypatch):
+    """One extraction per (page, endpoint) -- never per silo, and never twice
+    for the same pair.
+
+    Two consumers read each page now: the A-B question, and the harvest that
+    records everyone else standing on it. Both want subject=A, so without the
+    memo in _PageExtractions the A side would be extracted twice -- with
+    per-source Claude extraction on, literally paying twice for one page.
+    Subject=B is the one genuinely new call, and it is what lets a harvested
+    intermediary be reachable from BOTH endpoints instead of only the origin.
+    """
     results = [_FakeResult("A", "https://a.example/", "...")]
     _stub_search(monkeypatch, results)
     monkeypatch.setattr(C, "_fetch_result_text", lambda res: "some text")
@@ -359,15 +371,37 @@ def test_keyword_fallback_extracts_once_per_result_not_once_per_silo(db, monkeyp
 
     calls = []
 
-    def fake_extract(name_a, text, silo, evidence, source_url):
-        calls.append(silo)
-        return _edge_to(name_a, "Beta Person")
+    def fake_extract(subject, text, silo, evidence, source_url):
+        calls.append((subject, silo))
+        return _edge_to(subject, "Beta Person")
 
     monkeypatch.setattr(C, "extract", fake_extract)
 
     C._direct_pair_search(db, "Alpha Person", "Beta Person")
 
-    assert len(calls) == 1, "must extract once per result, not once per silo"
+    assert [s for s, _silo in calls] == ["Alpha Person", "Beta Person"]
+    assert all(silo is C.COLLEAGUE_SILO for _s, silo in calls)
+
+
+def test_harvest_is_skipped_when_disabled(db, monkeypatch):
+    """The switch has to actually remove the added cost, not just the writes."""
+    results = [_FakeResult("A", "https://a.example/", "...")]
+    _stub_search(monkeypatch, results)
+    monkeypatch.setattr(C, "_fetch_result_text", lambda res: "some text")
+    monkeypatch.setattr(C.relation_classifier, "is_active", lambda: False)
+    monkeypatch.setattr(C.config, "CONNECT_HARVEST_PAIR_PAGES", False)
+
+    calls = []
+
+    def fake_extract(subject, text, silo, evidence, source_url):
+        calls.append(subject)
+        return _edge_to(subject, "Beta Person")
+
+    monkeypatch.setattr(C, "extract", fake_extract)
+
+    C._direct_pair_search(db, "Alpha Person", "Beta Person")
+
+    assert calls == ["Alpha Person"], "disabled harvest must not extract for B"
 
 
 def test_keyword_fallback_no_candidates_returns_false_false(db, monkeypatch):
@@ -381,3 +415,95 @@ def test_keyword_fallback_no_candidates_returns_false_false(db, monkeypatch):
 
     assert found is False
     assert confident is False
+
+
+# ── harvesting the rest of the page ───────────────────────────────────────
+# The pair query returns pages about the world the two endpoints share, so the
+# OTHER people named on them are disproportionately the ones who bridge. Both
+# paths used to read each page for a single A-B fact and discard everyone else:
+# the keyword path extracted them and dropped every edge whose counterpart was
+# not exactly B, and the Claude path only ever built windows naming both
+# endpoints, so it never saw them. Observed consequence: a pair two hops apart
+# (Sanjay Ghemawat -> Jeff Dean -> ... -> Larry Page) returned "no connection"
+# while the intermediary sat in HTML already downloaded and already saved.
+
+def _multi_person_extract(subject, text, silo, evidence, source_url):
+    """Page naming an intermediary alongside whichever endpoint is the subject."""
+    out = ExtractionOutput(extractor="fake")
+    for other in ("Jeff Dean", "Beta Person" if subject == "Alpha Person" else "Alpha Person"):
+        out.edges.append(ExtractedEdge(
+            person_a=subject, person_b=other, other_kind="person",
+            relationship_type="coworker", method="fake",
+            evidence_snippet="fake evidence", source_url="",
+            confidence_base=0.7, confidence_adjusted=0.7, signals=EdgeSignals(),
+        ))
+    return out
+
+
+def _harvested(db, subject, other):
+    from app.models import Person, RelationshipEdge
+    from app.utils.names import person_norm_key
+    rows = db.query(RelationshipEdge).all()
+    names = {}
+    for p in db.query(Person).all():
+        names[p.id] = p.norm_name
+    want = {person_norm_key(subject), person_norm_key(other)}
+    return any({names.get(r.person_a_id), names.get(r.person_b_id)} == want for r in rows)
+
+
+def test_harvest_records_intermediaries_from_both_endpoints(db, monkeypatch):
+    """The bridge has to be reachable from BOTH sides.
+
+    Harvesting only around the origin would build half of it: an intermediary
+    with an edge to A and none to B is still a dead end for the pathfinder.
+    """
+    results = [_FakeResult("A", "https://a.example/", "...")]
+    _stub_search(monkeypatch, results)
+    monkeypatch.setattr(C, "_fetch_result_text", lambda res: "some text")
+    monkeypatch.setattr(C.relation_classifier, "is_active", lambda: False)
+    monkeypatch.setattr(C, "extract", _multi_person_extract)
+
+    C._direct_pair_search(db, "Alpha Person", "Beta Person")
+
+    assert _harvested(db, "Alpha Person", "Jeff Dean")
+    assert _harvested(db, "Beta Person", "Jeff Dean")
+
+
+def test_harvest_runs_on_the_claude_path_too(db, monkeypatch):
+    """The Claude path never extracted at all -- it only classified windows
+    naming both endpoints -- so it was the path that harvested nothing, and it
+    is the one your deployment actually runs."""
+    results = [_FakeResult("A", "https://a.example/", "...")]
+    _stub_search(monkeypatch, results)
+    monkeypatch.setattr(C, "_fetch_result_text",
+                        lambda res: "Alpha Person met Beta Person in 2011.")
+    monkeypatch.setattr(C.relation_classifier, "is_active", lambda: True)
+    monkeypatch.setattr(C.relation_classifier, "classify",
+                        lambda items: [{"type": "unknown", "confidence": 0.0}] * len(items))
+    monkeypatch.setattr(C, "extract", _multi_person_extract)
+
+    C._direct_pair_search(db, "Alpha Person", "Beta Person")
+
+    assert _harvested(db, "Alpha Person", "Jeff Dean")
+    assert _harvested(db, "Beta Person", "Jeff Dean")
+
+
+def test_harvest_does_not_make_a_weak_pair_look_confident(db, monkeypatch):
+    """`confident` short-circuits the entire paid walk in connect_people. A
+    harvested edge says nothing about whether A and B are tied, so it must not
+    be able to move that verdict -- otherwise finding a busy page would cancel
+    the expansion that was going to find the actual route."""
+    results = [_FakeResult("A", "https://a.example/", "...")]
+    _stub_search(monkeypatch, results)
+    monkeypatch.setattr(C, "_fetch_result_text", lambda res: "some text")
+    monkeypatch.setattr(C.relation_classifier, "is_active", lambda: False)
+
+    def only_intermediaries(subject, text, silo, evidence, source_url):
+        return _edge_to(subject, "Jeff Dean", rel_type="coworker", confidence=0.9)
+
+    monkeypatch.setattr(C, "extract", only_intermediaries)
+
+    found, confident = C._direct_pair_search(db, "Alpha Person", "Beta Person")
+
+    assert (found, confident) == (False, False)
+    assert _harvested(db, "Alpha Person", "Jeff Dean")
