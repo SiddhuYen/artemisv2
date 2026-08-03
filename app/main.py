@@ -40,6 +40,7 @@ from .buildqueue import BUILDS, QueueFull
 from .db import SessionLocal, get_boards_db, get_db, init_boards_db, init_db, safe_graph_id
 from .extraction import claude_available
 from .graph.expansion import expand_graph
+from .graph.hop_verify import reject_edges
 from .models import (
     Board,
     BoardPage,
@@ -829,6 +830,37 @@ async def network_upload(file: UploadFile = File(...), owner_name: str = Form(""
     # a large CSV import doesn't stall every other concurrent request (incl. /health).
     stats = await run_in_threadpool(ingest_csv, db, content, owner_name=owner_name)
     return {"ingested": stats, "profiles_total": db.query(LocalProfile).count()}
+
+
+@app.post("/edges/reject")
+async def edges_reject(req: dict, db: Session = Depends(get_db)) -> dict:
+    """Mark one or more edges false because a person judged them wrong.
+
+    The missing half of hop verification. Claude's verdict already writes
+    status='rejected', and every path assembler treats that as "not a real
+    connection" -- but nothing let a HUMAN write it, so a bogus route stayed
+    in the graph until the model happened to reconsider it, if it ever did.
+
+    This matters more than ranking: connect._route_exists short-circuits the
+    whole paid walk when any traversable route already exists, so a wrong edge
+    doesn't merely rank badly, it suppresses the search that would replace it.
+    Rejecting reopens the pair to discovery on the next /connect.
+
+    Body: {"edge_ids": [...], "reason": "why"}. Get the ids from any hop in a
+    /connect result's `path` (each hop carries `edge_id`). Rejections made here
+    are permanent -- unlike the model's own, they are never reconsidered on TTL
+    expiry (see hop_verify.is_operator_rejected).
+    """
+    edge_ids = req.get("edge_ids")
+    if isinstance(edge_ids, str):
+        edge_ids = [edge_ids]
+    edge_ids = [str(e).strip() for e in (edge_ids or []) if str(e).strip()]
+    if not edge_ids:
+        raise HTTPException(status_code=400, detail="edge_ids required")
+    if len(edge_ids) > 100:
+        raise HTTPException(status_code=400, detail="at most 100 edge_ids per call")
+    return await run_in_threadpool(
+        reject_edges, db, edge_ids, _str_field(req, "reason"))
 
 
 @app.post("/network/profiles/backfill-graph-edges")

@@ -64,9 +64,29 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Marks a rejection as authored by a person, not by the model. Stored as a
+# prefix on verified_reason rather than a new column so it needs no migration
+# on a live shared graph, and so the reason a human gave is still readable
+# right where every other verdict's reason already is.
+OPERATOR_PREFIX = "operator: "
+
+
+def is_operator_rejected(edge: RelationshipEdge) -> bool:
+    return (edge.verified_status == "rejected"
+            and (edge.verified_reason or "").startswith(OPERATOR_PREFIX))
+
+
 def _is_stale(edge: RelationshipEdge) -> bool:
     if not edge.verified_status or not edge.verified_at:
         return True
+    # A person looked at this edge and said it was wrong. TTL expiry exists so
+    # a MODEL's verdict can be revisited as prompts and evidence improve; there
+    # is no equivalent reason to re-litigate a human one, and doing so would
+    # let the reconsideration path silently restore a hand-rejected edge to
+    # 'candidate' (see verify's stale-rejection branch) -- the exact failure
+    # the operator used this to prevent.
+    if is_operator_rejected(edge):
+        return False
     try:
         checked = datetime.fromisoformat(edge.verified_at)
     except (TypeError, ValueError):
@@ -74,6 +94,47 @@ def _is_stale(edge: RelationshipEdge) -> bool:
     ttl = (config.HOP_VERIFY_TTL_REJECTED if edge.verified_status == "rejected"
            else config.HOP_VERIFY_TTL_GENUINE)
     return (datetime.now(timezone.utc) - checked).total_seconds() > ttl
+
+
+def reject_edges(db: Session, edge_ids, reason: str = "") -> dict:
+    """Mark edges false because a person said so. Returns per-id outcomes.
+
+    Writes the SAME two fields the model's own negative verdict writes
+    (status='rejected' + verified_status='rejected'), because those are
+    already load-bearing everywhere a path is assembled: connect._untraversable
+    excludes them from traversal, connect._route_exists stops reporting the
+    pair as already-connected, and network.paths drops them too. Nothing new
+    has to learn about operator feedback for it to take effect.
+
+    That last one is the point of the whole endpoint. A bogus edge doesn't just
+    rank badly -- _route_exists short-circuits the entire paid walk on a hit,
+    so until the edge is excluded it actively PREVENTS the search that would
+    find the real answer. Rejecting it is what re-opens that pair to discovery.
+
+    Idempotent: re-rejecting an already-rejected edge is a no-op that still
+    reports ok, so a double-click can't produce an error the operator has to
+    interpret.
+    """
+    results = {}
+    changed = 0
+    for edge_id in edge_ids:
+        edge = db.get(RelationshipEdge, edge_id)
+        if edge is None:
+            results[edge_id] = "not_found"
+            continue
+        if is_operator_rejected(edge):
+            results[edge_id] = "already_rejected"
+            continue
+        edge.status = "rejected"
+        edge.verified_status = "rejected"
+        edge.verified_at = _now_iso()
+        edge.verified_reason = (OPERATOR_PREFIX + (reason.strip() or "marked wrong by operator"))[:500]
+        db.add(edge)
+        results[edge_id] = "rejected"
+        changed += 1
+    if changed:
+        db.commit()
+    return {"rejected": changed, "results": results}
 
 
 def verify(db: Session, edge: RelationshipEdge, name_a: str, name_b: str) -> bool:
