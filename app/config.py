@@ -379,6 +379,24 @@ CONNECT_HARVEST_PAIR_PAGES = _env_bool("ARTEMIS_CONNECT_HARVEST_PAIR_PAGES", "1"
 # relevance is already falling off.
 CONNECT_HARVEST_MAX_PAGES = int(
     os.environ.get("ARTEMIS_CONNECT_HARVEST_MAX_PAGES", "6"))
+# Between the cheap pair search and the full expansion: ask the model who might
+# stand BETWEEN the two, then check each name with the same pair search. One
+# model call plus a few searches, against expansion's ~35 queries per node
+# across two neighborhoods.
+#
+# The model's answer is never an edge -- it is a search query. Every edge still
+# comes from a fetched page (see extraction/bridge_hypothesis), so a confidently
+# wrong guess costs a search, not a fabricated connection.
+CONNECT_ASK_CLAUDE_BRIDGE = _env_bool("ARTEMIS_CONNECT_ASK_CLAUDE_BRIDGE", "1")
+# Names to ask for, and therefore the ceiling on this stage's spend: each one
+# costs up to two pair searches (A->candidate, candidate->B).
+CONNECT_BRIDGE_HYPOTHESES = int(
+    os.environ.get("ARTEMIS_CONNECT_BRIDGE_HYPOTHESES", "3"))
+# Deliberately NOT the batch model. This stage is pure world knowledge -- who
+# is documented alongside whom -- which Haiku recalls poorly, and a bad name
+# here wastes two searches rather than one classification.
+BRIDGE_HYPOTHESIS_MODEL = os.environ.get(
+    "ARTEMIS_BRIDGE_HYPOTHESIS_MODEL", "claude-sonnet-5")
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))

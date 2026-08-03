@@ -23,7 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
-from ..extraction import bridge_strategy, extract, relation_classifier, spacy_extractor
+from ..extraction import (bridge_hypothesis, bridge_strategy, extract,
+                          relation_classifier, spacy_extractor)
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..network.cliques import materialize_contact_cliques
@@ -1391,21 +1392,29 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         route_found.set()
         if progress:
             progress("[known] already connected in the existing graph — skipping search entirely")
-    else:
-        # STEP 1: the origin's own initial enrichment, before a cent is spent.
-        # Free and idempotent (see _ensure_origin_enriched), so it runs on
-        # every connect rather than depending on whether an import or a batch
-        # run ever happened to derive it.
+    def _run_origin_enrichment() -> None:
+        """The origin's own network, derived into the shared graph.
+
+        Nominally free -- no search, no fetch, no Claude, just derivations over
+        already-imported rows -- which is why it used to run first, ahead of
+        every paid stage. In practice materialize_contact_cliques resolves one
+        Person per contact in a Python loop, so on a 2,153-contact export over
+        an 84ms link it is ~20 minutes of round trips, and it ran even for an
+        origin with no relationship to those contacts at all.
+
+        Its position is now after the cheap searches (see the cascade below).
+        Two consequences, both wanted: a route the searches can answer never
+        pays those 20 minutes, and a route through the operator's OWN contacts
+        pays one or two searches it did not strictly need before finding them.
+        The second is the smaller number by orders of magnitude.
+        """
         if progress:
             progress("\n[origin] initial enrichment for "
                      f"{name_a} — bridging their own network into the graph…")
         _ensure_origin_enriched(db, name_a, progress=progress,
                                 owner_name=owner_name)
-
-        # Re-check, because step 1 may have just built the answer: a contact of
+        # Re-check, because this may have just built the answer: a contact of
         # the origin IS the target, or sits one coworker tie away from them.
-        # The check costs nothing and short-circuits the entire paid walk, so
-        # not repeating it here would mean paying for a route we already have.
         if cancel_checker:
             cancel_checker()
         if _route_exists(db, name_a, name_b, max_hops):
@@ -1414,10 +1423,10 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                 progress("[origin] connected through the origin's own network — "
                          "no search needed")
 
-    # The two paid stages, as callables rather than inline blocks: everything
-    # above can decide a route already exists and skip them, and if that
-    # decision is later overturned by hop verification they have to be
-    # runnable a second time. See the resume block below.
+    # The paid stages, as callables rather than inline blocks: the checks above
+    # can decide a route already exists and skip them, and if that decision is
+    # later overturned by hop verification they have to be runnable a second
+    # time. See the resume block below.
     def _run_direct_pair() -> None:
         # _direct_pair_search already tries every returned result (not just
         # the first few) whenever what it's found so far is only weak, so by
@@ -1482,8 +1491,78 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             cancel_checker=cancel_checker,
             should_stop=should_stop)
 
+    def _run_bridge_hypothesis() -> None:
+        """Ask who might stand between them, then check each name by search.
+
+        Sits between the pair search and the expansion because that is where it
+        pays: the pair search has just established the two are not documented
+        TOGETHER, which is the question this stage is for. One model call plus
+        up to two searches per name, against expansion's ~35 queries per node
+        across two neighborhoods.
+
+        The model names candidates; SEARCH decides. Each name is run through
+        the same _direct_pair_search used above, so every edge that lands is
+        read off a fetched page -- a wrong guess costs a search, never an
+        invented connection. See extraction/bridge_hypothesis.
+        """
+        candidates = bridge_hypothesis.propose(name_a, name_b, context_a, context_b)
+        if not candidates:
+            if progress:
+                progress("[bridge] no documented intermediary proposed — "
+                         "continuing to full expansion")
+            return
+        if progress:
+            progress("[bridge] proposed intermediaries: "
+                     + "; ".join(f"{c['name']} ({c['why']})" for c in candidates))
+        for cand in candidates:
+            if cancel_checker:
+                cancel_checker()
+            who = cand["name"]
+            # Both halves, because half a bridge is not one: an intermediary
+            # documented with A but not with B leaves the pair as far apart as
+            # before. Run unconditionally rather than short-circuiting on the
+            # first half, so the second half's edge is persisted for the
+            # pathfinder even when the first was only weak.
+            _direct_pair_search(db, name_a, who, context_a, "",
+                                cancel_checker=cancel_checker, progress=progress)
+            _direct_pair_search(db, who, name_b, "", context_b,
+                                cancel_checker=cancel_checker, progress=progress)
+            # The pathfinder's own rule decides whether that actually built a
+            # route -- not the searches' own `found`, which says only that
+            # something was written.
+            if _route_exists(db, name_a, name_b, max_hops):
+                route_found.set()
+                if progress:
+                    progress(f"[bridge] {who} connects them — "
+                             "skipping full neighborhood expansion")
+                return
+        if progress:
+            progress("[bridge] no proposed intermediary was borne out by search — "
+                     "continuing to full expansion")
+
+    # The cascade, cheapest first. Each stage runs only if the ones before it
+    # did not answer, so the common cases never reach the expensive ones:
+    #
+    #   0. _route_exists          free       already in the graph?
+    #   1. _run_direct_pair       1 search   are they documented together?
+    #   2. _run_bridge_hypothesis 1 call     who stands between them?
+    #                             + <=2 searches per name
+    #   3. _run_origin_enrichment free*      the operator's own network
+    #   4. _run_expansion         ~35 queries/node, two neighborhoods
+    #
+    # Origin enrichment used to be step 1 on the grounds that it is free. Its
+    # implementation is not (see _run_origin_enrichment), and putting ~20
+    # minutes of round trips in front of a single search meant a pair the
+    # search could answer in seconds waited for work irrelevant to it. It stays
+    # ahead of the expansion, which is what it actually exists to inform.
     if not route_found.is_set():
         _run_direct_pair()
+
+    if not route_found.is_set():
+        _run_bridge_hypothesis()
+
+    if not route_found.is_set():
+        _run_origin_enrichment()
 
     # Populated only when a fresh expansion actually ran (not when a route
     # was already known, or found via the cheap direct-pair check) -- see
