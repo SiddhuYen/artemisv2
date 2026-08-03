@@ -180,15 +180,67 @@ class ScoredContact:
     bridge_reasons: List[str] = field(default_factory=list)
 
 
+# An intern is not senior whatever else the title says. Without this, "CSP
+# Partner Marketing Intern" scored founder-tier off the word "partner".
+# \bintern\b deliberately does not match "internal".
+_INTERN_RE = re.compile(r"\bintern(ship)?\b")
+
+# Words that DEMOTE the level word after them. Their absence is why the
+# tier-2 "vice president" entry below was unreachable: tier 3 is checked
+# first and its bare "president" matched "vice president", so every VP
+# scored as a founder.
+_DEMOTING = ("vice", "deputy", "assistant", "associate", "interim", "former")
+
+
+_TIER_BELOW = {3.0: 2.0, 2.0: 1.0, 1.0: 0.0}
+
+
+def _match_kind(kw: str, blob: str, match) -> str:
+    """How to read this occurrence of `kw`: "level", "demoted", or "not_a_level".
+
+    The distinction matters because the two wrong readings are wrong in
+    different ways. A demoting prefix still describes a real job level, one
+    rung down -- a deputy director is senior, just not a director. An
+    attributive use describes nothing at all: "partner marketing" is a
+    department, and reading it as a rung would be inventing a level from a
+    word that never referred to one.
+
+    Every rule here comes from a live ranking where four student-club officers
+    outranked a company CTO:
+
+      "events chair", "corporate outreach chair" -- a committee role, not a
+        board chair. Bare `chair` matched all of them.
+      "partner marketing", "partner solutions" -- attributive. A real
+        partner's title ends there ("Partner", "General Partner"); it does
+        not continue into a noun.
+    """
+    before = blob[:match.start()].strip()
+    after = blob[match.end():]
+    if before and before.split()[-1] in _DEMOTING:
+        return "demoted"
+    if kw == "partner" and re.match(r"\s+\w", after):
+        return "not_a_level"
+    if kw == "chair" and before and not before.endswith("board"):
+        return "not_a_level"
+    return "level"
+
+
 def _title_score(titles: List[str]) -> float:
     blob = " ".join(normalize(t) for t in (titles or []) if t)
     if not blob:
         return 0.0
+    if _INTERN_RE.search(blob):
+        return 0.0
+    demoted = 0.0
     for weight, keywords in _SENIORITY_TIERS:
         for kw in keywords:
-            if re.search(rf"\b{re.escape(kw)}\b", blob):
-                return weight
-    return 0.0
+            for match in re.finditer(rf"\b{re.escape(kw)}\b", blob):
+                kind = _match_kind(kw, blob, match)
+                if kind == "level":
+                    return weight
+                if kind == "demoted":
+                    demoted = max(demoted, _TIER_BELOW[weight])
+    return demoted
 
 
 def _real_orgs(values: List[str]) -> List[str]:

@@ -156,3 +156,61 @@ def test_the_queue_length_is_unchanged_by_reasoning(db, contacts, monkeypatch):
     _fake_payload(monkeypatch, {"angle": "shared_employer", "picks": [2, 3], "why": "w"})
     assert len(C._bridge_contacts(db, _target(), limit=2)) == 2
     assert len(C._bridge_contacts(db, _target(), limit=5)) == 5
+
+
+def test_the_origin_is_never_ranked_as_their_own_bridge(db, contacts, monkeypatch):
+    """Confirmed live: without owner_name, score_contacts compared every
+    contact against "" and the operator came back as their own #1 bridge.
+    Front A already expands that node, so the slot bought a duplicate walk
+    instead of a route."""
+    monkeypatch.setattr(config, "BRIDGE_STRATEGY_ENABLED", False)
+    _contact(db, "Abhimanyu Sharma", "Pantheon")
+    db.commit()
+
+    out = C._bridge_contacts(db, _target(), limit=5, origin_name="Abhimanyu Sharma")
+    assert "Abhimanyu Sharma" not in {c.display_name for c in out}
+
+    # ...and they ARE present when someone else is the origin, since then they
+    # really are just a contact like any other.
+    out = C._bridge_contacts(db, _target(), limit=6, origin_name="Someone Else")
+    assert "Abhimanyu Sharma" in {c.display_name for c in out}
+
+
+# ---------------------------------------------------------------------------
+# _title_score -- seniority is a proxy for web footprint, so a title that
+# doesn't name a job level must not buy one. Every case below came from the
+# live ranking that put four student-club officers above a company CTO.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("title,expected", [
+    # committee roles: bare "chair" used to match all of these at founder tier
+    ("Events Chair", 0.0),
+    ("Corporate Outreach Chair", 0.0),
+    ("Corporate Committee Chair", 0.0),
+    # ...while the real thing still counts
+    ("Chair", 3.0),
+    ("Board Chair", 3.0),
+    ("Chairman", 3.0),
+    # "partner" attributively is a department, not a rung
+    ("Partner Solutions Manager", 1.0),
+    ("CSP Partner Marketing Intern", 0.0),
+    ("Partner", 3.0),
+    ("General Partner", 3.0),
+    # an intern is not senior whatever surrounds it -- but "internal" isn't intern
+    ("Software Engineer Intern", 0.0),
+    ("Internal Auditor", 0.0),
+    # demoting prefixes drop ONE tier rather than disqualifying: a deputy
+    # director is still senior. Before this, tier 3's bare "president" matched
+    # "vice president" first and made the tier-2 entry unreachable.
+    ("Vice President", 2.0),
+    ("Deputy Director", 1.0),
+    ("Assistant Director", 1.0),
+    # unambiguous levels are untouched
+    ("CEO", 3.0),
+    ("Co-Founder", 3.0),
+    ("CTO", 2.0),
+    ("Head of Engineering", 2.0),
+    ("Senior Engineer", 1.0),
+])
+def test_title_score(title, expected):
+    from app.network.ranking import _title_score
+    assert _title_score([title]) == expected

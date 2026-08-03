@@ -576,7 +576,14 @@ def _bridge_contacts(db: Session, target: BridgeTarget,
     """
     if limit <= 0:
         return []
-    scored = score_contacts(db, target=target)
+    # owner_name is what lets score_contacts drop the operator from their own
+    # contact list ("the operator is not their own contact"). Omitting it left
+    # owner_norm empty, so that guard compared every contact against "" and
+    # never fired -- confirmed live, where the origin came back as the #1
+    # bridge toward the target. Expanding them here is pure waste: front A is
+    # already walking that exact node, so the slot bought a duplicate instead
+    # of a route.
+    scored = score_contacts(db, owner_name=origin_name, target=target)
     eligible = [c for c in scored if c.skip_reason is None]
     picked = eligible[:limit]
     decision = None
