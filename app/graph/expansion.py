@@ -196,6 +196,34 @@ class _Candidate:
     def avg_conf(self) -> float:
         return sum(self.confidences) / len(self.confidences) if self.confidences else 0.0
 
+    def absorb(self, other: "_Candidate") -> None:
+        """Fold another accumulation of the SAME person into this one.
+
+        The single owner of _Candidate field merging. Tallies are built by
+        two independent paths (_record, from fresh extraction, and
+        _reuse_existing_neighbors, from persisted edges) and hop workers each
+        accumulate into their OWN dict, so one person can be discovered twice
+        and has to recombine without either side's evidence being dropped.
+
+        That already went wrong once: `seniority_edges` was added to the
+        dataclass and to _record but not to the merge, so Alpha's ranking
+        signal silently vanished for exactly the cross-worker duplicates it
+        exists to find -- a candidate two different coworkers both name is
+        the strongest signal available, and it was the one being discarded.
+        `name` is identity, not evidence, so it is deliberately not merged.
+        test_candidate_absorb_covers_every_accumulated_field pins every other
+        field to this method, so the next one added fails loudly, not quietly.
+        """
+        self.sources |= other.sources
+        self.confidences.extend(other.confidences)
+        self.max_conf = max(self.max_conf, other.max_conf)
+        self.strong_edges += other.strong_edges
+        self.explicit_edges += other.explicit_edges
+        self.professional_edges += other.professional_edges
+        self.family_edges += other.family_edges
+        self.seniority_edges += other.seniority_edges
+        self.trusted = self.trusted or other.trusted
+
     def family_only(self) -> bool:
         return self.family_edges > 0 and self.professional_edges == 0
 
@@ -283,20 +311,15 @@ def _merge_disc(into: Dict[str, _Candidate], other: Dict[str, _Candidate]) -> No
     `into` needs no lock. Two different nodes can discover the SAME candidate
     (e.g. two coworkers both mention the same third person), so this replays
     _record's per-field accumulation rather than a plain dict update, which
-    would silently drop one side's evidence."""
+    would silently drop one side's evidence -- see _Candidate.absorb, which
+    owns that accumulation so it can't drift out of sync with the dataclass
+    again."""
     for norm, c in other.items():
         existing = into.get(norm)
         if existing is None:
             into[norm] = c
             continue
-        existing.sources |= c.sources
-        existing.confidences.extend(c.confidences)
-        existing.max_conf = max(existing.max_conf, c.max_conf)
-        existing.strong_edges += c.strong_edges
-        existing.explicit_edges += c.explicit_edges
-        existing.professional_edges += c.professional_edges
-        existing.family_edges += c.family_edges
-        existing.trusted = existing.trusted or c.trusted
+        existing.absorb(c)
 
 
 def _reuse_existing_neighbors(db: Session, subject: Person,
@@ -342,6 +365,15 @@ def _reuse_existing_neighbors(db: Session, subject: Person,
             cand.family_edges += 1
         elif e.relationship_type != "unknown":
             cand.professional_edges += 1
+        # Same seniority tally _record computes from a freshly extracted edge
+        # (Alpha step 7). Omitting it here meant the bonus was ALWAYS zero on
+        # an already-processed node -- i.e. on most nodes in a warm graph,
+        # since "the graph is the cache" routes every re-run through here --
+        # so the ranking signal was effectively off in exactly the shared-DB
+        # case it was built for.
+        if (e.relationship_type in _SENIORITY_TYPES
+                or "business" in disambiguate.domains_of(e.evidence_snippet or "")):
+            cand.seniority_edges += 1
         if sig.get("trusted"):
             cand.trusted = True
     if progress:
@@ -771,41 +803,50 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     check_cancel()
     org_row = None
     org_name = None
-    if enhanced_professional_search and is_person and node_profiler.is_active():
+    org_edge = None
+    # Resolving the subject's org is NOT part of profiling -- phase 4e needs
+    # the same row, and nesting this lookup inside node_profiler.is_active()
+    # made ARTEMIS_NODE_PROFILE=0 silently disable the strategy stage too,
+    # via `org_row is None`, rather than through 4e's own (real, semantic)
+    # requirement that a GROUNDED profile exist. Two knobs that read as
+    # independent should be independent; 4e still declines on its own terms
+    # when no usable profile is present.
+    if enhanced_professional_search and is_person:
         org_edge = _best_org_affiliation_edge(candidate_edges)
         org_name = org_edge.organization if org_edge else None
         if org_name:
             org_row = builder.get_or_create_org(db, org_name)
-            if org_row is not None and not (org_row.meta or {}).get("profile"):
-                snippets: List[str] = []
-                seen_urls: Set[str] = set()
-                for template in config.NODE_PROFILE_QUERIES:
-                    check_cancel()
-                    query = template.format(org=org_name)
-                    try:
-                        results = ORCH.search(query, is_person=False)
-                    except Exception:
-                        continue
-                    for res in results[:2]:
-                        check_cancel()
-                        if res.url in seen_urls:
-                            continue
-                        seen_urls.add(res.url)
-                        page = ORCH.fetch(res.url)
-                        text = html_to_text(page.content) if page.content else ""
-                        text = text or f"{res.title}. {res.snippet}"
-                        source = builder.save_source(db, res, query, text)
-                        source_by_url[res.url] = source
-                        snippets.append(text)
-                known_context = org_edge.evidence_snippet or ""
-                profile = node_profiler.profile_org(org_name, snippets, known_context)
-                if profile is not None:
-                    meta = dict(org_row.meta or {})
-                    meta["profile"] = profile
-                    org_row.meta = meta
-                    if progress:
-                        progress(f"  ⓘ profiled {org_name}: size={profile['size_tier']} "
-                                 f"industry={profile['industry']} (grounded={profile['grounded']})")
+    if (org_row is not None and node_profiler.is_active()
+            and not node_profiler.is_current((org_row.meta or {}).get("profile"))):
+        snippets: List[str] = []
+        seen_urls: Set[str] = set()
+        for template in config.NODE_PROFILE_QUERIES:
+            check_cancel()
+            query = template.format(org=org_name)
+            try:
+                results = ORCH.search(query, is_person=False)
+            except Exception:
+                continue
+            for res in results[:2]:
+                check_cancel()
+                if res.url in seen_urls:
+                    continue
+                seen_urls.add(res.url)
+                page = ORCH.fetch(res.url)
+                text = html_to_text(page.content) if page.content else ""
+                text = text or f"{res.title}. {res.snippet}"
+                source = builder.save_source(db, res, query, text)
+                source_by_url[res.url] = source
+                snippets.append(text)
+        known_context = org_edge.evidence_snippet if org_edge else ""
+        profile = node_profiler.profile_org(org_name, snippets, known_context or "")
+        if profile is not None:
+            meta = dict(org_row.meta or {})
+            meta["profile"] = profile
+            org_row.meta = meta
+            if progress:
+                progress(f"  ⓘ profiled {org_name}: size={profile['size_tier']} "
+                         f"industry={profile['industry']} (grounded={profile['grounded']})")
 
     # --- phase 4e: search strategy (Alpha step 6 -- "run reasoning to
     # identify best type of search"). Only runs with a GROUNDED org profile
@@ -821,7 +862,12 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     if (enhanced_professional_search and is_person and org_row is not None
             and target_person_name and search_strategy.is_active()):
         profile = (org_row.meta or {}).get("profile")
-        if profile and profile.get("grounded"):
+        # Grounded AND current: a profile from an older prompt/guard set is
+        # no safer to reason on top of than an ungrounded one, and 4d above
+        # only re-profiles when it is itself active -- with profiling turned
+        # off, a stale cached profile is all there is, and it must not
+        # silently become the basis for a strategy decision.
+        if node_profiler.is_current(profile) and profile.get("grounded"):
             decision = search_strategy.decide_angle(
                 subject_name, org_name, profile, target_person_name, target_context)
             if decision is not None:

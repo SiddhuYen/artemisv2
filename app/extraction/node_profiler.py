@@ -93,6 +93,18 @@ def is_active() -> bool:
     return bool(config.NODE_PROFILE_ENABLED) and claude_available()
 
 
+def is_current(profile: Optional[dict]) -> bool:
+    """Whether a cached profile was produced by THIS version of this module.
+
+    Callers cache profiles on the Organization row with no TTL, so without a
+    version check a verdict from an older prompt/guard set is reused forever
+    and looks exactly like a current one -- see config.NODE_PROFILE_VERSION
+    for why that isn't hypothetical. Anything unstamped is pre-versioning and
+    therefore stale by definition.
+    """
+    return bool(profile) and profile.get("v") == config.NODE_PROFILE_VERSION
+
+
 def profile_org(org_name: str, snippets: List[str], known_context: str = "") -> Optional[dict]:
     """{size_tier, industry, summary, grounded} from `snippets`, or None.
 
@@ -138,6 +150,7 @@ def profile_org(org_name: str, snippets: List[str], known_context: str = "") -> 
         industry = "unknown"
 
     return {
+        "v": config.NODE_PROFILE_VERSION,
         "size_tier": size_tier,
         "industry": industry,
         "summary": str(payload.get("summary", "") or "")[:400],

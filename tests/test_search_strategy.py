@@ -11,6 +11,7 @@ a wrong pick costs a couple of irrelevant queries, never an ungrounded
 search direction. This mirrors node_profiler's own containment principle
 one level up.
 """
+from app import config
 from app.extraction import node_profiler, search_strategy
 from app.graph import connect as C
 from app.graph import expansion
@@ -125,7 +126,7 @@ def _silence_everything_but_strategy(monkeypatch, search_results=None, fetched_t
 
 def test_phase_4e_fires_the_chosen_angles_queries_and_records_the_decision(db, monkeypatch):
     org = Organization(name="Trinamix", norm_name="trinamix",
-                       meta={"profile": {"size_tier": "large", "industry": "Oracle ERP consulting",
+                       meta={"profile": {"v": config.NODE_PROFILE_VERSION, "size_tier": "large", "industry": "Oracle ERP consulting",
                                          "summary": "An Oracle partner.", "grounded": True}})
     db.add(org)
     db.commit()
@@ -170,7 +171,7 @@ def test_phase_4e_fires_the_chosen_angles_queries_and_records_the_decision(db, m
 
 def test_phase_4e_fires_no_extra_queries_for_the_generic_angle(db, monkeypatch):
     org = Organization(name="Trinamix", norm_name="trinamix",
-                       meta={"profile": {"size_tier": "large", "industry": "Oracle ERP consulting",
+                       meta={"profile": {"v": config.NODE_PROFILE_VERSION, "size_tier": "large", "industry": "Oracle ERP consulting",
                                          "summary": "An Oracle partner.", "grounded": True}})
     db.add(org)
     db.commit()
@@ -197,7 +198,7 @@ def test_phase_4e_skips_with_no_target(db, monkeypatch):
     """No target name means nothing to reason toward -- must not even call
     decide_angle, regardless of how good the org profile is."""
     org = Organization(name="Trinamix", norm_name="trinamix",
-                       meta={"profile": {"size_tier": "large", "industry": "Oracle ERP consulting",
+                       meta={"profile": {"v": config.NODE_PROFILE_VERSION, "size_tier": "large", "industry": "Oracle ERP consulting",
                                          "summary": "An Oracle partner.", "grounded": True}})
     db.add(org)
     db.commit()
@@ -219,7 +220,7 @@ def test_phase_4e_skips_with_no_target(db, monkeypatch):
 
 def test_phase_4e_skips_when_org_profile_is_not_grounded(db, monkeypatch):
     org = Organization(name="Trinamix", norm_name="trinamix",
-                       meta={"profile": {"size_tier": "unknown", "industry": "unknown",
+                       meta={"profile": {"v": config.NODE_PROFILE_VERSION, "size_tier": "unknown", "industry": "unknown",
                                          "summary": "", "grounded": False}})
     db.add(org)
     db.commit()
@@ -241,7 +242,7 @@ def test_phase_4e_skips_when_org_profile_is_not_grounded(db, monkeypatch):
 
 def test_phase_4e_is_off_for_the_famous_shallow_side(db, monkeypatch):
     org = Organization(name="Oracle", norm_name="oracle",
-                       meta={"profile": {"size_tier": "large", "industry": "enterprise software",
+                       meta={"profile": {"v": config.NODE_PROFILE_VERSION, "size_tier": "large", "industry": "enterprise software",
                                          "summary": "x", "grounded": True}})
     db.add(org)
     db.commit()
