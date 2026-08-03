@@ -415,3 +415,52 @@ def test_node_retry_budget_is_bounded(tmp_path, monkeypatch):
     expansion.expand_graph(root, "Seed Person", 1)
 
     assert attempts["n"] == 3, "1 initial attempt + NODE_DB_RETRY_ATTEMPTS"
+
+
+def test_a_stale_deleted_instance_is_retried_on_a_fresh_session(tmp_path, monkeypatch):
+    """ObjectDeletedError is session-local staleness, not a broken node.
+
+    The concurrent /connect side ends its expand_graph in _prune_invalid_nodes,
+    which DELETES junk nodes on its own session. A worker mid-hop on THIS side
+    can still hold one of those people in its identity map, and the next
+    attribute access on the stale instance raises ObjectDeletedError. The node
+    itself is fine — a fresh session re-selects live rows and cannot hit the
+    error — so the fresh-session retry that already exists for deadlocks is
+    exactly the right recovery. Without it the node's whole discovered hop is
+    silently dropped: confirmed live, 'Public License' at hop 1 lost its ~150
+    capped edges to this during a Paul Graham -> Sam Altman walk.
+    """
+    from sqlalchemy.orm.exc import ObjectDeletedError
+
+    monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", False)
+    engine = _engine(tmp_path, "node_retry_stale.db")
+    root = _sessionmaker(engine)()
+    root.close()
+
+    attempts = {"n": 0}
+
+    def fake_process_person(worker_db, name, hop, local_disc, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ObjectDeletedError(
+                None, "Instance '<Person at 0x0>' has been deleted, or its "
+                      "row is otherwise not present.")
+        subject = builder.get_or_create_person(worker_db, name)
+        subject.processed = 1
+        worker_db.commit()
+
+    monkeypatch.setattr(expansion, "_process_person", fake_process_person)
+    monkeypatch.setattr(builder, "_deadlock_backoff", lambda attempt: None)
+
+    expansion.expand_graph(root, "Seed Person", 1)
+
+    assert attempts["n"] == 2, "the node should have been retried exactly once"
+    check = _sessionmaker(engine)()
+    try:
+        seed = builder.get_or_create_person(check, "Seed Person", allow_create=False)
+        assert seed is not None and seed.processed, (
+            "the node must survive a stale-instance error — dropping it is "
+            "silent data loss"
+        )
+    finally:
+        check.close()
