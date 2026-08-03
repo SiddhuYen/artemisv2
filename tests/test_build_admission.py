@@ -45,6 +45,14 @@ def test_connect_no_longer_mutates_the_expansion_global(monkeypatch):
                     return None
             return _R()
 
+        # connect_people clears its identity map before the final scoring read,
+        # so that read builds fresh objects rather than reusing whatever the
+        # expansion left mapped (see the comment at that call site). A no-op
+        # here: this stub has no session state, and the subject of this test is
+        # the config global, not session lifecycle.
+        def expunge_all(self):
+            pass
+
     C.connect_people(_Db(), "A", "B", depth=1)
 
     assert seen["during"] is True, "connect_people must not flip the global"

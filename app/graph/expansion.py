@@ -24,6 +24,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from .. import config
 from . import disambiguate
@@ -1494,7 +1495,24 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             # A lock/deadlock is worth redoing from a clean transaction; a
             # genuine bug is not -- retrying that just burns the budget and
             # delays the same failure.
-            if builder.is_transient_db_error(exc) and attempt < attempts:
+            #
+            # ObjectDeletedError earns the same fresh-session retry, for the
+            # same reason a deadlock does: it is a property of THIS session,
+            # not of the node. The other /connect side ends its expand_graph
+            # in _prune_invalid_nodes, which deletes junk nodes on its own
+            # session -- a worker mid-hop here can still hold one of those
+            # people in its identity map, and the next attribute access on
+            # the stale instance raises. Nothing about the node is broken; a
+            # fresh session re-selects live rows and cannot hit it. Confirmed
+            # live on a Paul Graham -> Sam Altman walk: 'Public License' at
+            # hop 1 lost its whole capped hop (~150 edges) to exactly this.
+            # Not folded into is_transient_db_error: the statement-level
+            # retry sites in builder share that classifier, and re-running a
+            # statement inside the SAME session cannot clear a stale identity
+            # map -- only this whole-node, fresh-session level can.
+            retryable = (builder.is_transient_db_error(exc)
+                         or isinstance(exc, ObjectDeletedError))
+            if retryable and attempt < attempts:
                 if progress:
                     progress(f"  ↻ {name!r} at hop {hop} hit a transient DB "
                              f"error ({exc.__class__.__name__}) — retrying "

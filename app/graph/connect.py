@@ -1427,11 +1427,31 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         found, confident = _direct_pair_search(db, name_a, name_b, context_a, context_b,
                                               cancel_checker=cancel_checker,
                                               progress=progress)
-        if found and confident:
+        # TWO gates, because neither implies the other. `confident` judges the
+        # EVIDENCE; _route_exists judges whether the final scoring pass can
+        # actually walk what was persisted, using that pass's own
+        # _untraversable rule rather than a proxy for it. A confident edge is
+        # Claude-typed and so normally clears _untraversable -- but it can
+        # still be unwalkable for a reason the evidence knows nothing about,
+        # most importantly when a concurrent prune deleted one of its endpoints
+        # and left the edge dangling (_route_exists joins both ends back to
+        # `people` for exactly this).
+        #
+        # Getting this wrong produces the worst possible pair of outcomes at
+        # once: the expensive expansion is skipped BECAUSE a route is believed
+        # found, and then the pathfinder, judging by the stricter rule, reports
+        # "no path". Checking with the pathfinder's own rule closes that by
+        # construction. It is the cheap bounded neighbor walk -- no adjacency
+        # rebuild -- and runs only on this branch.
+        if found and confident and _route_exists(db, name_a, name_b, max_hops):
             route_found.set()
             if progress:
                 progress("[direct] found a confident direct mention — "
                          "skipping full neighborhood expansion")
+        elif found and confident:
+            if progress:
+                progress("[direct] confident direct mention found, but the "
+                         "pathfinder can't walk it — continuing to full expansion")
         elif found:
             # A WEAK mention is not a route. `confident` used to be logged and
             # discarded, so any co-mention at all cancelled both endpoint
@@ -1471,6 +1491,43 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
     expand_stats: Optional[dict] = None
     if not route_found.is_set():
         expand_stats = _run_expansion()
+
+    # Defensive, and deliberately documented as such: this drops any pending
+    # read state before the scoring pass, so that pass starts from the graph as
+    # it stands after the expansion's own _prune_invalid_nodes has deleted junk
+    # nodes on other Sessions.
+    #
+    # It is here because ObjectDeletedError ("Instance '<Person ...>' has been
+    # deleted, or its row is otherwise not present") was seen live at exactly
+    # this point -- after the stop condition was met, so a route that HAD been
+    # found was returned to the caller as a hard error.
+    #
+    # What this comment will NOT claim is the mechanism, because the obvious
+    # two were tested and neither reproduces:
+    #   * "the Session is reading a stale pre-cleanup snapshot" is false. Both
+    #     backends run READ COMMITTED, so this Session sees another Session's
+    #     committed insert/delete on its very next statement, with no rollback
+    #     needed. Verified directly.
+    #   * "rollback expires the identity map, then a deleted row raises on
+    #     refresh" also did not reproduce: a clean instance survived expire +
+    #     delete + attribute access without raising.
+    # So the real trigger is still unidentified, and the honest reading of this
+    # call is a cheap guard, not a root-cause fix. If the error resurfaces,
+    # capture the traceback rather than trusting this to have handled it --
+    # tests/test_stale_session_after_expansion.py pins only that the final read
+    # is served from a clean Session, which is all that is actually verified.
+    #
+    # expunge_all WITHOUT a rollback, deliberately. Pairing the two (as the
+    # first version of this did) expires every instance and then detaches it,
+    # so any object a caller still holds raises DetachedInstanceError on its
+    # next attribute access -- trading one error for another, at a point whose
+    # whole purpose is to stop a successful search from surfacing as a failure.
+    # The rollback was also the half with nothing to show for it: at READ
+    # COMMITTED it changes no visibility (see
+    # test_a_session_is_not_reading_a_stale_snapshot). expunge_all alone gives
+    # the property actually wanted here -- the scoring pass below builds its
+    # objects fresh instead of reusing whatever the expansion left mapped.
+    db.expunge_all()
 
     if cancel_checker:
         cancel_checker()
@@ -1537,6 +1594,12 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         _run_direct_pair()
         if not route_found.is_set():
             expand_stats = _run_expansion()
+        # The same guard the first scoring read gets, for the same reason: this
+        # resume ran a fresh expansion, whose _prune_invalid_nodes deletes junk
+        # nodes on other Sessions, and _routes_now() below is a scoring read. The
+        # expunge_all above happened BEFORE that expansion, so it does not cover
+        # it. See its comment for what is and isn't claimed.
+        db.expunge_all()
         routes, n_after, verified, adj, person_by_id, src_by_id, degree = _routes_now()
         n_candidates = max(n_candidates, n_after)
 
@@ -1575,6 +1638,11 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             if edge is not None:
                 edges_used.append(edge)
                 src = src_by_id.get(edge.source_id)
+                # The handle an operator needs to say "this hop is wrong"
+                # (POST /edges/reject). Without it a caller looking at a bogus
+                # hop can only describe it by endpoint names, which is ambiguous
+                # the moment two people have more than one edge between them.
+                node["edge_id"] = edge.id
                 node["relationship_from_previous"] = edge.relationship_type
                 node["confidence"] = edge.confidence_raw
                 if edge.evidence_snippet:

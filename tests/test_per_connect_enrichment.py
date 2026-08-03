@@ -584,8 +584,27 @@ def test_a_confident_direct_mention_still_short_circuits(db, monkeypatch):
     from app.graph import connect as C
 
     calls = []
-    monkeypatch.setattr(C, "_direct_pair_search",
-                        lambda *a, **k: (True, True))         # found AND confident
+
+    def direct_hit(db_, name_a, name_b, *a, **k):
+        """Persist the edge the verdict refers to, as the real
+        _direct_pair_search does. Returning (True, True) while writing nothing
+        asserts a route that does not exist -- exactly the false positive the
+        short-circuit now re-checks for with the pathfinder's own rule."""
+        from app.models import Person, RelationshipEdge
+        from app.utils.names import person_norm_key
+        pa = Person(canonical_name=name_a, norm_name=person_norm_key(name_a))
+        pb = Person(canonical_name=name_b, norm_name=person_norm_key(name_b))
+        db_.add_all([pa, pb])
+        db_.flush()
+        db_.add(RelationshipEdge(
+            person_a_id=pa.id, person_b_id=pb.id, relationship_type="coworker",
+            status="strong", confidence_raw=0.8,
+            evidence_snippet="Oo and Zz worked together.",
+            signals={"sentence_cooccurrence": True}))
+        db_.commit()
+        return (True, True)
+
+    monkeypatch.setattr(C, "_direct_pair_search", direct_hit)  # found AND confident
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
     monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))

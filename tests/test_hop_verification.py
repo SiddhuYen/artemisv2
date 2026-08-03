@@ -3,6 +3,8 @@ edge's OWN evidence actually supports the claimed relationship, independent
 of any path it's walked in. Runs at path-assembly time in connect.py, only
 against hops in a route that's already been found.
 """
+import pytest
+
 from app import config
 from app.graph import connect as C
 from app.graph import hop_verify
@@ -172,3 +174,79 @@ def test_connect_people_reason_distinguishes_rejected_candidates_from_no_path(db
     assert result["connected"] is False
     assert "verification" in result["reason"]
     assert "higher depth" not in result["reason"]
+
+
+# ---------------------------------------------------------------------------
+# hop_verify.reject_edges -- the operator's own verdict (POST /edges/reject)
+# ---------------------------------------------------------------------------
+def test_operator_rejection_makes_the_edge_untraversable(db):
+    """The whole point: a rejected edge stops being a route. _route_exists
+    short-circuits the entire paid walk on a hit, so until the edge is
+    excluded it PREVENTS the search that would find the real answer."""
+    a, b = _person(db, "Abhimanyu Sharma"), _person(db, "Larry Ellison")
+    e = _edge(db, a, b, rel="coworker", status="candidate")
+    assert C._route_exists(db, "Abhimanyu Sharma", "Larry Ellison", 3) is True
+
+    out = hop_verify.reject_edges(db, [e.id], reason="never met")
+    assert out["rejected"] == 1
+    assert out["results"][e.id] == "rejected"
+
+    assert e.status == "rejected"
+    assert C._path_worthy(e) is False
+    assert C._route_exists(db, "Abhimanyu Sharma", "Larry Ellison", 3) is False
+
+
+def test_an_operator_rejection_is_never_reconsidered_on_ttl_expiry(db, monkeypatch):
+    """The model's verdicts expire so better prompts can revisit them. A human
+    one must not: verify's stale-rejection branch would otherwise restore a
+    hand-rejected edge to 'candidate', undoing exactly what the operator did."""
+    a, b = _person(db, "A"), _person(db, "B")
+    e = _edge(db, a, b)
+    hop_verify.reject_edges(db, [e.id], reason="bogus")
+
+    # Backdate far past HOP_VERIFY_TTL_REJECTED -- a model rejection this old
+    # would be re-asked; this one must not be.
+    e.verified_at = "2000-01-01T00:00:00+00:00"
+    db.commit()
+    assert hop_verify._is_stale(e) is False
+
+    monkeypatch.setattr(config, "CLAUDE_VERIFY_HOPS", True)
+    monkeypatch.setattr(hop_verify, "claude_available", lambda: True)
+    monkeypatch.setattr(hop_verify, "call_json",
+                        lambda *a, **k: pytest.fail("re-asked Claude about a human verdict"))
+
+    assert hop_verify.verify(db, e, "A", "B") is False
+    assert e.status == "rejected"
+
+
+def test_a_model_rejection_is_still_reconsidered_on_ttl_expiry(db, monkeypatch):
+    """The stickiness above must be scoped to operator verdicts only -- it
+    must not accidentally freeze the model's own rejections forever."""
+    a, b = _person(db, "A"), _person(db, "B")
+    e = _edge(db, a, b)
+    e.verified_status = "rejected"
+    e.verified_reason = "model thought the evidence was thin"
+    e.verified_at = "2000-01-01T00:00:00+00:00"
+    e.status = "rejected"
+    db.commit()
+
+    assert hop_verify._is_stale(e) is True
+
+    monkeypatch.setattr(config, "CLAUDE_VERIFY_HOPS", True)
+    monkeypatch.setattr(hop_verify, "claude_available", lambda: True)
+    monkeypatch.setattr(hop_verify, "call_json",
+                        lambda *a, **k: {"genuine": True, "reason": "actually fine"})
+
+    assert hop_verify.verify(db, e, "A", "B") is True
+    assert e.status == "candidate"  # restored to a traversable middle tier
+
+
+def test_rejecting_is_idempotent_and_reports_unknown_ids(db):
+    a, b = _person(db, "A"), _person(db, "B")
+    e = _edge(db, a, b)
+    hop_verify.reject_edges(db, [e.id])
+
+    out = hop_verify.reject_edges(db, [e.id, "no-such-edge"])
+    assert out["rejected"] == 0
+    assert out["results"][e.id] == "already_rejected"
+    assert out["results"]["no-such-edge"] == "not_found"
