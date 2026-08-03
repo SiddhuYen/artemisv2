@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .. import config
 from ..extraction import extract, relation_classifier, spacy_extractor
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
-from ..models import Person, RelationshipEdge, Source
+from ..models import Organization, Person, RelationshipEdge, Source
 from ..silos import COLLEAGUE_SILO
 from ..utils.htmltext import html_to_text
 from ..utils.names import mention_patterns, person_norm_key
@@ -125,6 +125,44 @@ def _adjacency(db: Session):
         adj[b].append((a, e))
     degree = {pid: len(v) for pid, v in adj.items()}
     return adj, person_by_id, src_by_id, degree
+
+
+def _org_affiliations(db: Session) -> Dict[str, Dict[str, Tuple[str, float]]]:
+    """person_id -> {org_id: (org name, confidence)} over person->org edges.
+
+    A person-person edge records WHAT the tie is ("coworker") but never WHERE
+    it happened: organization_id is set only on person->org rows, never
+    alongside person_b_id (see builder.add_edge_from_extraction). So the place
+    two people share is recovered here from each side's OWN org edges and
+    intersected, rather than read off the edge between them.
+    """
+    names = {o.id: o.name for o in db.execute(select(Organization)).scalars()}
+    aff: Dict[str, Dict[str, Tuple[str, float]]] = defaultdict(dict)
+    for e in db.execute(
+        select(RelationshipEdge).where(RelationshipEdge.organization_id.isnot(None))
+    ).scalars():
+        name = names.get(e.organization_id)
+        if not name or not e.person_a_id or not _path_worthy(e):
+            continue
+        conf = e.confidence_raw or 0.0
+        cur = aff[e.person_a_id].get(e.organization_id)
+        if cur is None or conf > cur[1]:
+            aff[e.person_a_id][e.organization_id] = (name, conf)
+    return aff
+
+
+def _shared_orgs(aff, a_id: str, b_id: str, limit: int = 2) -> List[str]:
+    """Orgs BOTH endpoints are affiliated with, best-evidenced first.
+
+    Ranked by the weaker of the two sides' confidences: a place is only as
+    good an answer to "where?" as the shakier of the two affiliations behind
+    it.
+    """
+    a = aff.get(a_id) or {}
+    b = aff.get(b_id) or {}
+    shared = sorted(set(a) & set(b),
+                    key=lambda oid: min(a[oid][1], b[oid][1]), reverse=True)
+    return [a[oid][0] for oid in shared[:limit]]
 
 
 def _edge_cost(e: RelationshipEdge) -> float:
@@ -896,6 +934,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             "explored": _build_explored(expand_stats, name_a, name_b),
         }
 
+    org_aff = _org_affiliations(db)
     paths = []
     for hops in routes:
         if cancel_checker:
@@ -914,8 +953,19 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
                 node["confidence"] = edge.confidence_raw
                 if edge.evidence_snippet:
                     node["evidence"] = edge.evidence_snippet
+                if edge.method:
+                    node["method"] = edge.method
                 if src and src.url:
                     node["source_url"] = src.url
+                if src and src.title:
+                    node["source_title"] = src.title
+                # "coworker" alone doesn't say coworker WHERE -- the org both
+                # ends of this hop belong to is the missing half of the answer.
+                # (i > 0 whenever an edge exists: the start node is the only
+                # one carrying no incoming edge.)
+                via = _shared_orgs(org_aff, hops[i - 1][0], pid) if i else []
+                if via:
+                    node["via_orgs"] = via
             if 0 < i < len(hops) - 1:
                 bridges.append(label)
             path_nodes.append(node)
