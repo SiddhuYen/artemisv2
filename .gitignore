@@ -9,6 +9,19 @@ __pycache__/
 # uploaded personal-network exports contain PII — never commit
 *connections*.csv
 *Connections*.csv
+# ...except these curated seed CSVs (public figures, sourced from Wikipedia —
+# see scripts/seed_data/) which the blanket rule above would otherwise catch
+!scripts/seed_data/tech100_seed_connections.csv
+!scripts/seed_data/celeb100_seed_connections.csv
+!scripts/seed_data/celeb100_seed_connections_v2.csv
+!scripts/seed_data/finance100_seed_connections.csv
+# Adam Karsten's personal network and Grace's real LinkedIn export are real
+# private individuals' PII, not public-figure data — stay local-only, never
+# committed, even though *connections*.csv above doesn't catch the former
+scripts/seed_data/adam_karsten_network.csv
+scripts/seed_data/import_demo_chain.py
+scripts/seed_data/grace_linkedin_connections.csv
+scripts/seed_data/import_grace_linkedin.py
 .DS_Store
 .env
 .env.*
