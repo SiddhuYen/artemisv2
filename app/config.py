@@ -504,6 +504,21 @@ WIKIDATA_COLLEAGUE_ORG_MAX_SIZE = int(
 HEADCOUNT_MODEL = os.environ.get("ARTEMIS_HEADCOUNT_MODEL", CLAUDE_BATCH_MODEL)
 RELATION_CONF_CEILING = float(os.environ.get("ARTEMIS_RELATION_CONF_CEILING", "0.85"))
 
+# The "deferred Claude verification stage" referenced in claude_extractor.py /
+# relation_classifier.py / entity_filter.py's docstrings, and in connect_people's
+# "Requires Claude verification before activation" warning: judges ONE edge's
+# own evidence, independent of any specific path it's walked in (a verdict is
+# cached on the edge and reused across every path that includes it -- see
+# graph.hop_verify's docstring for why path-level context can't factor in).
+CLAUDE_VERIFY_HOPS = _env_bool("ARTEMIS_CLAUDE_VERIFY_HOPS", "1")
+HOP_VERIFY_MODEL = os.environ.get("ARTEMIS_HOP_VERIFY_MODEL", CLAUDE_BATCH_MODEL)
+# Asymmetric on purpose: a wrongly-REJECTED edge actively hides a real
+# connection from every path shown to a user until it's re-checked, so it
+# gets a much shorter leash than a wrongly-approved one, which just leaves
+# the graph at its pre-verification baseline in the meantime.
+HOP_VERIFY_TTL_GENUINE = int(os.environ.get("ARTEMIS_HOP_VERIFY_TTL_GENUINE", str(30 * 86400)))
+HOP_VERIFY_TTL_REJECTED = int(os.environ.get("ARTEMIS_HOP_VERIFY_TTL_REJECTED", str(10 * 86400)))
+
 # --- OpenAlex (academic coauthors) -----------------------------------------
 # namesake guards: require a real publication record + a close name match
 OPENALEX_MIN_WORKS = int(os.environ.get("ARTEMIS_OPENALEX_MIN_WORKS", "3"))
