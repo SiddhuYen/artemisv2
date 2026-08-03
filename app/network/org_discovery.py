@@ -8,7 +8,8 @@ candidate/strong edges are promoted — tangential, weak mentions are not added
 to your network.
 
 The temporary org public graph is cleared afterwards (its value now lives in
-local_profiles), leaving the public graph clean for the next target search.
+local_profiles), leaving the public graph clean for the next target search --
+but only when that graph is a private local file. See _clear_scratch_graph.
 """
 from __future__ import annotations
 
@@ -25,6 +26,28 @@ from ..utils.names import person_norm_key
 _PROMOTABLE_STATUS = {"candidate", "strong"}
 
 
+def _clear_scratch_graph(db: Session, progress=None) -> None:
+    """Drop the throwaway org graph — but never on a SHARED database.
+
+    This function treats the whole public graph as its own scratch space,
+    which holds only while that graph is a private local file. On a team's
+    Postgres the same wipe deletes every collaborator's work as a SIDE EFFECT
+    of one person running `add-org-network` — destruction nobody asked for and
+    nobody would think to guard against.
+
+    Leaving the org graph behind instead is strictly the lesser problem: the
+    graph is additive by design, so the residue is ordinary discovered data
+    (it just wasn't asked for), and the promoted local_profiles are already
+    committed by this point either way.
+    """
+    if builder.graph_is_shared():
+        if progress:
+            progress("  ℹ shared database — leaving the temporary org graph in "
+                     "place rather than wiping everyone's data")
+        return
+    builder.reset_public_graph(db)
+
+
 def discover_org_network(
     db: Session, org_name: str, depth: int = 1,
     source_tag: str = "org_discovery", progress=None,
@@ -38,7 +61,7 @@ def discover_org_network(
         select(Person).where(Person.norm_name == seed_norm)
     ).scalar_one_or_none()
     if seed is None:
-        builder.reset_public_graph(db)
+        _clear_scratch_graph(db)
         return {"discovered": 0, "promoted": 0, "updated": 0}
 
     # 2) people DIRECTLY related to the org seed (candidate/strong edges only)
@@ -88,5 +111,5 @@ def discover_org_network(
     db.commit()
 
     # 4) clear the temporary org public graph (data now lives in local_profiles)
-    builder.reset_public_graph(db)
+    _clear_scratch_graph(db, progress=progress)
     return {"discovered": len(related_ids), "promoted": promoted, "updated": updated}

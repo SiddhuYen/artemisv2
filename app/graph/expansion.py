@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -379,6 +379,43 @@ def _reuse_existing_neighbors(db: Session, subject: Person,
     if progress:
         progress(f"  ♻ reuse {subject.canonical_name}: {len(disc)} known neighbors "
                  f"(skipped re-searching)")
+
+
+def _record_directory_membership(db: Session, members: List[str], org_row: Organization,
+                                 source: Optional[Source], hop: int) -> int:
+    """Persist `member works at org` edges — the weak, honest fallback when a
+    directory does not list the subject (or lists too many people to treat as
+    one another's colleagues).
+
+    Unlike every other edge this module writes, person_a here is NOT the
+    subject: each edge belongs to the member it describes. That is the point
+    -- a directory the subject is absent from is evidence about the people on
+    it, not about the subject's relationships, and writing these as subject->
+    edges would smuggle back exactly the colleague claim phase 4f declined to
+    make.
+
+    Returns how many members were recorded.
+    """
+    if not members or org_row is None:
+        return 0
+    at_cap = builder.at_node_cap(db)
+    written = 0
+    for name in members:
+        person = builder.get_or_create_person(db, name, allow_create=not at_cap)
+        if person is None:
+            continue
+        edge = ExtractedEdge(
+            person_a=name, person_b="", other_kind="organization",
+            organization=org_row.name, relationship_type="employee",
+            method="organization directory page",
+            source_url=(source.url if source else ""),
+            evidence_snippet=f"{name} is listed as an employee of {org_row.name}.",
+            confidence_base=0.5, confidence_adjusted=0.5,
+            signals=EdgeSignals(trusted=True, explicit_keyword_match=True),
+        )
+        builder.add_edge_from_extraction(db, person, edge, hop, source, org_row)
+        written += 1
+    return written
 
 
 def _dedup_and_cap(edges: List[ExtractedEdge]) -> List[ExtractedEdge]:
@@ -901,6 +938,95 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                             out = extract(subject_name, text, COLLEAGUE_SILO, res.snippet, res.url)
                             candidate_edges.extend(out.edges)
 
+    # --- phase 4f: the subject's employer's own directory ------------------
+    # Alpha's densest source of real professional connections: for someone
+    # with no press coverage and no publications, the people listed on their
+    # employer's own staff/leadership page ARE their professional network.
+    #
+    # Structural, not prose -- a directory page listing two people is an
+    # assertion, and running it through the sentence-proximity extractor is
+    # what made the current_employer_leadership strategy angle useless (see
+    # providers/directory.py's docstring). So it sits here with the other
+    # structural sources, and the strategy angle no longer issues prose
+    # queries of its own (config.STRATEGY_ANGLE_QUERIES).
+    #
+    # The evidence rule, which is the whole safety story:
+    #   subject IS listed  -> subject<->member coworker edges. The page
+    #                         co-listing them is the assertion; nothing is
+    #                         inferred.
+    #   subject NOT listed -> member->org employment edges ONLY. A directory
+    #     (or overflow)       the subject is absent from says those people
+    #                         work there; it says NOTHING about whether they
+    #                         know the subject, and asserting otherwise is
+    #                         precisely the fabrication this replaces.
+    #
+    # NB those membership edges do not themselves create a /connect route --
+    # connect._adjacency traverses person<->person edges only. They are
+    # honest graph facts (and feed network.matching's org_overlap tier), not
+    # a back door for the person-level claim we just declined to make.
+    check_cancel()
+    if (enhanced_professional_search and is_person and org_row is not None
+            and org_name and config.DIRECTORY_ENABLED):
+        profile = (org_row.meta or {}).get("profile") or {}
+        if not node_profiler.is_current(profile):
+            profile = {}
+        found = ORCH.directory_enrichment(
+            org_name,
+            industry=profile.get("industry", ""),
+            size_tier=profile.get("size_tier", ""),
+        )
+        members = found.get("members") or []
+        url = found.get("url") or ""
+        if members and url:
+            subject_norm = person_norm_key(subject_name)
+            listed = any(person_norm_key(m) == subject_norm for m in members)
+            res = SearchResult(found.get("org") or org_name, url, "directory", "directory")
+            source = builder.save_source(db, res, "enrich:directory")
+            source_by_url[url] = source
+
+            if listed and not found.get("overflow"):
+                # Direct edge construction, NOT the text/silo pipeline -- the
+                # same choice phase 0d makes, for a sharper version of the
+                # same reason. Rendering the roster to prose and re-extracting
+                # it puts spaCy NER between us and names we ALREADY have: the
+                # members came from rosters.clean_roster_names, a deterministic
+                # shape filter, and re-deriving personhood from a sentence is
+                # strictly weaker evidence than the roster we scraped them
+                # from. It is also biased -- en_core_web_sm tags "Dana
+                # Whitfield" PERSON but "Molly Iyer" and "Prantik Chakraborty"
+                # ORG, so round-tripping silently drops non-Anglo names from a
+                # page that structurally asserted every one of them. For a
+                # feature whose whole purpose is growing NON-famous
+                # professional networks, that bias lands squarely on the
+                # people it exists to find.
+                for member in members:
+                    if person_norm_key(member) == subject_norm:
+                        continue
+                    candidate_edges.append(ExtractedEdge(
+                        person_a=subject_name, person_b=member, other_kind="person",
+                        relationship_type="coworker",
+                        method="organization directory page",
+                        source_url=url,
+                        evidence_snippet=(
+                            f"{org_name}'s own directory page lists both "
+                            f"{subject_name} and {member}."),
+                        # Candidate tier by construction, never strong: being
+                        # listed on one roster establishes a shared affiliation,
+                        # not a working relationship of any particular closeness
+                        # (same stance as COLLEAGUE_SILO's multiplier).
+                        confidence_base=0.5, confidence_adjusted=0.5,
+                        signals=EdgeSignals(trusted=True, explicit_keyword_match=True),
+                    ))
+                if progress:
+                    progress(f"  ▤ directory {org_name}: {len(members)} listed, "
+                             f"subject among them → colleague edges")
+            else:
+                _record_directory_membership(db, members, org_row, source, hop)
+                if progress:
+                    reason = "overflowed" if found.get("overflow") else "subject not listed"
+                    progress(f"  ▤ directory {org_name}: {len(members)} listed, {reason} "
+                             "→ employment edges only (no colleague claim)")
+
     # --- phase 5: dedup + per-node cap, then persist ----------------------
     check_cancel()
     final_edges = _dedup_and_cap(candidate_edges)
@@ -1125,11 +1251,41 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         return bool(should_stop and should_stop(session))
 
     def _process_one(name: str, hop: int) -> Dict[str, "_Candidate"]:
+        """Process one frontier node, retrying the WHOLE node on a transient
+        DB error.
+
+        The retry has to live here, not deeper. Every write helper in builder
+        already retries the failing STATEMENT inside a SAVEPOINT, and that is
+        enough for a SQLite lock -- the contending writer finishes and the
+        next attempt goes through. It cannot fix a Postgres deadlock. There,
+        two workers each hold locks the other needs (both are mid-transaction,
+        having already inserted overlapping people/orgs in different orders),
+        so retrying the same statement inside a transaction that STILL HOLDS
+        the conflicting locks can never succeed. Confirmed against a real
+        Postgres: every one of the six statement-level attempts deadlocked,
+        then the node was dropped -- which is what lost a node from a live
+        /connect walk.
+
+        Breaking the cycle needs the whole transaction gone, so each attempt
+        gets a FRESH session. Re-doing the node is cheap relative to losing
+        it: the searches behind it are served from the provider cache, so a
+        retry mostly re-runs extraction and the writes.
+        """
+        attempts = max(0, config.NODE_DB_RETRY_ATTEMPTS)
+        for attempt in range(attempts + 1):
+            result, retry = _process_one_attempt(name, hop, attempt, attempts)
+            if not retry:
+                return result
+        return {}
+
+    def _process_one_attempt(name: str, hop: int, attempt: int,
+                             attempts: int) -> Tuple[Dict[str, "_Candidate"], bool]:
+        """One attempt at a node. Returns (discoveries, should_retry)."""
         local_disc: Dict[str, _Candidate] = {}
         worker_db = WorkerSession()
         try:
             if stop_requested(worker_db):
-                return local_disc
+                return local_disc, False
             check_cancel()
             # If this node was already expanded (this run, a prior run, or by
             # another teammate in the shared map), REUSE its persisted
@@ -1166,17 +1322,37 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 check_cancel()
             except Exception:
                 raise
+            # A lock/deadlock is worth redoing from a clean transaction; a
+            # genuine bug is not -- retrying that just burns the budget and
+            # delays the same failure.
+            if builder.is_transient_db_error(exc) and attempt < attempts:
+                if progress:
+                    progress(f"  ↻ {name!r} at hop {hop} hit a transient DB "
+                             f"error ({exc.__class__.__name__}) — retrying "
+                             f"({attempt + 1}/{attempts})")
+                # let the contending worker commit and release its locks
+                # before we take the same ones again
+                builder._deadlock_backoff(attempt)
+                return {}, True
             if progress:
+                # str(exc), not just the class name: a dropped node is silent
+                # data loss (it can turn a real /connect route into "NO PATH"),
+                # and the class name alone is useless for telling a transient
+                # DB lock apart from a genuine bug -- diagnosing one such drop
+                # cost a full instrumented re-run purely because the message
+                # was discarded here. Truncated: some DBAPI errors embed the
+                # entire offending statement plus parameters.
+                detail = " ".join(str(exc).split())[:300]
                 progress(f"  ⚠ {name!r} at hop {hop} failed "
-                         f"({exc.__class__.__name__}) — skipped")
+                         f"({exc.__class__.__name__}: {detail}) — skipped")
         finally:
             worker_db.close()
         if person_norm_key(name) in shallow_nodes:
             # Fully processed and persisted above -- only excluded from
             # feeding the NEXT hop's frontier selection (see shallow_nodes'
             # own comment above).
-            return {}
-        return local_disc
+            return {}, False
+        return local_disc, False
 
     for hop in range(0, max_depth):
         if stop_requested(db):
@@ -1298,6 +1474,20 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 progress("  → no strong nodes to expand; stopping")
             break
 
+    # Whatever candidates the last processed hop turned up are real,
+    # persisted data (see _process_one/_merge_disc) -- the loop just never
+    # got to walk them as their own hop (max_depth reached, the node cap hit,
+    # or a cancellation). Recomputing the ranking once more here doesn't
+    # process/persist anything new; it only tells a caller what WOULD have
+    # been expanded next, so the no-route visualization can show "found, not
+    # walked" instead of silently implying Artemis found nothing further --
+    # see connect_people's "explored" field. When the loop instead ended
+    # because ranking already came back empty, this repeats that same
+    # (cheap, eligible-list-empty) call and correctly yields nothing.
+    alpha_top_n = config.ALPHA_TOP_CANDIDATES if enhanced_professional_search else None
+    boundary = _ranked_expandable(disc, visited, prefer_reachable=prefer_reachable,
+                                  top_n=alpha_top_n)
+
     protected = {person_norm_key(target_name)} | (protected_norms or set())
     check_cancel()
     _prune_invalid_nodes(db, protected, progress=progress)
@@ -1305,6 +1495,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     _retype_unknown_edges(db, progress=progress)
     stats = _stats(db, per_depth)
     stats["visited_by_hop"] = visited_by_hop
+    stats["boundary"] = boundary
     return stats
 
 
@@ -1404,29 +1595,12 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
             if e.organization_id:
                 trusted_oids.add(e.organization_id)
 
-    removed = 0
     # --- people: deterministic shape filter (LLM-independent, safe) ---------
     junk_people = [
         p for p in db.execute(select(Person)).scalars()
         if p.norm_name not in protected_norms and p.id not in trusted_pids
         and (is_noise_name(p.canonical_name) or not looks_like_person_name(p.canonical_name))
     ]
-    if junk_people:
-        pids = [p.id for p in junk_people]
-        # One batched delete instead of one DELETE per node -- edges are the
-        # only thing that needs a manual cascade (RelationshipEdge has no FK
-        # cascade), and IN(...) does it in a single round trip either way.
-        # Retries on a SQLite lock timeout instead of failing the whole job
-        # outright -- a large batch (hundreds of ids, e.g. after researching
-        # a very public figure) is exactly the kind of slow write likely to
-        # still be contending with the OTHER concurrent /connect side when
-        # busy_timeout's own wait runs out (see builder._is_locked).
-        builder.delete_relationship_edges_with_retry(
-            db, (RelationshipEdge.person_a_id.in_(pids))
-                | (RelationshipEdge.person_b_id.in_(pids)))
-        for p in junk_people:
-            db.delete(p)
-        removed += len(junk_people)
 
     # --- orgs: Claude entity filter (only when configured) -----------------
     junk_orgs: list = []
@@ -1435,27 +1609,41 @@ def _prune_invalid_nodes(db: Session, protected_norms: Set[str], progress=None) 
                 if o.id not in trusted_oids]
         valid_orgs = filter_entities([o.name for o in orgs], "organization")
         junk_orgs = [o for o in orgs if o.name not in valid_orgs]
-        if junk_orgs:
-            oids = [o.id for o in junk_orgs]
-            builder.delete_relationship_edges_with_retry(
-                db, RelationshipEdge.organization_id.in_(oids))
-            removed += len(junk_orgs)
 
-    # commit_with_retry, not a bare db.commit(): db.delete() is itself a
-    # pending mutation like any other -- a rollback() forced by a failed
-    # commit reverts a persistent object's pending "deleted" state right back
-    # to normal, same as it reverts a pending attribute change (confirmed
-    # empirically for attribute changes, see tests/test_commit_retry.py; the
-    # delete-flag hazard is the same mechanism). Re-issuing both delete loops
-    # on retry is what actually makes a retry redo the deletion instead of
-    # silently committing a no-op.
-    def _apply_deletes() -> None:
+    # One node at a time (not a single batched statement covering every
+    # candidate), each via builder.delete_node_with_retry -- deleting a
+    # node's edges and the node itself atomically, in one savepoint per
+    # attempt. The two /connect sides write into this same shared graph
+    # concurrently; a fresh edge referencing one of these "junk" nodes can
+    # land from the OTHER side between an edge-delete and a node-delete,
+    # which Postgres's real FK constraint correctly rejects (SQLite never
+    # enforces it at all -- see db.py -- so the same race used to silently
+    # corrupt the graph instead of raising). Per-node retry recovers from
+    # that; per-node isolation also means one contested node no longer takes
+    # an entire otherwise-legitimate batch down with it -- confirmed live: a
+    # whole /connect job died to a ForeignKeyViolation over ONE contested
+    # organization out of a larger batch, when this was still one IN(...)
+    # statement for the whole batch.
+    #
+    # commit_with_retry, not a bare db.commit(): a transient failure of the
+    # FINAL commit still needs the whole loop redone, not just retried empty
+    # (see commit_with_retry's own docstring) -- delete_node_with_retry's own
+    # per-node deletes are themselves idempotent (skip/redo cleanly) either way.
+    def _apply_deletes() -> int:
+        removed = 0
         for p in junk_people:
-            db.delete(p)
+            if builder.delete_node_with_retry(
+                    db, p,
+                    (RelationshipEdge.person_a_id == p.id)
+                    | (RelationshipEdge.person_b_id == p.id)):
+                removed += 1
         for o in junk_orgs:
-            db.delete(o)
+            if builder.delete_node_with_retry(
+                    db, o, RelationshipEdge.organization_id == o.id):
+                removed += 1
+        return removed
 
-    builder.commit_with_retry(db, _apply_deletes)
+    removed = builder.commit_with_retry(db, _apply_deletes) or 0
     if progress and removed:
         progress(f"  ✓ pruned {removed} junk nodes from the final graph")
     return removed

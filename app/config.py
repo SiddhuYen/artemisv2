@@ -41,15 +41,68 @@ def _env_bool(name: str, default: str) -> bool:
 
 
 # --- storage ---------------------------------------------------------------
-DB_URL = os.environ.get("ARTEMIS_DB_URL", "sqlite:///./artemis.db")
+def _normalize_db_url(url: str) -> str:
+    """Accept the `postgres://` scheme that hosted providers hand out.
+
+    Supabase, Render and Heroku all still print connection strings starting
+    `postgres://`, but SQLAlchemy 1.4+ removed that alias and raises
+    NoSuchModuleError ("Can't load plugin: sqlalchemy.dialects:postgres") on
+    it. Rewriting here means a copy-pasted dashboard string just works instead
+    of failing at import time with an error that reads like a missing driver.
+    """
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+def _resolve_db_url() -> str:
+    """ARTEMIS_DB_URL wins; DATABASE_URL is the fallback; SQLite is the default.
+
+    DATABASE_URL is the convention every managed host and Postgres add-on
+    populates automatically (Render, Supabase, Heroku, Fly). Reading it means a
+    deploy needs no Artemis-specific database wiring at all -- attach the
+    database and the app finds it. ARTEMIS_DB_URL still takes precedence so a
+    local override can point somewhere else without unsetting the platform's
+    own variable.
+
+    The SQLite default is for local dev and the test suite ONLY. It is not
+    safe for a deployment: concurrent expansion has multiple writers, and
+    SQLite serializes them behind a single write lock (see DEPLOY.md).
+    """
+    return _normalize_db_url(
+        os.environ.get("ARTEMIS_DB_URL")
+        or os.environ.get("DATABASE_URL")
+        or "sqlite:///./artemis.db"
+    )
+
+
+DB_URL = _resolve_db_url()
+IS_POSTGRES = DB_URL.startswith("postgresql")
 # Per-session graph isolation (HTTP API): each browser session gets its own
 # SQLite file here, so concurrent users never clobber each other's public graph.
 GRAPH_DIR = os.environ.get("ARTEMIS_GRAPH_DIR", "./graphs")
-# Boards/pages live in their own SQLite file — they never reference the
-# discovery-graph tables, and isolating them means a board's frequent
-# autosave writes never hit "database is locked" behind a long /connect or
+# Boards/pages default to their OWN SQLite file: they never reference the
+# discovery-graph tables, and isolating them means a board's frequent autosave
+# writes never hit "database is locked" behind a long /connect or
 # /targets/search transaction on the (much busier) main DB_URL database.
-BOARDS_DB_URL = os.environ.get("ARTEMIS_BOARDS_DB_URL", "sqlite:///./artemis_boards.db")
+#
+# That whole rationale is SQLite-specific, so on Postgres boards default to
+# the SAME database instead -- there is no single write lock to contend for,
+# and a deployment should not need a second managed database (or a writable
+# local disk, which a container may not even have) just to hold two tables.
+BOARDS_DB_URL = _normalize_db_url(
+    os.environ.get("ARTEMIS_BOARDS_DB_URL")
+    or (DB_URL if IS_POSTGRES else "sqlite:///./artemis_boards.db")
+)
+# Postgres connection pool (ignored on SQLite, which has no network pool).
+# Sized against what expansion actually opens: one Session per concurrently
+# processed node (EXPAND_NODE_CONCURRENCY, below), doubled because
+# connect_people expands BOTH endpoints at once, plus the API's own
+# per-request sessions. Default 10+10 covers that with headroom while staying
+# far under the connection cap of a small managed tier -- which is shared with
+# psql, migrations, and any other client you have open.
+DB_POOL_SIZE = int(os.environ.get("ARTEMIS_DB_POOL_SIZE", "10"))
+DB_MAX_OVERFLOW = int(os.environ.get("ARTEMIS_DB_MAX_OVERFLOW", "10"))
 
 # --- HTTP ------------------------------------------------------------------
 USER_AGENT = (
@@ -226,6 +279,23 @@ EXPAND_TOP_STRONG = int(os.environ.get("ARTEMIS_EXPAND_TOP_STRONG", "15"))
 # fix for the self-inflicted request storm is the global cap + jittered
 # backoff, not a low number here.
 EXPAND_NODE_CONCURRENCY = int(os.environ.get("ARTEMIS_EXPAND_NODE_CONCURRENCY", "4"))
+# How many times to redo a whole node whose transaction died on a lock or
+# deadlock (expansion._process_one). Distinct from the statement-level retries
+# in graph.builder, which cannot fix a Postgres deadlock: there both workers
+# hold locks the other needs, so only discarding the entire transaction breaks
+# the cycle.
+#
+# 5, not a token 2, because the retries have to OUTLAST the transaction that
+# won the deadlock. The loser can only get through once the winner commits and
+# releases its locks, and a node's transaction runs for seconds (extraction
+# plus a round trip per write). Measured against a real Postgres with two
+# workers inserting the same 40 people in opposite orders: at 2 attempts every
+# round still lost a worker, because all its retries fired before the winner
+# finished; at 5 -- whose backoff spreads ~0.3s to ~4.8s -- nothing was lost
+# across four rounds. Retries are cheap relative to losing the node: the
+# searches behind one are served from the provider cache, so the cost is
+# re-extraction, not re-buying data.
+NODE_DB_RETRY_ATTEMPTS = int(os.environ.get("ARTEMIS_NODE_DB_RETRY_ATTEMPTS", "5"))
 # Reachability mode: when expanding, prefer the LEAST-famous real connections
 # (no Wikipedia page, fewer sources) instead of the strongest/most-famous ones.
 # This walks the graph DOWN the fame gradient toward a normal person's network,
@@ -455,15 +525,24 @@ NODE_PROFILE_SNIPPET_CHARS = int(os.environ.get("ARTEMIS_NODE_PROFILE_SNIPPET_CH
 STRATEGY_ENABLED = _env_bool("ARTEMIS_STRATEGY", "1")
 STRATEGY_MODEL = os.environ.get("ARTEMIS_STRATEGY_MODEL", CLAUDE_BATCH_MODEL)
 STRATEGY_ANGLE_QUERIES = {
-    "current_employer_leadership": [
-        '"{org}" leadership team OR executives',
-    ],
+    # Deliberately EMPTY, not deleted: the angle is still a meaningful thing
+    # for the model to choose, it just no longer maps to prose queries. It
+    # used to fire '"{org}" leadership team OR executives' into the ordinary
+    # extraction path, where the proximity gate decided the outcome -- a long
+    # leadership page that never names a VP-level subject had every entity
+    # dropped, and a short one had the whole exec roster wired to the subject
+    # as unevidenced colleagues. A roster is a structural assertion, so that
+    # work now happens in expansion's phase 4f via providers/directory.py,
+    # which runs for every Alpha node regardless of the chosen angle.
+    "current_employer_leadership": [],
     "past_employers": [
         '"{subject}" "previously at" OR "formerly at" OR "prior to {org}"',
     ],
-    "industry_peers": [
-        '"{industry}" industry leaders network',
-    ],
+    # Also empty, for a simpler reason: '"{industry}" industry leaders
+    # network' dropped both the subject and the target and returned
+    # listicles. The directory pack (DIRECTORY_PACKS) reaches the same
+    # people through their actual employers instead of through SEO bait.
+    "industry_peers": [],
     "board_or_advisory": [
         '"{subject}" board member OR advisor OR advisory',
     ],
@@ -493,9 +572,79 @@ PROPUBLICA_MAX_ORGS = int(os.environ.get("ARTEMIS_PROPUBLICA_MAX_ORGS", "3"))
 FIRMS_ENABLED = _env_bool("ARTEMIS_FIRMS_ENABLED", "1")
 MAX_ROSTER_MEMBERS = int(os.environ.get("ARTEMIS_MAX_ROSTER_MEMBERS", "40"))
 MAX_FIRMS_PER_PERSON = int(os.environ.get("ARTEMIS_MAX_FIRMS_PER_PERSON", "3"))
-# raw HTML cached/parsed per page fetch (before html_to_text's further cut to
+# Raw HTML cached/parsed per page fetch (before html_to_text's further cut to
 # MAX_PAGE_CHARS) — a roster grid can sit far down the markup of a long page.
-MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", str(MAX_PAGE_CHARS * 4)))
+#
+# Measured, not guessed. At the old MAX_PAGE_CHARS * 4 (80k) the cap landed
+# mid-boilerplate on every large roster tried: uncorkcapital.com/team gave 0
+# names truncated vs 14 whole, stthomas.edu 0 vs 16, bvp.com/team 65 vs 252.
+# Those pages are NOT single-page apps -- the names were in the plain response
+# all along, just past the cut. 250k is where all of them reach full recall.
+#
+# Affordable only because fetch_page now strips inline script/style bodies
+# BEFORE truncating (htmltext.strip_inline_noise), which roughly halves what
+# is stored; a bare cap raise would have multiplied page-cache growth instead.
+MAX_HTML_CHARS = int(os.environ.get("ARTEMIS_MAX_HTML_CHARS", "250000"))
+
+# --- Directories (org-keyed staff/professional directories) -----------------
+# The org-keyed sibling of FIRMS above: firms.py answers "who does this PERSON
+# work with", this answers "who works at this ORG". Built for Alpha's
+# non-famous side, where the subject's own employer is the densest real source
+# of professional connections there is -- and where the previous
+# implementation of that idea (the current_employer_leadership strategy angle)
+# fed a company leadership page through the PROSE extractor, which either
+# dropped everything (long page, subject never named -> proximity gate) or
+# wired the whole exec roster to the subject unevidenced (short page). A
+# roster is a structural assertion and belongs on the structural path.
+DIRECTORY_ENABLED = _env_bool("ARTEMIS_DIRECTORY_ENABLED", "1")
+DIRECTORY_MAX_MEMBERS = int(os.environ.get("ARTEMIS_DIRECTORY_MAX_MEMBERS", "60"))
+# How many located candidate URLs to verify before giving up on an org.
+DIRECTORY_MAX_CANDIDATES = int(os.environ.get("ARTEMIS_DIRECTORY_MAX_CANDIDATES", "6"))
+
+# Sector query packs, selected by keyword match against node_profiler's
+# GROUNDED `industry` string (see extraction/node_profiler.py). Same
+# containment principle as STRATEGY_ANGLE_QUERIES: the profile picks WHICH
+# pre-written pack applies, nothing ever generates query text from a model.
+# "default" is used when the industry is unknown or matches nothing, so an
+# ungrounded profile degrades to the generic pack rather than to no search.
+DIRECTORY_PACKS = {
+    "legal": {
+        "match": ("law", "legal", "attorney", "litigation", "counsel"),
+        "queries": ['"{org}" attorneys directory', '"{org}" our lawyers'],
+    },
+    "medical": {
+        "match": ("health", "medical", "hospital", "clinic", "care", "physician"),
+        "queries": ['"{org}" physicians directory', '"{org}" our providers'],
+    },
+    "academic": {
+        "match": ("university", "college", "education", "research institute"),
+        "queries": ['"{org}" faculty directory', '"{org}" department people'],
+    },
+    "consulting": {
+        "match": ("consult", "advisory", "professional services", "erp", "systems integrat"),
+        "queries": ['"{org}" our team consultants', '"{org}" leadership team'],
+    },
+    "finance": {
+        "match": ("bank", "financial", "invest", "capital", "wealth", "insurance"),
+        "queries": ['"{org}" our team', '"{org}" leadership team'],
+    },
+    "nonprofit": {
+        "match": ("nonprofit", "non-profit", "foundation", "charity", "ngo"),
+        "queries": ['"{org}" staff directory', '"{org}" our team'],
+    },
+    "default": {
+        "match": (),
+        "queries": ['"{org}" team page', '"{org}" our team', '"{org}" staff directory'],
+    },
+}
+
+# A large org's full directory is a haystack, and everyone in it is a weak
+# bridge -- so for `large` (and for `unknown`, which is the conservative
+# default when profiling didn't ground) only the leadership page is worth
+# fetching. Small/mid orgs get the full sector pack: at that size the
+# directory genuinely IS the subject's professional network.
+DIRECTORY_LEADERSHIP_QUERIES = ['"{org}" leadership team', '"{org}" executive team']
+DIRECTORY_FULL_SIZE_TIERS = ("small", "mid")
 
 # --- Podcasts (RSS host<->guest structural edges) ---------------------------
 # An episode asserts one thing: this host interviewed this guest. Tier-1 data —

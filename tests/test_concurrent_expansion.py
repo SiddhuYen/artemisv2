@@ -15,6 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app import config
@@ -308,3 +309,109 @@ def test_expand_both_concurrently_propagates_a_side_failure(tmp_path, monkeypatc
                                         None, "", "")
     finally:
         s.close()
+
+
+# --- node-level retry: the only level that can survive a deadlock ----------
+def _deadlock() -> OperationalError:
+    """The shape psycopg2 raises on SQLSTATE 40P01, as seen live: a deadlock
+    while inserting an index tuple, after two workers each took locks the
+    other needed.
+
+    `pgcode` on `.orig` is the load-bearing part -- _is_deadlock keys on
+    exactly that, not on the message text (unlike _is_locked, which does read
+    the message). A fake without it is silently treated as a genuine bug and
+    never retried.
+    """
+    orig = Exception(
+        "deadlock detected\nDETAIL: Process 1 waits for ShareLock on "
+        "transaction 2; blocked by process 3.\n"
+        "CONTEXT: while inserting index tuple")
+    orig.pgcode = "40P01"
+    return OperationalError("INSERT INTO people ...", {}, orig)
+
+
+def test_a_deadlocked_node_is_retried_not_dropped(tmp_path, monkeypatch):
+    """A Postgres deadlock must cost a redo, not the node.
+
+    Statement-level retries in builder cannot fix this: both workers hold
+    locks the other needs, so retrying inside the same transaction deadlocks
+    forever (confirmed live -- all 6 attempts failed, then the node was
+    dropped from a /connect walk). Only discarding the whole transaction and
+    starting over breaks the cycle, which is why the retry lives in
+    _process_one.
+    """
+    monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", False)
+    engine = _engine(tmp_path, "node_retry.db")
+    root = _sessionmaker(engine)()
+    root.close()
+
+    attempts = {"n": 0}
+
+    def fake_process_person(worker_db, name, hop, local_disc, progress=None,
+                            is_person=True, context="", silo_weights=None,
+                            enhanced_professional_search=False,
+                            professional_only=False, target_person_name="",
+                            target_context=""):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise _deadlock()          # first transaction dies
+        subject = builder.get_or_create_person(worker_db, name)
+        subject.processed = 1
+        worker_db.commit()
+
+    monkeypatch.setattr(expansion, "_process_person", fake_process_person)
+    monkeypatch.setattr(builder, "_deadlock_backoff", lambda attempt: None)
+
+    expansion.expand_graph(root, "Seed Person", 1)
+
+    assert attempts["n"] == 2, "the node should have been retried exactly once"
+    check = _sessionmaker(engine)()
+    try:
+        seed = builder.get_or_create_person(check, "Seed Person", allow_create=False)
+        assert seed is not None and seed.processed, (
+            "the node must survive a deadlock — dropping it is silent data loss"
+        )
+    finally:
+        check.close()
+
+
+def test_a_genuine_bug_is_not_retried(tmp_path, monkeypatch):
+    """Retrying a real error just burns the budget and delays the failure."""
+    monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", False)
+    engine = _engine(tmp_path, "node_no_retry.db")
+    root = _sessionmaker(engine)()
+    root.close()
+
+    attempts = {"n": 0}
+
+    def fake_process_person(worker_db, name, hop, local_disc, **kwargs):
+        attempts["n"] += 1
+        raise ValueError("a genuine bug, not a lock")
+
+    monkeypatch.setattr(expansion, "_process_person", fake_process_person)
+
+    expansion.expand_graph(root, "Seed Person", 1)
+
+    assert attempts["n"] == 1, "a non-transient error must not be retried"
+
+
+def test_node_retry_budget_is_bounded(tmp_path, monkeypatch):
+    """A permanently deadlocking node gives up rather than spinning."""
+    monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", False)
+    monkeypatch.setattr(config, "NODE_DB_RETRY_ATTEMPTS", 2)
+    engine = _engine(tmp_path, "node_retry_bounded.db")
+    root = _sessionmaker(engine)()
+    root.close()
+
+    attempts = {"n": 0}
+
+    def fake_process_person(worker_db, name, hop, local_disc, **kwargs):
+        attempts["n"] += 1
+        raise _deadlock()
+
+    monkeypatch.setattr(expansion, "_process_person", fake_process_person)
+    monkeypatch.setattr(builder, "_deadlock_backoff", lambda attempt: None)
+
+    expansion.expand_graph(root, "Seed Person", 1)
+
+    assert attempts["n"] == 3, "1 initial attempt + NODE_DB_RETRY_ATTEMPTS"

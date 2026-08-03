@@ -807,8 +807,10 @@ def _build_explored(expand_stats: Optional[dict], name_a: str, name_b: str) -> O
     if not expand_stats:
         return None
     return {
-        "a": {"seed": name_a, "by_hop": (expand_stats.get("a") or {}).get("visited_by_hop", {})},
-        "b": {"seed": name_b, "by_hop": (expand_stats.get("b") or {}).get("visited_by_hop", {})},
+        "a": {"seed": name_a, "by_hop": (expand_stats.get("a") or {}).get("visited_by_hop", {}),
+              "boundary": (expand_stats.get("a") or {}).get("boundary", [])},
+        "b": {"seed": name_b, "by_hop": (expand_stats.get("b") or {}).get("visited_by_hop", {}),
+              "boundary": (expand_stats.get("b") or {}).get("boundary", [])},
     }
 
 

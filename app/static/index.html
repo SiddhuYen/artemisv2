@@ -878,15 +878,19 @@ body {
 .pv-swatch { width:16px;height:2px;display:inline-block; }
 .pv-swatch.pv-best { background:var(--accent-bright);box-shadow:0 0 6px var(--accent-glow); }
 .pv-swatch.pv-alt { background:var(--ink-faint); }
+.pv-swatch.pv-boundary { background:none;border-top:1px dashed var(--ink-faint);opacity:0.6;height:0; }
 .pv-canvas-wrap { padding:8px 12px 20px;overflow:auto;flex:1; }
 .pv-svg { width:100%;height:auto;min-height:360px;display:block; }
 .pv-edge-best { stroke:var(--accent-bright);stroke-width:2;fill:none;filter:drop-shadow(0 0 4px var(--accent-glow)); }
 .pv-edge-alt { stroke:var(--ink-faint);stroke-width:1;fill:none;stroke-dasharray:3 3; }
+.pv-edge-boundary { stroke:var(--ink-faint);stroke-width:0.75;fill:none;stroke-dasharray:1 4;opacity:0.55; }
 .pv-node-circle { fill:var(--bg1, oklch(0.185 0.016 22));stroke:var(--ink-faint);stroke-width:1.4; }
 .pv-node-circle.pv-endpoint { stroke:var(--accent-bright);stroke-width:2;filter:drop-shadow(0 0 6px var(--accent-glow)); }
 .pv-node-circle.pv-onbest { stroke:var(--ink-dim); }
+.pv-node-circle.pv-node-boundary { stroke:var(--ink-faint);stroke-width:1;stroke-dasharray:1.5 1.5;opacity:0.6; }
 .pv-node-label { fill:var(--ink-dim);font-family:"Share Tech Mono",monospace;font-size:11px; }
 .pv-node-label.pv-dim { fill:var(--ink-faint); }
+.pv-node-label.pv-node-label-boundary { fill:var(--ink-faint);opacity:0.65;font-size:10px; }
 .pv-edge-label { fill:var(--ink-faint);font-family:"Share Tech Mono",monospace;font-size:8px;letter-spacing:0.06em; }
 .pv-empty { padding:40px 20px;text-align:center;color:var(--ink-faint);font-size:11px;letter-spacing:0.08em; }
 
@@ -2238,6 +2242,6 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
   </div>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=20260802b"></script>
 </body>
 </html>

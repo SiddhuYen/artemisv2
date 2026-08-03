@@ -99,6 +99,11 @@ def _silence_everything_but_strategy(monkeypatch, search_results=None, fetched_t
     monkeypatch.setattr(expansion.ORCH, "officer_enrichment", lambda name: {"officers_text": ""})
     monkeypatch.setattr(expansion.ORCH, "edgar_enrichment", lambda name: {"edgar_text": ""})
     monkeypatch.setattr(expansion.ORCH, "firm_enrichment", lambda name: {"firms": []})
+    # Phase 4f (org directory) -- stubbed off here so it can't issue searches
+    # of its own; it has its own dedicated tests.
+    monkeypatch.setattr(expansion.ORCH, "directory_enrichment",
+                        lambda org, industry="", size_tier="": {
+                            "org": org, "url": "", "members": [], "overflow": False})
     monkeypatch.setattr(expansion.ORCH, "coauthors_enrichment", lambda name: {
         "coauthors": [], "coauthors_text": "", "identity_text": "",
     })
@@ -131,9 +136,16 @@ def test_phase_4e_fires_the_chosen_angles_queries_and_records_the_decision(db, m
     db.add(org)
     db.commit()
 
+    # board_or_advisory, not current_employer_leadership: the latter now maps
+    # to NO queries on purpose -- a company roster is a structural assertion
+    # and moved to expansion's phase 4f (providers/directory.py), because
+    # feeding it to the prose extractor either dropped everything or wired
+    # the whole exec roster to the subject. See test_company_directories.py.
+    # This test is about the angle->queries mechanism, so it uses an angle
+    # that still has queries.
     _silence_everything_but_strategy(
         monkeypatch,
-        search_results=[SearchResult("Trinamix leadership", "https://example.com/leaders",
+        search_results=[SearchResult("Prantik Chakraborty board", "https://example.com/board",
                                      "snippet", "serper")],
         # Needs a properly-shaped org suffix ("Trinamix Inc") and a full
         # two-word person name ("John Smith") -- confirmed live (reported in
@@ -150,7 +162,7 @@ def test_phase_4e_fires_the_chosen_angles_queries_and_records_the_decision(db, m
                         lambda edges: _fake_org_edge("Trinamix"))
     monkeypatch.setattr(search_strategy, "is_active", lambda: True)
     monkeypatch.setattr(search_strategy, "decide_angle", lambda *a, **k: {
-        "angle": "current_employer_leadership", "why": "Direct Oracle partner ties.",
+        "angle": "board_or_advisory", "why": "His board seats are the better angle.",
     })
 
     from app.graph import builder
@@ -162,11 +174,22 @@ def test_phase_4e_fires_the_chosen_angles_queries_and_records_the_decision(db, m
 
     subject = builder.get_or_create_person(db, "Prantik Chakraborty")
     assert (subject.meta or {}).get("strategy") == {
-        "angle": "current_employer_leadership", "why": "Direct Oracle partner ties.",
+        "angle": "board_or_advisory", "why": "His board seats are the better angle.",
     }
     # the fake search result's page text should have produced at least one
     # candidate edge that made it through extraction/persist
     assert db.query(RelationshipEdge).filter(RelationshipEdge.person_a_id == subject.id).count() > 0
+
+
+def test_current_employer_leadership_maps_to_no_prose_queries():
+    """The angle is still selectable -- it just no longer issues prose
+    queries. The org roster it used to chase is handled structurally by
+    phase 4f now; firing '"{org}" leadership team' into the prose extractor
+    is the failure that motivated the whole change."""
+    assert config.STRATEGY_ANGLE_QUERIES["current_employer_leadership"] == []
+    assert config.STRATEGY_ANGLE_QUERIES["industry_peers"] == []
+    # still a valid choice for the model, and still recorded on the subject
+    assert "current_employer_leadership" in config.STRATEGY_ANGLE_QUERIES
 
 
 def test_phase_4e_fires_no_extra_queries_for_the_generic_angle(db, monkeypatch):

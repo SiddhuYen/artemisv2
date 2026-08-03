@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import List
 
 from bs4 import BeautifulSoup
@@ -28,6 +29,36 @@ def soup_of(html: str) -> BeautifulSoup:
         return BeautifulSoup(html or "", "html.parser")
     except ParserRejectedMarkup:
         return BeautifulSoup("", "html.parser")
+
+
+# Inline <script>/<style> bodies, which routinely occupy the first several
+# hundred KB of a modern page before any visible content. Stripped at FETCH
+# time (see providers.base.fetch_page) so the truncation cap is spent on
+# markup that can actually contain a roster.
+#
+# The negative lookahead on ld+json is load-bearing: schema.org Person data
+# lives in <script type="application/ld+json">, jsonld_names() reads it, and
+# both roster scrapers treat those names as authoritative precisely because
+# they survive when visible text does not. Stripping every <script> would
+# have deleted the best source in the page while trying to make room for it.
+_INLINE_NOISE = re.compile(
+    r"<script(?![^>]*ld\+json)\b[^>]*>.*?</script\s*>"
+    r"|<style\b[^>]*>.*?</style\s*>"
+    r"|<!--.*?-->",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def strip_inline_noise(html: str) -> str:
+    """Drop inline script/style bodies and comments, keeping JSON-LD.
+
+    Not a parser pass: this runs on multi-hundred-KB raw HTML before any
+    truncation, where BeautifulSoup would be far more expensive and is not
+    needed to delete two well-delimited element types.
+    """
+    if not html:
+        return ""
+    return _INLINE_NOISE.sub(" ", html)
 
 
 def html_to_text(html: str) -> str:

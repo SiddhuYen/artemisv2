@@ -200,6 +200,24 @@ class WikidataProvider:
         except Exception:
             return []
 
+    def official_website(self, qid: str) -> str:
+        """The entity's official website (Wikidata P856), or "".
+
+        An AUTHORITATIVE identity anchor for an organization, in the same
+        spirit as a person's QID: it settles cases no string comparison can.
+        "gatech.edu" is not derivable from "Georgia Institute of Technology"
+        by any prefix or initialism rule -- it is a contraction built on the
+        state's postal abbreviation -- so roster pages on that domain could
+        never be verified from the name alone.
+        """
+        if not qid:
+            return ""
+        for stmt in self._entity_claims(qid).get("P856", []) or []:
+            value = (stmt.get("mainsnak", {}).get("datavalue", {}) or {}).get("value", "")
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
     # --- internals --------------------------------------------------------
     def _entity_claims(self, qid: str) -> Dict[str, list]:
         _LIMITER.acquire()

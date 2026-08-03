@@ -47,14 +47,34 @@ def _domain(url: str) -> str:
         return url or "?"
 
 
-def _reset_db() -> None:
+def _reset_db(force: bool = False) -> None:
     """Clear the public graph but KEEP the uploaded local network."""
     init_db()
     db = SessionLocal()
     try:
-        builder.reset_public_graph(db)
+        builder.reset_public_graph(db, force=force)
     finally:
         db.close()
+
+
+def _start_clean(force_reset: bool) -> bool:
+    """Whether this run should wipe the graph first.
+
+    A private SQLite file keeps the original behaviour: each run starts fresh
+    unless --keep. A SHARED database does not -- there, "start fresh" means
+    deleting every collaborator's graph, and the command that does it is the
+    most ordinary one there is (`python -m app.cli "Some Name"`, since --keep
+    is opt-in). So on a shared graph this accumulates by default and says so,
+    and wiping requires an explicit --force-reset.
+    """
+    if not builder.graph_is_shared():
+        return True
+    if force_reset:
+        _progress("⚠ --force-reset: wiping the SHARED graph for everyone.")
+        return True
+    _progress("ℹ shared database — accumulating into the existing graph "
+              "(pass --force-reset to wipe it for everyone).")
+    return False
 
 
 MAX_CONNS_SHOWN = 30
@@ -109,11 +129,12 @@ def _print_provider_stats() -> None:
 
 
 def run(target_name: str, depth: int, keep: bool, show_all: bool = False,
-        context: str = "", seed_is_person: bool = True) -> None:
-    if keep:
+        context: str = "", seed_is_person: bool = True,
+        force_reset: bool = False) -> None:
+    if keep or not _start_clean(force_reset):
         init_db()
     else:
-        _reset_db()
+        _reset_db(force=force_reset)
 
     STATS.reset()
     provider_cache.purge_expired()
@@ -524,7 +545,11 @@ def _run_search(argv) -> None:
                         help="levels to explore: 1=target's direct relationships "
                              "(default, fast), 2=also expand top connections (slow)")
     parser.add_argument("--keep", action="store_true",
-                        help="accumulate into existing graph instead of starting fresh")
+                        help="accumulate into existing graph instead of starting fresh "
+                             "(always the default on a shared database)")
+    parser.add_argument("--force-reset", action="store_true", dest="force_reset",
+                        help="wipe a SHARED graph database before building — "
+                             "deletes every collaborator's data, not just yours")
     parser.add_argument("--all", action="store_true", dest="show_all",
                         help="show every extracted entity, including low-signal "
                              "'unknown' relationships (noisy)")
@@ -547,13 +572,73 @@ def _run_search(argv) -> None:
         print("No name given.", file=sys.stderr)
         sys.exit(1)
     run(target, max(1, min(args.depth, 3)), args.keep, args.show_all, context=args.context,
-        seed_is_person=not args.org)
+        seed_is_person=not args.org, force_reset=args.force_reset)
+
+
+def cmd_directory(argv) -> None:
+    """List the contacts an organization's own directory page names.
+
+    Read-only and graph-free: this scrapes and prints, it writes no nodes or
+    edges. Deciding that any of these people are connected to a *subject* is
+    expansion phase 4f's job, and it needs a subject to do it -- see
+    providers/directory.py. Here you are just looking at who a company lists.
+    """
+    from . import config
+    from .providers import SearchOrchestrator
+
+    p = argparse.ArgumentParser(prog="directory")
+    p.add_argument("org", nargs="*", help='organization name, e.g. "Uncork Capital"')
+    p.add_argument("--industry", default="",
+                   help="sector hint; picks the query pack (see config.DIRECTORY_PACKS)")
+    p.add_argument("--size", default="small",
+                   choices=["small", "mid", "large", "unknown"],
+                   help="small/mid scrape the full directory; large/unknown are "
+                        "restricted to a leadership page (default: small)")
+    ns = p.parse_args(argv)
+    org = " ".join(ns.org).strip()
+    if not org:
+        print('usage: python -m app.cli directory "Org Name" [--industry X] [--size small|mid|large]',
+              file=sys.stderr)
+        sys.exit(1)
+
+    orch = SearchOrchestrator()
+    print(f"\n▤  Directory: {org}   (size={ns.size}"
+          f"{', industry=' + ns.industry if ns.industry else ''})", flush=True)
+    found = orch.directory_enrichment(org, industry=ns.industry, size_tier=ns.size)
+
+    status, url, members = found.get("status"), found.get("url"), found.get("members") or []
+    if not members:
+        # Say WHY, never just "nothing found" -- an empty result that doesn't
+        # explain itself is indistinguishable from "this org has no directory".
+        reason = {
+            "no_verified_page": "no page passed the roster-shape check and org-identity guard",
+            "js_shell": "the page is a JavaScript shell with no readable text "
+                        "(a headless browser would be needed; see providers/browser.py)",
+            "identity_mismatch": "the page found does not belong to this organization",
+            "no_names_found": "the page was readable but held no person-shaped names",
+            "disabled": "directory lookups are disabled (ARTEMIS_DIRECTORY_ENABLED)",
+        }.get(status, f"status={status}")
+        if str(status).startswith("fetch_"):
+            reason = f"the page refused the fetch ({status.split('_', 1)[1]}) — bot-blocked"
+        print(f"\n  no contacts found — {reason}")
+        if url:
+            print(f"  page: {url}")
+        return
+
+    print(f"\n  source: {url}")
+    if found.get("overflow"):
+        print(f"  (page lists more than {config.DIRECTORY_MAX_MEMBERS}; showing the cap)")
+    print(f"\n  {len(members)} contact(s):\n")
+    for i, name in enumerate(members, 1):
+        print(f"    {i:>3}. {name}")
+    print()
 
 
 _SUBCOMMANDS = {
     "upload-network": cmd_upload,
     "add-org-network": cmd_add_org,
     "connect": cmd_connect,
+    "directory": cmd_directory,
     "match": cmd_match,
     "paths": cmd_paths,
     "funding-rounds": cmd_funding_rounds,

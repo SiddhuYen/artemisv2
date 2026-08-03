@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from .. import config
+from ..utils.htmltext import strip_inline_noise
 from . import cache
 from .stats import STATS
 
@@ -242,7 +243,14 @@ def fetch_page(url: str, render: bool = False) -> Page:
     if resp is not None:
         status = resp.status_code
         if status == 200:
-            content = resp.text[: config.MAX_HTML_CHARS]
+            # Strip inline script/style bodies BEFORE truncating. On a modern
+            # page those routinely fill the first several hundred KB, so the
+            # cap was being spent on markup that cannot contain a roster:
+            # uncorkcapital.com/team yielded 0 names truncated and 14 whole,
+            # bvp.com/team 65 vs 252. Stripping first also roughly halves what
+            # goes into the page cache. JSON-LD is preserved -- see
+            # htmltext.strip_inline_noise.
+            content = strip_inline_noise(resp.text)[: config.MAX_HTML_CHARS]
     cache.set(key, "page", {"content": content, "status_code": status},
               config.CACHE_TTL_PAGE)
     return Page(url=url, content=content, status_code=status, from_cache=False)

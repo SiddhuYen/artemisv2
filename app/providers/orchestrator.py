@@ -20,6 +20,7 @@ from .brave import BraveProvider
 from .serper import SerperProvider
 from .duckduckgo import DuckDuckGoProvider
 from .edgar import EdgarProvider
+from .directory import DirectoryProvider
 from .firms import FirmsProvider
 from .openalex import OpenAlexProvider
 from .opencorporates import OpenCorporatesProvider
@@ -71,6 +72,11 @@ class SearchOrchestrator:
         # Locates roster pages via the same routed web search as everything
         # else; scraping a roster URL directly (roster()) needs no search.
         self.firms = FirmsProvider(search=lambda q: self.search(q, is_person=False))
+        # The org-keyed sibling: "who works at this org" rather than firms'
+        # "who does this person work with". Same locate-only use of search.
+        self.directory = DirectoryProvider(
+            search=lambda q: self.search(q, is_person=False),
+            official_domain=self.official_domain)
 
     # --- query dedup ------------------------------------------------------
     def dedup(self, pairs: List[Tuple[object, str]]) -> Tuple[List[str], Dict[str, List[object]]]:
@@ -157,6 +163,40 @@ class SearchOrchestrator:
             "firms": cols,
             "firms_text": self.firms.colleagues_text(name, cols) if cols else "",
         }
+
+    def official_domain(self, org_name: str) -> str:
+        """Registrable domain of an org's Wikidata-declared official website.
+
+        The org-level counterpart to notable_set's QID check: an authoritative
+        identity anchor that settles what no string comparison can. Guard 2
+        (providers/rosters.page_belongs_to_org) uses it IN ADDITION to name
+        matching, never instead -- Wikidata can hold a former domain (Uncork
+        Capital still lists softtechvc.com), so it must be able to add a
+        verification, not veto one.
+
+        Best-effort like every other enrichment: any failure returns "".
+        """
+        from .rosters import domain_stem
+        if not org_name:
+            return ""
+        try:
+            qid = self.wikipedia.wikidata_id(org_name)
+            if not qid:
+                return ""
+            site = self.wikidata.official_website(qid)
+        except Exception:
+            return ""
+        return domain_stem(site) if site else ""
+
+    def directory_enrichment(self, org_name: str, industry: str = "",
+                             size_tier: str = "") -> dict:
+        """An organization's own staff/professional directory.
+
+        Unlike firm_enrichment, this is keyed on the ORG, not the person, and
+        returns who the page lists WITHOUT deciding whether they are anyone's
+        colleagues -- that judgment needs a subject, and belongs to the caller
+        (see providers/directory.py's module docstring)."""
+        return self.directory.directory(org_name, industry=industry, size_tier=size_tier)
 
     def notable_set(self, names: List[str]) -> set:
         """Return the subset of names that are 'notable' — i.e. have their own

@@ -516,9 +516,27 @@ def status() -> dict:
         # the server is before a user starts a build that would only queue.
         "auth": auth.status(),
         "builds": BUILDS.stats(),
+        "database": _database_status(),
     }
     out.update(_extraction_status())
     return out
+
+
+def _database_status() -> dict:
+    """Which backend the graph is actually on — never the URL, which carries
+    the password.
+
+    Worth surfacing because the failure it catches is invisible otherwise: a
+    deployment whose DATABASE_URL never took effect comes up perfectly healthy
+    on an ephemeral SQLite file, and the only symptom is that the graph is
+    empty again after the next redeploy. `ephemeral` says that out loud.
+    """
+    return {
+        "backend": "postgres" if config.IS_POSTGRES else "sqlite",
+        # SQLite in a deployed container is almost always an accident — see
+        # DEPLOY.md; concurrent expansion can silently drop nodes on it.
+        "ephemeral": not config.IS_POSTGRES,
+    }
 
 
 def _run_target_search_job(job_id: str, ticket, target_name: str, max_depth: int) -> None:

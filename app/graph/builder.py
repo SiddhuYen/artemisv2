@@ -55,9 +55,41 @@ def _strip_nul(s: Optional[str]) -> Optional[str]:
     return s.replace("\x00", "") if s else s
 
 
-def reset_public_graph(db: Session) -> None:
+class SharedGraphResetError(RuntimeError):
+    """Raised when something tries to wipe a graph that isn't private."""
+
+
+def graph_is_shared() -> bool:
+    """True when the graph lives in a server database rather than a private
+    local SQLite file.
+
+    The whole codebase was written when the graph was a file on one laptop,
+    where wiping it costs its owner a rebuild and nobody else anything. On a
+    team's shared Postgres the same call destroys everyone's work at once, so
+    the destructive paths below ask this first.
+    """
+    return config.IS_POSTGRES
+
+
+def reset_public_graph(db: Session, force: bool = False) -> None:
     """Clear the PUBLIC graph + derived matches/paths, preserving the uploaded
-    local network (local_profiles / local_edges). Children first for FK safety."""
+    local network (local_profiles / local_edges). Children first for FK safety.
+
+    Refuses to run against a SHARED graph unless `force` is passed. This is a
+    deliberate chokepoint: every destructive path in the app funnels through
+    here, and two of them are easy to trigger without meaning to --
+    `python -m app.cli "Some Name"` resets by default (--keep is opt-IN), and
+    org_discovery calls this as routine scratch cleanup. Against a private
+    SQLite file both are harmless; against a team database either one silently
+    deletes every collaborator's graph, including whatever the deployment
+    accumulated. Callers that genuinely mean it pass force=True.
+    """
+    if graph_is_shared() and not force:
+        raise SharedGraphResetError(
+            "refusing to wipe a shared graph database — this would delete "
+            "every collaborator's data, not just yours. Accumulate instead "
+            "(the CLI's --keep), or pass force=True if you really mean it."
+        )
     db.query(CandidatePath).delete()
     db.query(GraphMatch).delete()
     db.query(RelationshipEdge).delete()
@@ -222,7 +254,12 @@ def _homonym_conflict(db: Session, existing: Person,
         return False
     meta = dict(existing.meta or {})
     meta["homonym_rejected"] = {"identity_text": identity_text[:300]}
-    existing.meta = meta
+    # flush_in_savepoint, not a bare `existing.meta = meta`: leaving this
+    # mutation pending is what made the NEXT savepoint entry (usually
+    # _new_person_or_existing's, a few lines later in both callers) flush it
+    # pre-SAVEPOINT, where a lock is unrecoverable and costs the whole node.
+    # See flush_in_savepoint's docstring for the full failure shape.
+    flush_in_savepoint(db, lambda: setattr(existing, "meta", meta))
     return True
 
 
@@ -315,6 +352,99 @@ def _is_transient(exc: Exception) -> bool:
     return _is_locked(exc) or _is_deadlock(exc)
 
 
+# How many times a DEADLOCK may be retried in place, before it is left to the
+# transaction-level retry (expansion._process_one). Deliberately tiny, and not
+# the same budget a SQLite lock gets: see _should_retry_in_place.
+_DEADLOCK_INPLACE_RETRIES = 1
+
+
+def _should_retry_in_place(exc: Exception, attempt: int) -> bool:
+    """Whether retrying THIS STATEMENT, inside the current transaction, has a
+    real chance -- as opposed to needing the whole transaction thrown away.
+
+    The two transient errors this file handles are not equivalent, and
+    treating them as one budget (which _is_transient does, correctly, for the
+    question "is this worth retrying at all") is what made a real deadlock
+    take minutes to fail:
+
+    - A SQLite lock is pure contention. The transaction is intact; the other
+      writer finishes and the next attempt goes through. Retry in place is the
+      cure, and it gets the full budget.
+
+    - A Postgres deadlock means the server already ABORTED this transaction to
+      break a cycle. Retrying in place only works if the other side commits in
+      the meantime -- and when both transactions are long and hold overlapping
+      keys (two expansion workers inserting the same counterparts in different
+      orders), the retry re-takes the same locks and re-collides. Confirmed
+      against a real Postgres: all 5 in-place attempts deadlocked, every
+      round. With exponential backoff that is ~10s per row wasted, minutes
+      across a node, purely to arrive at the same failure.
+
+    So a deadlock gets one quick attempt (cheap, and it does sometimes win)
+    and is then propagated to whoever owns the transaction. That caller can
+    discard it and redo the work on a fresh session, which actually breaks the
+    cycle.
+    """
+    if _is_locked(exc):
+        return True
+    if _is_deadlock(exc):
+        return attempt < _DEADLOCK_INPLACE_RETRIES
+    return False
+
+
+def is_transient_db_error(exc: Exception) -> bool:
+    """Public form of _is_transient: is this a lock/deadlock worth redoing?
+
+    Exists for callers OUTSIDE this module that own a whole unit of work --
+    specifically expansion._process_one, which is the only level that can
+    actually recover from a Postgres deadlock. See _is_transient for what
+    counts, and expansion._process_one for why statement-level retries are
+    not enough.
+    """
+    return _is_transient(exc)
+
+
+def flush_in_savepoint(db: Session, mutate: Callable[[], None],
+                       _retries: int = 5) -> None:
+    """Apply `mutate` and flush it INSIDE a SAVEPOINT, retrying on a transient
+    lock/deadlock (see _is_transient).
+
+    Exists because of a specific, confirmed failure shape: `Session.begin_nested()`
+    flushes any PENDING state BEFORE it establishes the SAVEPOINT (SQLAlchemy's
+    SessionTransaction._take_snapshot), and it does so regardless of
+    autoflush=False. So an uncommitted ORM mutation left lying in the session
+    gets written by the NEXT unrelated savepoint entry -- and if that write hits
+    a lock, the savepoint never gets created, SQLAlchemy deactivates the
+    transaction, and every retry that follows dies instantly on
+    PendingRollbackError ("first issue Session.rollback()"). Worse, that error's
+    text embeds the original "database is locked", so _is_locked keeps calling
+    it transient and the caller burns its whole retry budget in milliseconds
+    before dropping the node. Observed live: a lock on _homonym_conflict's
+    leftover `people.metadata` UPDATE, flushed by _new_person_or_existing's
+    savepoint, silently dropped nodes from a /connect walk.
+
+    The cure is to never LEAVE a mutation pending. Applying it inside the
+    savepoint means a lock rolls back only to the savepoint -- the recoverable
+    shape that save_source and add_edge_from_extraction already survive
+    routinely -- instead of poisoning the whole session.
+
+    NOT a substitute for commit_with_retry: this leaves the change uncommitted
+    (flushed only), so it still belongs to the caller's transaction and is
+    still discarded if that transaction rolls back. That's deliberate -- these
+    are advisory writes that should follow the fate of the work around them.
+    """
+    for attempt in range(_retries + 1):
+        try:
+            with db.begin_nested():
+                mutate()
+                db.flush()
+            return
+        except (OperationalError, PendingRollbackError) as exc:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
+
+
 _T = TypeVar("_T")
 
 
@@ -348,7 +478,7 @@ def commit_with_retry(db: Session, apply: Optional[Callable[[], _T]] = None,
             return result
         except (OperationalError, PendingRollbackError) as exc:
             db.rollback()
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     return None  # unreachable (loop either returns or raises)
@@ -376,10 +506,70 @@ def delete_relationship_edges_with_retry(db: Session, condition, _retries: int =
                     synchronize_session=False)
             return result
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     return 0  # unreachable (loop either returns or raises), keeps type checkers happy
+
+
+def delete_node_with_retry(db: Session, obj, edge_condition, _retries: int = 3) -> bool:
+    """Delete every RelationshipEdge matching `edge_condition`, then `obj`
+    itself (an already-loaded Person or Organization instance) -- atomically,
+    one SAVEPOINT per attempt.
+
+    Closes a real race: the two /connect sides run concurrently, each in its
+    own Session, writing into the same shared graph. If side A decides a
+    node is junk and deletes its edges, then side B -- independently, at
+    that exact moment -- inserts a brand-new edge referencing that same
+    node, side A's subsequent `DELETE FROM organizations/people WHERE id=...`
+    now hits a live reference and Postgres's real FK constraint rejects it.
+    Confirmed live: a whole /connect job died to a ForeignKeyViolation this
+    way, over ONE contested organization. SQLite never even enforces this
+    constraint (PRAGMA foreign_keys is never turned on here -- see db.py),
+    so the exact same race was silently corrupting the graph there instead
+    of ever raising anything.
+
+    Deleting the edges and the node in the SAME savepoint (not two separate
+    statements/commits like the old code) means a retry redoes both: if a
+    fresh edge snuck in since the first attempt, this attempt's own
+    edge-delete clears it before the node-delete runs again.
+
+    Retried a FEW times, not indefinitely -- the race is a one-shot,
+    whichever concurrent hop just referenced this node moves on to a
+    different candidate next and won't keep re-inserting the same edge. If
+    every attempt still loses the race, the node is left alone for a future
+    prune pass rather than failing the whole job over one contested node --
+    see expansion._prune_invalid_nodes, which now deletes candidates ONE AT
+    A TIME instead of one batched statement covering all of them, so a
+    single contested node can no longer take a whole legitimate batch down
+    with it.
+
+    Takes the ORM object itself, not just its id: the delete below is a
+    Core-level bulk statement (synchronize_session=False, same choice
+    delete_relationship_edges_with_retry already makes) so it never updates
+    the session's identity map on its own -- without an explicit expunge on
+    success, `session.get(Person, this_id)` would keep returning this same
+    stale, already-deleted-in-the-database object for the rest of the
+    session's life, since Session.get() checks the identity map first and
+    never even reaches the database for an id it already has loaded.
+
+    Returns whether the node was actually deleted."""
+    model = type(obj)
+    node_id = obj.id
+    for attempt in range(_retries):
+        try:
+            with db.begin_nested():
+                db.query(RelationshipEdge).filter(edge_condition).delete(
+                    synchronize_session=False)
+                deleted = db.query(model).filter(model.id == node_id).delete(
+                    synchronize_session=False)
+            if deleted:
+                db.expunge(obj)
+            return bool(deleted)
+        except IntegrityError:
+            if attempt < _retries - 1:
+                _deadlock_backoff(attempt)
+    return False
 
 
 def _new_person_or_existing(db: Session, name: str, norm: str,
@@ -423,7 +613,7 @@ def _new_person_or_existing(db: Session, name: str, norm: str,
         _merge_aliases(existing, name)
         return existing
     except (OperationalError, PendingRollbackError) as exc:
-        if not _is_transient(exc) or _retries <= 0:
+        if not _should_retry_in_place(exc, 5 - _retries) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
         return _new_person_or_existing(db, name, norm, qid, _retries - 1)
@@ -503,7 +693,7 @@ def get_or_create_org(
         # deadlock between two DIFFERENT norm_names on the same index page
         # (a re-select can legitimately still miss, so retry the whole
         # attempt) or a SQLite lock timeout -- bounded either way.
-        if not _is_transient(exc) or _retries <= 0:
+        if not _should_retry_in_place(exc, 5 - _retries) or _retries <= 0:
             raise
         _deadlock_backoff(5 - _retries)
         return get_or_create_org(db, name, org_type, allow_create, _retries - 1)
@@ -568,7 +758,7 @@ def save_source(
                 db.flush()
             return source
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     raise AssertionError("unreachable")  # loop either returns or raises
@@ -689,7 +879,7 @@ def add_edge_from_extraction(
                 db.flush()
             return row
         except (OperationalError, PendingRollbackError) as exc:
-            if not _is_transient(exc) or attempt >= _retries:
+            if not _should_retry_in_place(exc, attempt) or attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     raise AssertionError("unreachable")  # loop either returns or raises
