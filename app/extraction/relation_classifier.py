@@ -15,6 +15,7 @@ it never asserts a path is real, only labels the documented co-mention.
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
 from .. import config
@@ -122,14 +123,12 @@ def classify(items: List[dict]) -> List[dict]:
         else:
             pending.append((idx, it))
 
-    for start in range(0, len(pending), config.CLAUDE_CLASSIFY_BATCH):
-        # See entity_filter.validate: an auth failure latches Claude off
-        # mid-run, and re-attempting every remaining batch just delays the
-        # fallback. Unvisited items keep their 'unknown' default.
-        if not claude_available():
-            break
-        chunk = pending[start:start + config.CLAUDE_CLASSIFY_BATCH]
-        verdicts = _ask([it for _idx, it in chunk])
+    chunks = [pending[start:start + config.CLAUDE_CLASSIFY_BATCH]
+             for start in range(0, len(pending), config.CLAUDE_CLASSIFY_BATCH)]
+    if not chunks:
+        return results
+
+    def _apply(chunk, verdicts: Dict[int, dict]) -> None:
         for n, (orig_idx, it) in enumerate(chunk, 1):
             v = verdicts.get(n)
             if v is None:
@@ -150,4 +149,24 @@ def classify(items: List[dict]) -> List[dict]:
             results[orig_idx] = out
             cache.set(_key(it["a"], it["b"], it["evidence"]), "relclassify", out,
                       config.CACHE_TTL_WIKI)
+
+    # See entity_filter.validate: the first chunk runs alone so a broken key
+    # costs exactly one wasted call (test_auth_failure_latches_claude_off),
+    # not one per chunk. Once it succeeds, the rest -- independent calls with
+    # no shared state -- run concurrently instead of being awaited one at a
+    # time.
+    first, rest = chunks[0], chunks[1:]
+    _apply(first, _ask([it for _idx, it in first]))
+    if not rest:
+        return results
+    if not claude_available():
+        return results
+
+    with ThreadPoolExecutor(max_workers=min(4, len(rest))) as ex:
+        futures = {ex.submit(_ask, [it for _idx, it in chunk]): chunk for chunk in rest}
+        for future in as_completed(futures):
+            chunk = futures[future]
+            if not claude_available():
+                continue
+            _apply(chunk, future.result())
     return results
