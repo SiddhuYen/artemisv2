@@ -193,6 +193,8 @@ def _migrate(bind) -> None:
         ("people", "wikidata_qid", "TEXT"),
         ("people", "processed", "INTEGER DEFAULT 0"),
         ("local_profiles", "connected_on", "TEXT"),
+        ("local_profiles", "reach_profile", "JSON"),
+        ("local_profiles", "owner_norm", "TEXT"),
         ("enrichment_tasks", "kind", "TEXT DEFAULT 'contact'"),
         ("enrichment_tasks", "silo_weights", "JSON"),
         ("relationship_edges", "verified_status", "TEXT"),

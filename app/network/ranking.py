@@ -41,6 +41,7 @@ that needs the network) is applied separately by the caller via
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
@@ -178,17 +179,79 @@ class ScoredContact:
     # so a /connect can explain WHICH of the operator's contacts it chose to
     # spend queries on and why, instead of surfacing an opaque reordering.
     bridge_reasons: List[str] = field(default_factory=list)
+    # From LocalProfile.reach_profile (extraction/contact_profiler): what a
+    # search for this name would return, and which world the row sits in.
+    # Carried here so the hop-0 prompt can state it as a fact rather than
+    # re-deriving it from the employer string.
+    footprint: Optional[str] = None
+    domain: Optional[str] = None
+    # Kept even when a measured footprint supersedes it for scoring: the
+    # company decay still needs to know who is most senior AT ONE EMPLOYER
+    # (see _apply_company_decay).
+    seniority: float = 0.0
+
+
+# An intern is not senior whatever else the title says. Without this, "CSP
+# Partner Marketing Intern" scored founder-tier off the word "partner".
+# \bintern\b deliberately does not match "internal".
+_INTERN_RE = re.compile(r"\bintern(ship)?\b")
+
+# Words that DEMOTE the level word after them. Their absence is why the
+# tier-2 "vice president" entry below was unreachable: tier 3 is checked
+# first and its bare "president" matched "vice president", so every VP
+# scored as a founder.
+_DEMOTING = ("vice", "deputy", "assistant", "associate", "interim", "former")
+
+
+_TIER_BELOW = {3.0: 2.0, 2.0: 1.0, 1.0: 0.0}
+
+
+def _match_kind(kw: str, blob: str, match) -> str:
+    """How to read this occurrence of `kw`: "level", "demoted", or "not_a_level".
+
+    The distinction matters because the two wrong readings are wrong in
+    different ways. A demoting prefix still describes a real job level, one
+    rung down -- a deputy director is senior, just not a director. An
+    attributive use describes nothing at all: "partner marketing" is a
+    department, and reading it as a rung would be inventing a level from a
+    word that never referred to one.
+
+    Every rule here comes from a live ranking where four student-club officers
+    outranked a company CTO:
+
+      "events chair", "corporate outreach chair" -- a committee role, not a
+        board chair. Bare `chair` matched all of them.
+      "partner marketing", "partner solutions" -- attributive. A real
+        partner's title ends there ("Partner", "General Partner"); it does
+        not continue into a noun.
+    """
+    before = blob[:match.start()].strip()
+    after = blob[match.end():]
+    if before and before.split()[-1] in _DEMOTING:
+        return "demoted"
+    if kw == "partner" and re.match(r"\s+\w", after):
+        return "not_a_level"
+    if kw == "chair" and before and not before.endswith("board"):
+        return "not_a_level"
+    return "level"
 
 
 def _title_score(titles: List[str]) -> float:
     blob = " ".join(normalize(t) for t in (titles or []) if t)
     if not blob:
         return 0.0
+    if _INTERN_RE.search(blob):
+        return 0.0
+    demoted = 0.0
     for weight, keywords in _SENIORITY_TIERS:
         for kw in keywords:
-            if re.search(rf"\b{re.escape(kw)}\b", blob):
-                return weight
-    return 0.0
+            for match in re.finditer(rf"\b{re.escape(kw)}\b", blob):
+                kind = _match_kind(kw, blob, match)
+                if kind == "level":
+                    return weight
+                if kind == "demoted":
+                    demoted = max(demoted, _TIER_BELOW[weight])
+    return demoted
 
 
 def _real_orgs(values: List[str]) -> List[str]:
@@ -259,11 +322,27 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
     reproduces the untargeted ranking exactly, which is what the cold-start
     batch run still wants.
     """
+    # Rank only THIS operator's contacts when we know which are theirs.
+    # local_profiles is shared, so without this an operator's bridge front is
+    # chosen from everyone's uploads -- which is how a ranking meant for one
+    # person's network spent this session surfacing another person's contacts.
+    #
+    # Falls back to the whole table when the owner has claimed nothing, rather
+    # than returning an empty plan: rows imported before owner_norm existed
+    # carry no owner, and silently planning zero contacts would look like "you
+    # have no network" instead of "these rows predate scoping". Unlike
+    # backfill_graph_edges, ranking asserts nothing about the world -- it only
+    # decides where to spend searches -- so degrading to the old behaviour here
+    # is safe in a way that bridging them would not be.
+    owner_norm = person_norm_key(owner_name) if owner_name else ""
     profiles = list(db.execute(select(LocalProfile)).scalars())
+    if owner_norm:
+        mine = [p for p in profiles if p.owner_norm == owner_norm]
+        if mine:
+            profiles = mine
     if not profiles:
         return []
 
-    owner_norm = person_norm_key(owner_name) if owner_name else ""
     owner_co = org_norm_key(owner_company) if owner_company else ""
     owner_sch = org_norm_key(owner_school) if owner_school else ""
 
@@ -298,7 +377,17 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
                 norm_name=norm, context="", score=0.0, skip_reason=reason))
             continue
 
-        score = _BASE + _title_score(profile.titles or [])
+        # A measured footprint REPLACES the title proxy rather than adding to
+        # it. _SENIORITY_TIERS exists only because "seniority is a proxy for
+        # web footprint" (rule 1 above); once the footprint itself has been
+        # judged, keeping the proxy would double-count the same signal and let
+        # a title regex keep overriding the measurement it stands in for.
+        reach = profile.reach_profile if isinstance(profile.reach_profile, dict) else None
+        footprint = (reach or {}).get("footprint")
+        if footprint in config.CONTACT_FOOTPRINT_SCORES:
+            score = _BASE + config.CONTACT_FOOTPRINT_SCORES[footprint]
+        else:
+            score = _BASE + _title_score(profile.titles or [])
         if norm in with_evidence:
             score += _HAS_PUBLIC_EDGES
         if owner_co and any(org_norm_key(c) == owner_co for c in companies):
@@ -340,9 +429,31 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
             local_profile_id=profile.id, display_name=profile.canonical_name,
             norm_name=norm, context=context, score=score,
             already_enriched=norm in processed, bridge_reasons=reasons,
-            silo_weights=weights))
+            silo_weights=weights, footprint=footprint,
+            domain=(reach or {}).get("domain"),
+            seniority=_title_score(profile.titles or [])))
 
     return _apply_company_decay(scored, target=target)
+
+
+def _tiebreak(contact: ScoredContact, target: Optional[BridgeTarget]) -> str:
+    """Stable, unbiased ordering WITHIN a score tie.
+
+    Breaking ties by name reads as harmless and is not. On a real 1,187-contact
+    export 175 contacts tied on one score, so the 15-contact shortlist handed to
+    hop-0 reasoning was simply the alphabetical HEAD of that band -- 12 of the
+    15 began with "A" -- and being alphabetical it was the same 12 for every
+    target, so ~160 equally-ranked contacts could never be considered for
+    anyone, ever. A tie means the ranking has no information to separate these
+    people; ordering them by an accident of spelling turns that absence of
+    information into a permanent, systematic exclusion.
+
+    Seeded with the target so different targets sample the tied band
+    differently, while the same target twice still plans identically -- which
+    is the determinism the name sort was there to provide.
+    """
+    seed = f"{contact.norm_name}|{target.name if target is not None else ''}"
+    return hashlib.sha1(seed.encode()).hexdigest()
 
 
 def _apply_company_decay(scored: List[ScoredContact],
@@ -363,20 +474,49 @@ def _apply_company_decay(scored: List[ScoredContact],
     """
     eligible = [c for c in scored if c.skip_reason is None]
     skipped = [c for c in scored if c.skip_reason is not None]
-    # deterministic: name breaks score ties so two runs plan identically
-    eligible.sort(key=lambda c: (-c.score, c.norm_name))
+    # deterministic, but NOT alphabetical -- see _tiebreak
+    eligible.sort(key=lambda c: (-c.score, _tiebreak(c, target)))
 
     exempt = target.orgs() if target is not None else set()
-    seen_per_org: Dict[str, int] = {}
+
+    # Group first, then damp by position WITHIN the employer. The decay asks
+    # "who is the one contact worth keeping undamped here", and that has to be
+    # answered by something about the people -- not by wherever they happened
+    # to land in a global sort.
+    #
+    # Confirmed live and badly: 14 contacts at one Oracle-consulting shop all
+    # scored identically (same footprint tier), so their order was decided by
+    # _tiebreak's hash -- and the compounding 0.6^n then buried that company's
+    # CEO at rank 1,429, below a VP who drew a luckier hash. A tie is harmless
+    # when it only decides display order; it is not harmless when a multiplier
+    # treats position as meaning.
+    #
+    # Seniority decides, and this is the one place the title regex is actually
+    # sound: it compares people AT THE SAME EMPLOYER, so the prestige confound
+    # that makes it wrong as a global signal (see contact_profiler) is held
+    # constant here.
+    #
+    # Seniority leads SCORE, which is the opposite of the global ordering and
+    # deliberately so. Score carries _HAS_PUBLIC_EDGES, and inside a single
+    # employer that signal measures which colleagues earlier runs happened to
+    # discover -- an accident of this graph's history, not of who is the better
+    # way in. Letting it lead put a company's CEO five places behind its own
+    # VPs purely because they had been searched before and he had not, which
+    # also inverts the coverage argument: the unexplored senior contact is the
+    # one whose expansion opens new territory.
+    by_org: Dict[str, List[ScoredContact]] = {}
     for contact in eligible:
         key = org_norm_key(contact.context)
         if key in exempt:
             continue
-        n = seen_per_org.get(key, 0)
-        contact.score = round(contact.score * (_COMPANY_DECAY ** n), 4)
-        seen_per_org[key] = n + 1
+        by_org.setdefault(key, []).append(contact)
 
-    eligible.sort(key=lambda c: (-c.score, c.norm_name))
+    for members in by_org.values():
+        members.sort(key=lambda c: (-c.seniority, -c.score, _tiebreak(c, target)))
+        for n, contact in enumerate(members):
+            contact.score = round(contact.score * (_COMPANY_DECAY ** n), 4)
+
+    eligible.sort(key=lambda c: (-c.score, _tiebreak(c, target)))
     skipped.sort(key=lambda c: c.norm_name)
     return eligible + skipped
 

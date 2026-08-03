@@ -297,6 +297,28 @@ def test_overlapping_windows_merge_into_one_segment(monkeypatch):
     assert subject_windows._ELISION not in out.text
 
 
+def test_a_long_chain_of_close_anchors_is_capped_not_merged_unboundedly(monkeypatch):
+    """A repeating byline on a listing/archive page ('Posted on ... Charlie
+    Warren Categories ...') anchors a window every few sentences. Each one
+    overlaps the next, so the merge loop used to chain all of them into one
+    unbounded span covering nearly the whole page -- including whatever
+    unrelated teaser text for OTHER articles sat between two bylines, with no
+    elision marker to flag the seam. That is exactly how a bio-archive page
+    for an unrelated 'Charlie Warren' produced a fabricated 'author' edge to
+    Elon Musk: his name just happened to sit in a teaser between two bylines.
+    SUBJECT_WINDOW_MAX_MERGED_SENTENCES bounds the chain instead."""
+    monkeypatch.setattr(config, "SUBJECT_WINDOW_SENTENCES", 1)
+    monkeypatch.setattr(config, "SUBJECT_WINDOW_MAX_MERGED_SENTENCES", 6)
+    blocks = []
+    for i in range(12):
+        blocks.append(f"Sandra Whitfield wrote article number {i}.")
+        blocks.append(f"Unrelated filler line {i}.")
+    page = _page(*blocks)
+    out = focus("Sandra Whitfield", page)
+    assert out.segments > 1
+    assert subject_windows._ELISION in out.text
+
+
 def test_distant_windows_stay_separate_and_are_marked_as_elided(monkeypatch):
     monkeypatch.setattr(config, "SUBJECT_WINDOW_SENTENCES", 1)
     middle = " ".join(f"Filler sentence number {i}." for i in range(20))

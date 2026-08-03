@@ -171,6 +171,15 @@ class LocalProfile(Base):
     notes = Column(Text, nullable=True)
     raw_row = Column(JSON, default=dict)
     connected_on = Column(String, nullable=True)  # from the CSV's "Connected On" column, if present
+    # {footprint, domain, why} from extraction/contact_profiler -- a judgment
+    # about THIS ROW, made once and reused by every /connect that ranks it.
+    reach_profile = Column(JSON, nullable=True)
+    # person_norm_key of whoever uploaded this row. Contacts from several
+    # people share one table, and without this nothing records WHOSE they are
+    # -- network.ingest.backfill_graph_edges then asserts that every row in it
+    # is a first-degree tie of whoever ran it. NULL = imported before this
+    # existed; see that function for why it is excluded rather than shared.
+    owner_norm = Column(String, index=True, nullable=True)
     created_at = Column(String, default=lambda: _now().isoformat())
 
 

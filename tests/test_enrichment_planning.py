@@ -179,13 +179,22 @@ def test_second_contact_at_the_same_employer_is_damped(db):
         {"name": "Dd Solo", "company": "Tinyco"},
     ))
     order = _order(score_contacts(db))
-    # one Megacorp contact leads, but the sole Tinyco contact beats the rest
-    assert order[0] == "Aa One"
+    megacorp = {"Aa One", "Bb Two", "Cc Three"}
+    # One Megacorp contact leads, but the sole Tinyco contact beats the rest.
+    # WHICH Megacorp contact leads is deliberately not asserted: all three tie
+    # before the decay runs, and pinning one of them only ever tested the
+    # tie-break's alphabetical accident (see ranking._tiebreak for why that
+    # ordering had to go).
+    assert order[0] in megacorp
     assert order[1] == "Dd Solo"
+    assert set(order[2:]) == megacorp - {order[0]}
 
     scored = _by_name(score_contacts(db))
-    assert scored["Bb Two"].score < scored["Aa One"].score
-    assert scored["Cc Three"].score < scored["Bb Two"].score
+    damped = sorted((scored[n].score for n in megacorp), reverse=True)
+    assert damped[0] > damped[1] > damped[2], \
+        "each additional contact at one employer must be damped further"
+    assert scored["Dd Solo"].score > damped[1], \
+        "the sole contact at another employer outranks the damped ones"
 
 
 def test_ranking_is_deterministic_across_runs(db):
