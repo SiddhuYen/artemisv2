@@ -322,6 +322,40 @@ body {
 .hv-boot-line { opacity: 0; animation: hvBootIn .3s ease forwards; }
 @keyframes hvBootIn { from{opacity:0;transform:translateX(-5px)} to{opacity:1;transform:none} }
 
+
+/* ── IDENTITY GATE ──
+   Blocking, and deliberately unskippable. Artemis's whole value is routing
+   THROUGH the operator's own network, and the only thing tying an uploaded
+   contact list to the person asking is this name: graph/connect._origin_is_operator
+   compares it to /connect's person_a, and a mismatch silently skips the
+   first-degree bridge to every contact they own. The old default ("OPERATOR")
+   could never match a real person, so an operator who never opened the rename
+   prompt got their own contacts ignored on every route, with nothing on screen
+   saying so. z-index above the network gate (210): identity is asked first,
+   because the upload it gates is attributed using this answer. */
+#hvIdent { position:fixed;inset:0;z-index:220;display:none;place-items:center;
+  background:oklch(0.06 0.02 22/0.92);backdrop-filter:blur(4px);padding:20px;
+  font-family:"Share Tech Mono","JetBrains Mono",monospace; }
+#hvIdent.open { display:grid; }
+#hvIdentPanel { width:520px;max-width:100%;position:relative;
+  background:linear-gradient(180deg,oklch(0.185 0.016 22),oklch(0.13 0.012 22));
+  border:1px solid oklch(0.635 0.205 22);
+  box-shadow:0 30px 80px oklch(0 0 0/0.6),inset 0 0 40px oklch(0.635 0.205 22/0.06);
+  padding:28px; }
+#hvIdent .hg-lbl { font-size:10px;letter-spacing:0.3em;color:var(--ink-mute);margin-bottom:4px; }
+#hvIdent h3 { font-family:"Rajdhani","Share Tech Mono",sans-serif;font-weight:700;
+  font-size:22px;letter-spacing:0.06em;margin:0 0 14px;color:var(--accent-bright);
+  text-shadow:0 0 14px var(--accent-glow); }
+#hvIdentIn { width:100%;box-sizing:border-box;background:oklch(0.10 0.012 22);
+  border:1px solid var(--accent-line);color:var(--ink);padding:12px 14px;
+  font-family:inherit;font-size:15px;letter-spacing:0.04em;margin-bottom:6px; }
+#hvIdentIn:focus { outline:none;border-color:var(--accent);
+  box-shadow:inset 0 0 18px var(--accent-wash); }
+#hvIdentErr { font-size:11px;color:var(--accent-bright);min-height:15px;margin-bottom:10px; }
+#hvIdentGo { width:100%;background:var(--accent);color:oklch(0.10 0.02 22);border:none;
+  padding:12px;font-family:inherit;font-size:13px;letter-spacing:0.18em;cursor:pointer; }
+#hvIdentGo:hover { background:var(--accent-bright); }
+
 /* ── NETWORK GATE ──
    Shown once after boot when the operator has no contacts loaded. Artemis
    routes THROUGH your own network: with zero contacts every path it finds
@@ -1938,6 +1972,28 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
 </div>
 
 <!-- ═══════════════════ NETWORK GATE ═══════════════════ -->
+<div id="hvIdent">
+  <div id="hvIdentPanel">
+    <span class="art-br tl"></span><span class="art-br tr"></span>
+    <span class="art-br bl"></span><span class="art-br br2"></span>
+    <div class="hg-lbl">// IDENTIFY YOURSELF</div>
+    <h3>WHAT IS YOUR FULL NAME?</h3>
+    <div class="hg-warn">
+      Artemis routes <b>through the people you know</b>. This name is what ties
+      your uploaded connections to you — it has to match the name you search
+      <i>from</i>, so use the one on your LinkedIn (<b>first and last</b>).
+      <br><br>
+      Get it wrong and Artemis treats your own contacts as somebody else's and
+      skips them entirely.
+    </div>
+    <input id="hvIdentIn" type="text" placeholder="e.g. Abhimanyu Sharma"
+           autocomplete="name" spellcheck="false"
+           onkeydown="if(event.key==='Enter')submitIdentity()">
+    <div id="hvIdentErr"></div>
+    <button id="hvIdentGo" onclick="submitIdentity()">CONFIRM IDENTITY</button>
+  </div>
+</div>
+
 <div id="hvGate">
   <div id="hvGatePanel">
     <span class="art-br tl"></span><span class="art-br tr"></span>
@@ -2262,6 +2318,6 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
   </div>
 </div>
 
-<script src="app.js?v=20260803d"></script>
+<script src="app.js?v=20260803e"></script>
 </body>
 </html>

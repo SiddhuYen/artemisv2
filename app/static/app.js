@@ -29,7 +29,17 @@ const API_HEADERS = { 'Content-Type': 'application/json', 'X-Graph-Id': GRAPH_ID
   };
 })();
 
-function operatorName() { return localStorage.getItem('artemis_operator_name') || 'OPERATOR'; }
+// 'OPERATOR' is the legacy default and is treated as UNSET, not as a name. It
+// can never match a real person, so every place that compares the operator to
+// a searched name (graph/connect._origin_is_operator) silently failed for
+// anyone who never opened the rename prompt -- their own contacts were skipped
+// on every route with nothing on screen saying so. See #hvIdent.
+const OPERATOR_UNSET = 'OPERATOR';
+function operatorName() { return localStorage.getItem('artemis_operator_name') || OPERATOR_UNSET; }
+function hasOperatorName() {
+  const n = (localStorage.getItem('artemis_operator_name') || '').trim();
+  return !!n && n.toUpperCase() !== OPERATOR_UNSET;
+}
 function setOperatorName(name) {
   localStorage.setItem('artemis_operator_name', name);
   ['hvBadge','ctBadge','drBadge'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent = name.slice(0,2).toUpperCase(); });
@@ -2563,7 +2573,7 @@ async function execBoardRoute() {
       // as the import paths above: 'OPERATOR' is the placeholder, not a name.
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
                              context_a: contextA, context_b: contextB,
-                             ...(operatorName() !== 'OPERATOR'
+                             ...(hasOperatorName()
                                  ? { owner_name: operatorName() } : {}) }) })).json();
     if (started.detail) throw new Error(started.detail);
     if (runSeq !== _bvrRunSeq) return;
@@ -2822,7 +2832,7 @@ async function confirmLinkedInImport() {
     // /discover can route through it. Skipped for the default placeholder
     // name so an operator who never renamed themselves doesn't create a
     // garbage "OPERATOR" node in the shared graph.
-    if (operatorName() !== 'OPERATOR') fd.append('owner_name', operatorName());
+    if (hasOperatorName()) fd.append('owner_name', operatorName());
     const res = await fetch('/network/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -3088,7 +3098,7 @@ async function confirmVcfImport() {
         // Same bridge the CSV path does (see confirmLinkedInImport): without
         // owner_name these contacts land in LocalProfile only and stay
         // invisible to /connect and /discover.
-        ...(operatorName() !== 'OPERATOR' ? { owner_name: operatorName() } : {}),
+        ...(hasOperatorName() ? { owner_name: operatorName() } : {}),
       })
     });
     if (!res.ok) throw new Error(await res.text());
@@ -3216,6 +3226,42 @@ async function checkProviderStatus() {
 // ══════════════════════════════════════════════════════
 const BOOT_SPLASH_MS = 2100;   // #hvBoot: 1.6s hold + 0.5s fade (see index.html)
 
+// Blocking identity gate. Runs BEFORE the network gate because the upload that
+// gate asks for is attributed using this answer -- ingest stamps
+// local_profiles.owner_norm from it, and that stamp is what later proves the
+// contacts are yours.
+function maybeShowIdentityGate() {
+  if (hasOperatorName()) return false;
+  const gate = document.getElementById('hvIdent');
+  if (!gate) return false;
+  gate.classList.add('open');
+  setTimeout(() => document.getElementById('hvIdentIn')?.focus(), 60);
+  return true;
+}
+
+function submitIdentity() {
+  const el = document.getElementById('hvIdentIn');
+  const err = document.getElementById('hvIdentErr');
+  const name = (el?.value || '').trim().replace(/\s+/g, ' ');
+  // Two words minimum: a first name alone cannot be matched against the full
+  // name a person searches from, which is the entire point of asking.
+  if (name.split(' ').filter(Boolean).length < 2) {
+    if (err) err.textContent = 'Enter your first AND last name — a single name cannot be matched.';
+    el?.focus();
+    return;
+  }
+  if (name.toUpperCase() === OPERATOR_UNSET) {
+    if (err) err.textContent = 'That is the placeholder, not a name.';
+    el?.focus();
+    return;
+  }
+  if (err) err.textContent = '';
+  setOperatorName(name);
+  document.getElementById('hvIdent')?.classList.remove('open');
+  // Only now is the network question worth asking.
+  maybeShowNetworkGate();
+}
+
 function maybeShowNetworkGate() {
   if (db.contacts.length) return;          // already has a network — nothing to warn about
   document.getElementById('hvGate')?.classList.add('open');
@@ -3306,5 +3352,9 @@ async function backfillOwnerGraphEdgesOnce() {
   backfillOwnerGraphEdgesOnce();
   // Wait out whatever is left of the splash. Loading usually finishes first,
   // and showing the gate early would stack it on top of the boot animation.
-  setTimeout(maybeShowNetworkGate, Math.max(0, BOOT_SPLASH_MS - (Date.now() - started)));
+  setTimeout(() => {
+    // Identity first -- submitIdentity() chains to the network gate, so the two
+    // are never stacked on top of each other.
+    if (!maybeShowIdentityGate()) maybeShowNetworkGate();
+  }, Math.max(0, BOOT_SPLASH_MS - (Date.now() - started)));
 })();
