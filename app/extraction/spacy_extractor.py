@@ -11,6 +11,7 @@ heuristic extractor.
 """
 from __future__ import annotations
 
+import re
 import threading
 from collections import Counter
 from typing import Optional
@@ -81,6 +82,24 @@ def sentence_split(text: str) -> Optional[list]:
         return None
     doc = _nlp(text[: config.MAX_PAGE_CHARS])
     return [s.text.strip() for s in doc.sents if s.text.strip()]
+
+
+_REGEX_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+
+
+def split_sentences(text: str) -> list:
+    """Sentence segmentation that always returns something usable.
+
+    sentence_split() above returns None when spaCy isn't installed so callers
+    can tell "no sentences" from "fall back to a cruder splitter". This is that
+    fallback applied: spaCy when available, the regex otherwise. Callers that
+    only need sentences (and have no smarter fallback of their own) should use
+    this rather than re-deriving the same two-step everywhere.
+    """
+    spacy_sentences = sentence_split(text)
+    if spacy_sentences is not None:
+        return spacy_sentences
+    return [s.strip() for s in _REGEX_SENTENCE_SPLIT.split(text) if s.strip()]
 
 
 def _clean(text: str) -> str:

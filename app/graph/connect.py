@@ -26,7 +26,7 @@ from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Person, RelationshipEdge, Source
 from ..silos import COLLEAGUE_SILO
 from ..utils.htmltext import html_to_text
-from ..utils.names import person_norm_key
+from ..utils.names import mention_patterns, person_norm_key
 from . import builder
 from .expansion import ORCH, expand_graph
 
@@ -450,7 +450,6 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
         return {side: f.result() for side, f in futures.items()}
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
 _WIKIPEDIA_TITLE_RE = re.compile(r"wikipedia\.org/wiki/([^?#]+)")
 
 
@@ -460,11 +459,12 @@ def _split_sentences(text: str) -> List[str]:
     into two fragments and silently pushing two co-mentioned names further
     apart than they really are in the text -- this is what originally hid
     the Redfield/Trump appointment sentence from even a 2-sentence window).
-    Falls back to the regex splitter only when spaCy isn't installed."""
-    spacy_sentences = spacy_extractor.sentence_split(text)
-    if spacy_sentences is not None:
-        return spacy_sentences
-    return [s.strip() for s in _SENTENCE_SPLIT.split(text) if s.strip()]
+    Falls back to the regex splitter only when spaCy isn't installed.
+
+    Delegates to spacy_extractor.split_sentences, which is the same two-step
+    shared with extraction.subject_windows -- kept as a local alias because
+    this name is what the rest of this module (and its tests) reach for."""
+    return spacy_extractor.split_sentences(text)
 
 
 def _sentence_windows(sentences: List[str], window: int = 2) -> List[str]:
@@ -478,24 +478,6 @@ def _sentence_windows(sentences: List[str], window: int = 2) -> List[str]:
     catches this without needing real coreference resolution.
     """
     return [" ".join(sentences[i:i + window]) for i in range(len(sentences))]
-
-
-# Titles/honorifics that commonly stand in for a first name right before a
-# surname ("President Trump", "Dr. Redfield") -- these must NOT trip the
-# same-surname conflict check in _name_mention_pattern, since they still
-# refer to the one person being searched for, not a different same-surname
-# relative. Deliberately common/generic, not exhaustive.
-_TITLE_WORDS = {
-    "President", "Vice", "Senator", "Governor", "Mayor", "Secretary",
-    "Director", "Chairman", "Chairwoman", "Chair", "Judge", "Justice",
-    "General", "Admiral", "Colonel", "Captain", "Sergeant", "Officer",
-    "Doctor", "Dr", "Professor", "Prof", "Mr", "Mrs", "Ms", "Miss",
-    "Representative", "Congressman", "Congresswoman", "Ambassador",
-    "Minister", "Prime", "King", "Queen", "Prince", "Princess", "Sir",
-    "Dame", "Lord", "Lady", "Reverend", "Rev", "Father", "Sister", "Pastor",
-    "Bishop", "Rabbi", "Imam", "CEO", "CFO", "COO", "Coach", "Agent",
-    "Detective", "Lieutenant", "Commissioner", "Superintendent",
-}
 
 
 def _name_mention_pattern(name: str, other_name: str = "") -> Tuple[re.Pattern, Optional[re.Pattern]]:
@@ -531,23 +513,13 @@ def _name_mention_pattern(name: str, other_name: str = "") -> Tuple[re.Pattern, 
     would misfire the conflict check as if it named some unrelated third
     Smith, dropping every window that states the very relationship being
     searched for.
+
+    Delegates to utils.names.mention_patterns, which is where this moved so
+    extraction.subject_windows could ask the same question -- kept as a local
+    alias because this name is what the rest of this module (and its tests)
+    reach for.
     """
-    tokens = name.split()
-    surname = tokens[-1] if tokens else name
-    firstname = tokens[0] if len(tokens) > 1 else None
-    other_tokens = other_name.split()
-    other_firstname = other_tokens[0] if len(other_tokens) > 1 else None
-    alts = sorted({re.escape(name), re.escape(surname)}, key=len, reverse=True)
-    mention = re.compile(r"\b(" + "|".join(alts) + r")\b", re.IGNORECASE)
-    conflict = None
-    if firstname:
-        excluded_words = [firstname] + list(_TITLE_WORDS)
-        if other_firstname:
-            excluded_words.append(other_firstname)
-        excluded = "|".join(re.escape(w) for w in excluded_words)
-        conflict = re.compile(
-            r"\b(?!(?:" + excluded + r")\b)[A-Z][a-zA-Z'-]+\s+" + re.escape(surname) + r"\b")
-    return mention, conflict
+    return mention_patterns(name, other_name)
 
 
 def _wikipedia_title_from_url(url: str) -> Optional[str]:

@@ -4,6 +4,12 @@ Asks Claude for the named entities and subject-anchored relationships in one
 scraped page. Anything that fails (no key, timeout, refusal) returns None so
 the caller transparently falls back to the spaCy/heuristic extractor.
 
+What actually gets sent is the subject-relevant passages, not the whole page
+(see subject_windows) -- a search result is mostly about other people, and this
+stage is billed per character of it. What gets sent is also paid for once per
+(model, subject, text) rather than once per (query, result, silo) tuple (see
+_extract_verdict).
+
 Emits the same ExtractionOutput contract as the heuristic extractor, with the
 confidence model applied identically (silo multiplier × keyword strength,
 evidence-rule ceilings) — the extractor decides WHAT was found, never how much
@@ -19,6 +25,7 @@ from typing import Optional
 
 from .. import config
 from ..utils.names import detect_org_type, normalize
+from . import subject_windows
 from .claude_client import claude_available, call_json
 from .confidence import (
     classify_with_signal,
@@ -90,12 +97,30 @@ _SCHEMA = {
 # the same way relation_classifier's own "v2" key segment solves it.
 _CACHE_VERSION = "v1"
 
+# What the gate records for a page with no subject-relevant passage: a real
+# "found nothing here" verdict, in the shape _SCHEMA guarantees, so the edge
+# loop below walks three empty lists and returns an empty ExtractionOutput.
+_EMPTY_VERDICT = {"people": [], "organizations": [], "relationships": []}
+
+
+# A verdict is now the answer for the NARROWED text, so anything that changes
+# what narrowing selects changes the answer. Folding the window settings into
+# the key means flipping ARTEMIS_SUBJECT_WINDOW off (or widening the window)
+# re-asks instead of serving a verdict formed from a different slice of the
+# page -- including the "nothing here" verdicts the gate writes.
+def _window_signature() -> str:
+    if not config.SUBJECT_WINDOW_ENABLED:
+        return "win:off"
+    return "win:{}:{}:{}".format(config.SUBJECT_WINDOW_SENTENCES,
+                                 config.SUBJECT_WINDOW_MIN_CHARS,
+                                 config.SUBJECT_WINDOW_PRONOUN_LOOKBACK)
+
 
 def _verdict_key(subject: str, body: str, model: str) -> str:
     from ..providers import cache
 
     h = hashlib.sha1(
-        "{}||{}||{}".format(model, subject, body).encode("utf-8")
+        "{}||{}||{}||{}".format(model, _window_signature(), subject, body).encode("utf-8")
     ).hexdigest()[:24]
     return cache.make_key("claudeextract", _CACHE_VERSION, h)
 
@@ -120,6 +145,14 @@ def _extract_verdict(subject_person: str, body: str) -> Optional[dict]:
     The model is part of the key: CLAUDE_EXTRACT_MODEL is a knob (a cheaper
     model is the obvious lever once this stage is the budget), and verdicts
     from the previous one must not be served after it changes.
+
+    Keyed on the WHOLE page, though only the narrowed passages are sent. The
+    page is the identity of the question; narrowing is a deterministic function
+    of it (and of the settings folded into the key by _window_signature). That
+    ordering is deliberate -- subject_windows.focus runs a spaCy parse over the
+    full text, so doing it before the lookup would re-parse 20k characters for
+    every duplicate tuple whose answer is already cached, and re-parse forever
+    for pages the gate rejects.
     """
     # Imported inside the function, not at module scope, because
     # extraction/__init__ imports THIS module at package load while
@@ -133,8 +166,20 @@ def _extract_verdict(subject_person: str, body: str) -> Optional[dict]:
     hit = cache.get(key, track=False)
     if hit is not None:
         return hit
+
+    # Send the passages about this subject, not the whole page. An empty focus
+    # means nothing on the page names the subject or refers to them by a
+    # resolvable pronoun, so there is no question worth paying to ask. That
+    # emptiness is a real verdict about the page, not a failure, so it is
+    # cached like any other -- otherwise every duplicate tuple would re-parse
+    # the page only to reach the same conclusion.
+    focused = subject_windows.focus(subject_person, body)
+    if focused.empty:
+        cache.set(key, "claudeextract", _EMPTY_VERDICT, config.CACHE_TTL_PAGE)
+        return dict(_EMPTY_VERDICT)
+
     verdict = call_json(
-        _PROMPT_TEMPLATE.format(subject=subject_person, text=body),
+        _PROMPT_TEMPLATE.format(subject=subject_person, text=focused.text),
         schema=_SCHEMA,
         model=config.CLAUDE_EXTRACT_MODEL,
         max_tokens=8192,
@@ -155,6 +200,12 @@ def claude_extract(
 ) -> Optional[ExtractionOutput]:
     if not text:
         return ExtractionOutput(extractor="claude")
+    # An all-empty verdict (a page the gate rejected, or one the model read and
+    # found nothing in) yields an empty ExtractionOutput rather than None. That
+    # distinction matters to extract(): None means "the call failed, fall back
+    # to spaCy", and re-running the deterministic extractor over a page with no
+    # subject mention would reach the same nothing through its own proximity
+    # gate, having parsed the page a second time to get there.
     payload = _extract_verdict(subject_person, text[: config.MAX_PAGE_CHARS])
     if payload is None:
         return None

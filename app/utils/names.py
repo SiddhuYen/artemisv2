@@ -339,3 +339,75 @@ def looks_like_org_name(name: str) -> bool:
     """True if any token matches a known org suffix."""
     parts = normalize(name).split()
     return any(p in ORG_SUFFIXES for p in parts)
+
+
+# Titles/honorifics that commonly stand in for a first name right before a
+# surname ("President Trump", "Dr. Redfield") -- these must NOT trip the
+# same-surname conflict check in mention_patterns, since they still refer to
+# the one person being searched for, not a different same-surname relative.
+# Deliberately common/generic, not exhaustive.
+TITLE_WORDS = {
+    "President", "Vice", "Senator", "Governor", "Mayor", "Secretary",
+    "Director", "Chairman", "Chairwoman", "Chair", "Judge", "Justice",
+    "General", "Admiral", "Colonel", "Captain", "Sergeant", "Officer",
+    "Doctor", "Dr", "Professor", "Prof", "Mr", "Mrs", "Ms", "Miss",
+    "Representative", "Congressman", "Congresswoman", "Ambassador",
+    "Minister", "Prime", "King", "Queen", "Prince", "Princess", "Sir",
+    "Dame", "Lord", "Lady", "Reverend", "Rev", "Father", "Sister", "Pastor",
+    "Bishop", "Rabbi", "Imam", "CEO", "CFO", "COO", "Coach", "Agent",
+    "Detective", "Lieutenant", "Commissioner", "Superintendent",
+}
+
+
+def mention_patterns(name: str, other_name: str = ""):
+    """Returns (mention_pattern, conflict_pattern) for finding `name` in prose.
+
+    mention_pattern matches either the full name or just its last token
+    (surname) -- real prose re-mentions someone by surname alone after the
+    first full mention ("Redfield" / "Trump", never "Robert R Redfield"
+    again), and requiring the exact full name every time would miss almost
+    every real sentence, including the one that actually states the
+    relationship (a Wikipedia article body uses surnames throughout: "He was
+    appointed to the post by President Donald Trump...").
+
+    But a bare surname is genuinely ambiguous for anyone who shares it with
+    someone else notable -- scanning a WHOLE article for "Trump" also matches
+    "Ivanka Trump", "Trump Tower", "Fred Trump", none of which are Donald
+    Trump. conflict_pattern matches a DIFFERENT full name sharing the same
+    surname (a capitalized word immediately before it that isn't this person's
+    own first name AND isn't a title/honorific like "President" -- "President
+    Trump" is the same Donald Trump, not a different person); text matching
+    that should be treated as probably about someone else, not silently
+    trusted as a mention of this person. None when the name has no first name
+    to compare against (a mononym), since there's nothing to distinguish it
+    from in that case.
+
+    other_name is a counterpart being searched for alongside this one (e.g.
+    name_b, when this is name_a's pattern). Its first name is excluded from
+    the conflict check too -- otherwise, whenever the two people share a
+    surname (spouses, siblings, parent/child), the counterpart's own full-name
+    mention ("Jane Smith" while building John Smith's pattern) would misfire
+    the conflict check as if it named some unrelated third Smith, dropping
+    every window that states the very relationship being searched for.
+
+    Lives here rather than in its one original caller (graph.connect) because
+    subject-window narrowing needs the identical question answered -- "is this
+    span of prose about this person" -- and two implementations of that would
+    drift.
+    """
+    tokens = name.split()
+    surname = tokens[-1] if tokens else name
+    firstname = tokens[0] if len(tokens) > 1 else None
+    other_tokens = other_name.split()
+    other_firstname = other_tokens[0] if len(other_tokens) > 1 else None
+    alts = sorted({re.escape(name), re.escape(surname)}, key=len, reverse=True)
+    mention = re.compile(r"\b(" + "|".join(alts) + r")\b", re.IGNORECASE)
+    conflict = None
+    if firstname:
+        excluded_words = [firstname] + list(TITLE_WORDS)
+        if other_firstname:
+            excluded_words.append(other_firstname)
+        excluded = "|".join(re.escape(w) for w in excluded_words)
+        conflict = re.compile(
+            r"\b(?!(?:" + excluded + r")\b)[A-Z][a-zA-Z'-]+\s+" + re.escape(surname) + r"\b")
+    return mention, conflict
