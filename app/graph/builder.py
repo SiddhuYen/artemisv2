@@ -20,6 +20,7 @@ from typing import Callable, Optional, TypeVar
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError, PendingRollbackError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from .. import config
 from ..extraction import tier
@@ -349,6 +350,23 @@ def commit_with_retry(db: Session, apply: Optional[Callable[[], _T]] = None,
         except (OperationalError, PendingRollbackError) as exc:
             db.rollback()
             if not _is_transient(exc) or attempt >= _retries:
+                raise
+            _deadlock_backoff(attempt)
+        except StaleDataError:
+            # A row `apply` mutated was deleted by a concurrent writer between
+            # when it was loaded and when this flush ran -- confirmed live,
+            # two /connect builds racing on overlapping graph data: one's
+            # junk-node prune deleted an edge the other's
+            # expansion._retype_unknown_edges had already loaded and was
+            # about to retype. Not a lock or a deadlock (the transaction is
+            # fine; the DATA changed), so this isn't _should_retry_in_place's
+            # call to make -- it always gets a fresh attempt. Only safe
+            # because `apply` re-verifies what it's mutating still exists
+            # each time it runs (see _retype_unknown_edges._apply) rather
+            # than blindly re-touching the now-gone row and failing the same
+            # way again.
+            db.rollback()
+            if attempt >= _retries:
                 raise
             _deadlock_backoff(attempt)
     return None  # unreachable (loop either returns or raises)

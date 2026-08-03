@@ -1050,6 +1050,13 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
     visited_by_hop: Dict[int, List[str]] = {}  # hop -> node names selected for it
+    # Declared here, not inside the hop loop below: should_stop can trip on
+    # hop 0 before the loop body ever runs (a real race in connect_people's
+    # concurrent two-sided expansion -- the other endpoint's search can find
+    # the route first), and the post-loop boundary computation reads `disc`
+    # unconditionally. Left unassigned by any hop, it's just the empty dict
+    # the first hop would have started from anyway.
+    disc: Dict[str, _Candidate] = {}
     # Alpha step 7 (per-candidate depth): a node selected for the Alpha
     # frontier that turns out to be independently notable/famous relative to
     # the target gets fully processed and persisted (its own "1 hop"), but
@@ -1303,8 +1310,23 @@ def _retype_unknown_edges(db: Session, progress=None) -> int:
     # loop on each attempt is what makes the retry actually retype the edges
     # instead of quietly doing nothing.
     def _apply() -> int:
+        # Re-check existence on EVERY call, including the first: `eligible`
+        # was loaded before the (slow, network-bound) Claude classify() call
+        # above, so a concurrent writer -- another /connect build pruning a
+        # junk node, most likely -- has had a real window to delete one of
+        # these same rows by the time this runs. Skipping it here is what
+        # keeps the commit's matched-row count honest; without this check
+        # the flush below raises StaleDataError (SQLAlchemy detected the
+        # mismatch itself), and retrying would just re-attempt the identical
+        # mutation on the same now-gone row and fail the same way again.
+        still_present = set(db.execute(
+            select(RelationshipEdge.id).where(
+                RelationshipEdge.id.in_([e.id for e in eligible]))
+        ).scalars())
         updated = 0
         for e, v in zip(eligible, verdicts):
+            if e.id not in still_present:
+                continue
             rtype, conf = v.get("type", "unknown"), v.get("confidence", 0.0)
             if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
                 new_conf = round(min(conf, config.RELATION_CONF_CEILING), 3)

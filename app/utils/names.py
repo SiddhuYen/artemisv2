@@ -190,6 +190,16 @@ def is_noise_name(name: str) -> bool:
     # names never contain a spaced separator (hyphenated surnames have no spaces).
     if any(sep in raw for sep in (" - ", " | ", " – ", " — ", " · ", " • ", "•", "::")):
         return True
+    # Multi-word ALL CAPS: a section header or status message run together
+    # with real text on the same line, not a name -- e.g. "RESEARCH STARTER
+    # Larry Ellison" on a biography page yielded "RESEARCH STARTER" as a
+    # second person, with a fabricated relationship to whoever the bio was
+    # actually about. Same rule providers/rosters.py's is_org_chart_label
+    # already applies to roster pages; general prose extraction had no
+    # equivalent guard.
+    words = raw.split()
+    if len(words) > 1 and raw == raw.upper() and any(c.isalpha() for c in raw):
+        return True
     norm = normalize(name)
     if not norm:
         return True
