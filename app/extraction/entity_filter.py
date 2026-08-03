@@ -15,6 +15,7 @@ validates entity-hood.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Set
 
 from .. import config
@@ -119,16 +120,12 @@ def validate(names: List[str], kind: str = "person") -> Set[str]:
         else:
             pending.append(n)
 
-    for i in range(0, len(pending), config.CLAUDE_FILTER_BATCH):
-        # Re-checked per batch, not just once up front: an auth failure latches
-        # Claude off mid-run, and without this the remaining batches would each
-        # re-attempt and re-fail. Whatever is left is kept (the same
-        # conservative default as a missing verdict) and left uncached.
-        if not claude_available():
-            valid.update(pending[i:])
-            break
-        batch = pending[i:i + config.CLAUDE_FILTER_BATCH]
-        verdicts = _judge(batch, kind)
+    batches = [pending[i:i + config.CLAUDE_FILTER_BATCH]
+              for i in range(0, len(pending), config.CLAUDE_FILTER_BATCH)]
+    if not batches:
+        return valid
+
+    def _apply(batch: List[str], verdicts: Dict[str, bool]) -> None:
         # match by normalized key too: a model asked to echo a name back can
         # still normalize its whitespace or punctuation, and an exact-string
         # lookup would miss the verdict and silently default to KEEP (letting
@@ -149,6 +146,32 @@ def validate(names: List[str], kind: str = "person") -> Set[str]:
                 valid.add(n)
             cache.set(cache.make_key("claudefilter", kind, normalize(n)),
                       "claudefilter", {"valid": v}, config.CACHE_TTL_WIKI)
+
+    # The first batch runs alone: if the key is broken, this is the ONE
+    # wasted round trip (see test_auth_failure_latches_claude_off -- firing
+    # every batch concurrently up front would cost one failed call per batch
+    # instead of just one, since a thread pool has no chance to observe the
+    # latch trip before the others are already in flight). Once it succeeds,
+    # Claude is confirmed reachable and the rest -- independent calls with no
+    # shared state -- run concurrently instead of being awaited one at a
+    # time. Bounded like the rest of this codebase's Claude-calling
+    # concurrency (EXPAND_NODE_CONCURRENCY, SEARCH_WORKERS).
+    first, rest = batches[0], batches[1:]
+    _apply(first, _judge(first, kind))
+    if not rest:
+        return valid
+    if not claude_available():
+        valid.update(n for b in rest for n in b)
+        return valid
+
+    with ThreadPoolExecutor(max_workers=min(4, len(rest))) as ex:
+        futures = {ex.submit(_judge, batch, kind): batch for batch in rest}
+        for future in as_completed(futures):
+            batch = futures[future]
+            if not claude_available():
+                valid.update(batch)
+                continue
+            _apply(batch, future.result())
     return valid
 
 
