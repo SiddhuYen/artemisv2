@@ -215,6 +215,34 @@ class Focus:
 _TITLE_TOKENS = {normalize(t) for t in TITLE_WORDS} | set(_GENDERED_TITLES)
 
 
+# Institutional words that mark a multi-word capitalised run as an org rather
+# than a person. ORG_SUFFIXES (utils.names) covers legal forms -- Inc, LLC,
+# University -- but an internal unit carries none of those and sails through
+# looks_like_person_name: "LCI's Clinical Physiology Section" is three
+# capitalised words with no suffix and no stopword, i.e. person-shaped.
+_ORG_WORDS = {
+    "section", "division", "department", "institute", "institutes",
+    "laboratory", "laboratories", "center", "centre", "office", "bureau",
+    "agency", "committee", "council", "board", "program", "programme", "unit",
+    "school", "college", "hospital", "clinic", "ministry", "commission",
+    "association", "society", "federation", "academy", "faculty", "service",
+    "services", "administration", "authority", "trust", "fund", "press",
+    "museum", "library", "branch", "directorate", "secretariat", "network",
+    "networks", "group", "team", "project", "initiative", "coalition",
+}
+
+
+def _is_org_phrase(name: str) -> bool:
+    """True for a capitalised run that reads as an institution, not a person."""
+    tokens = name.split()
+    # A possessive inside a MULTI-token run is an institutional construction
+    # ("NIAID's Laboratory"). Single tokens are left alone: "Fauci's" is the
+    # subject's own name in the possessive, not an organisation.
+    if len(tokens) > 1 and any("'s" in t or "’s" in t for t in tokens):
+        return True
+    return any(normalize(t) in _ORG_WORDS for t in tokens)
+
+
 @dataclass(frozen=True)
 class _Mention:
     """One capitalised run, cleaned up and classified."""
@@ -294,13 +322,16 @@ def _mentions(span: str) -> List[_Mention]:
         if len(stripped) < 2 or is_noise_name(stripped):
             continue
         gender = honorific or name_gender(stripped, span, match.start())
+        person_shaped = (looks_like_person_name(stripped)
+                         and not _is_org_phrase(stripped))
         out.append(_Mention(name=stripped, gender=gender,
-                            is_person_shaped=looks_like_person_name(stripped)))
+                            is_person_shaped=person_shaped))
     return out
 
 
 def _pronoun_could_be_subject(sentences: List[str], index: int, gender: str,
-                              lookback: int, is_subject) -> bool:
+                              lookback: int, is_subject,
+                              chained: Optional[dict] = None) -> bool:
     """Could this pronoun refer to the subject?
 
     Deliberately NOT coreference resolution. The question this stage has to
@@ -323,8 +354,26 @@ def _pronoun_could_be_subject(sentences: List[str], index: int, gender: str,
     The same sentence is searched too, on both sides of the pronoun, so a
     forward reference resolves ("In her role at Acme, Sandra Whitfield led
     sales") instead of walking backwards past its own answer.
+
+    `chained` maps an earlier sentence index to the pronoun gender that
+    resolved it, and lets a run of pronoun-only sentences hold together.
+    Biographies write long stretches that never repeat the name -- "He became
+    head of the section in 1974. He became director of the NIAID in 1984." --
+    and without chaining the second sentence walks back over a first that
+    names nobody either, runs out of lookback, and is dropped even though its
+    neighbour was already established as being about the subject. The gender
+    has to match the one that anchored the earlier sentence: a "she" following
+    a run of "he" is a new referent, not a continuation.
     """
+    chained = chained or {}
     for j in range(index, max(-1, index - lookback - 1), -1):
+        # An earlier sentence already established as the subject's, by a
+        # pronoun of this same gender, supplies the subject even when it names
+        # nobody at all. Never the sentence being decided -- it cannot be its
+        # own antecedent.
+        if j != index and chained.get(j) == gender:
+            return True
+
         plausible = [
             m for m in _mentions(sentences[j])
             if m.is_person_shaped or is_subject(m.name)
@@ -334,9 +383,19 @@ def _pronoun_could_be_subject(sentences: List[str], index: int, gender: str,
         # left with none is not an answer -- keep walking.
         compatible = [m for m in plausible
                       if m.gender is None or m.gender == gender]
-        if not compatible:
+        if any(is_subject(m.name) for m in compatible):
+            return True
+
+        # The pronoun's OWN sentence may CONFIRM (a forward reference) but must
+        # never VETO. Names sitting beside a pronoun are usually its objects,
+        # and in institutional prose usually not people at all -- "He became
+        # head of the LCI's Clinical Physiology Section in 1974" would
+        # otherwise answer itself, on org fragments, without ever looking back
+        # at the sentence that names the subject.
+        if j == index:
             continue
-        return any(is_subject(m.name) for m in compatible)
+        if compatible:
+            return False
     return False
 
 
@@ -378,15 +437,20 @@ def focus(subject: str, text: str, window: Optional[int] = None) -> Focus:
     direct = {i for i, sentence in enumerate(sentences) if _is_subject(sentence)}
 
     # --- anchors by resolved pronoun ---------------------------------------
+    # Front to back, so `chained` only ever holds sentences EARLIER than the
+    # one being decided -- which is the only direction the walk looks.
     pronoun_hits = set()
+    chained: dict = {}
     lookback = config.SUBJECT_WINDOW_PRONOUN_LOOKBACK
     for i, sentence in enumerate(sentences):
         if i in direct:
             continue  # already anchored; nothing a pronoun could add
         for match in _PRONOUN_RE.finditer(sentence):
             gender = _PRONOUN_GENDER[match.group(1).lower()]
-            if _pronoun_could_be_subject(sentences, i, gender, lookback, _is_subject):
+            if _pronoun_could_be_subject(sentences, i, gender, lookback,
+                                         _is_subject, chained):
                 pronoun_hits.add(i)
+                chained[i] = gender
                 break
 
     anchors = sorted(direct | pronoun_hits)

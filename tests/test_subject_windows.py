@@ -200,6 +200,62 @@ def test_a_forward_reference_resolves():
     assert "In her role at Acme" in out.text
 
 
+def test_a_run_of_pronoun_only_sentences_holds_together():
+    """Biographies write long stretches that never repeat the name. Without
+    chaining, the second sentence walks back over a first that names nobody
+    either, runs out of lookback, and is dropped."""
+    page = _page(
+        "Fauci joined the institute in 1968.",
+        "He became head of the section in 1974.",
+        "He became director in 1984.",
+        "He held the post for decades.",
+    )
+    out = focus("Anthony Fauci", page)
+    assert "He held the post for decades." in out.text
+
+
+def test_an_org_unit_in_the_pronoun_sentence_does_not_veto():
+    """'LCI's Clinical Physiology Section' is three capitalised words with no
+    legal suffix, so looks_like_person_name calls it person-shaped. Letting the
+    pronoun's own sentence answer on that fragment stopped the walk before it
+    ever reached the sentence naming the subject."""
+    page = _page(
+        "Fauci joined the institute in 1968.",
+        "He became head of the LCI's Clinical Physiology Section in 1974.",
+    )
+    out = focus("Anthony Fauci", page)
+    assert "Clinical Physiology Section" in out.text
+
+
+def test_institutional_phrases_are_not_person_shaped():
+    for org in ("LCI's Clinical Physiology Section", "Weill Cornell Medical Center",
+                "National Cancer Institute", "Human Rights Committee"):
+        assert not subject_windows._mentions(org)[0].is_person_shaped, org
+
+
+def test_a_possessive_surname_is_still_the_subject():
+    """The possessive test must not demote a single-token name: "Fauci's" is
+    the subject in the possessive, not an organisation."""
+    assert not subject_windows._is_org_phrase("Fauci's")
+
+
+def test_a_secondary_figure_does_not_collect_another_persons_pronouns():
+    """The over-inclusion guard. A page about someone else, where the subject
+    appears once, must not have every 'he' handed to the subject."""
+    page = _page(
+        "Gregory Fowler joined as an adviser.",
+        *[f"Filler sentence number {i} about the industry." for i in range(8)],
+        "Thomas Baker founded the studio in 2004.",
+        "He sold it in 2010.",
+        "He retired to Lisbon.",
+    )
+    out = focus("Gregory Fowler", page)
+    # Far enough from the subject's own anchor that the context window cannot
+    # explain their presence -- so if they appear, a pronoun claimed them.
+    assert "He sold it in 2010." not in out.text
+    assert "He retired to Lisbon." not in out.text
+
+
 def test_a_pronoun_beyond_the_lookback_is_not_resolved(monkeypatch):
     monkeypatch.setattr(config, "SUBJECT_WINDOW_PRONOUN_LOOKBACK", 1)
     page = _page(
