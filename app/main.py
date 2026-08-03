@@ -640,7 +640,7 @@ def graph_summary(db: Session = Depends(get_db)) -> dict:
 
 
 def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
-                     context_a: str, context_b: str) -> None:
+                     context_a: str, context_b: str, owner_name: str = "") -> None:
     from .graph.connect import connect_people
     state = {"a": {"hop": 0, "done": 0, "total": 1, "max_depth": depth},
              "b": {"hop": 0, "done": 0, "total": 1, "max_depth": depth}}
@@ -686,7 +686,8 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
         check_cancel()
         result = connect_people(db, a, b, depth, context_a=context_a,
                                 context_b=context_b, on_step=on_step,
-                                progress=progress, cancel_checker=check_cancel)
+                                progress=progress, cancel_checker=check_cancel,
+                                owner_name=owner_name)
         check_cancel()
         result["graph_id"] = "global"
         _update_job(job_id, status="done", pct=100, message="done", result=result)
@@ -709,7 +710,13 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
 def connect(req: dict, request: Request) -> dict:
     """Kick off a path search between two people (builds both graphs, meets in
     the middle) as a background job; poll GET /jobs/{job_id} for progress and
-    the eventual result. Body: {"person_a": "...", "person_b": "...", "depth": 2}"""
+    the eventual result. Body: {"person_a": "...", "person_b": "...", "depth": 2}
+
+    Optional `owner_name` says who is ASKING. It gates one thing only: step 1
+    bridges the imported contacts to person_a as first-degree ties just when
+    person_a is that same person, since those contacts are nobody else's
+    connections (see graph/connect._origin_is_operator). Omitting it skips the
+    bridge rather than attributing the contacts to whoever was tagged."""
     a = _str_field(req, "person_a")
     b = _str_field(req, "person_b")
     try:
@@ -720,7 +727,8 @@ def connect(req: dict, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="person_a and person_b required")
     return _start_build_job(
         request, "connect", _run_connect_job,
-        (a, b, depth, _str_field(req, "context_a"), _str_field(req, "context_b")))
+        (a, b, depth, _str_field(req, "context_a"), _str_field(req, "context_b"),
+         _str_field(req, "owner_name")))
 
 
 def _run_discover_job(job_id: str, ticket, name: str, depth: int) -> None:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..graph import builder
@@ -64,16 +64,25 @@ def discover_org_network(
         _clear_scratch_graph(db)
         return {"discovered": 0, "promoted": 0, "updated": 0}
 
-    # 2) people DIRECTLY related to the org seed (candidate/strong edges only)
+    # 2) people DIRECTLY related to the org seed (candidate/strong edges only).
+    # Either orientation: person_a/person_b record which side happened to be
+    # extracted first, not a direction, so matching person_a alone silently
+    # dropped every tie discovered from the other end -- the same asymmetry
+    # expansion._reuse_existing_neighbors was fixed for. It matters more now
+    # that symmetric ties are stored once rather than mirrored (see
+    # models.SYMMETRIC_RELATIONSHIP_TYPES).
     related_ids = set()
     for e in db.execute(
         select(RelationshipEdge).where(
-            RelationshipEdge.person_a_id == seed.id,
+            or_(RelationshipEdge.person_a_id == seed.id,
+                RelationshipEdge.person_b_id == seed.id),
             RelationshipEdge.person_b_id.isnot(None),
         )
     ).scalars():
         if e.status in _PROMOTABLE_STATUS:
-            related_ids.add(e.person_b_id)
+            other = e.person_b_id if e.person_a_id == seed.id else e.person_a_id
+            if other:
+                related_ids.add(other)
 
     people = {p.id: p for p in db.execute(select(Person)).scalars()}
     promoted = updated = 0

@@ -133,3 +133,50 @@ def query_budget(weights: Optional[Dict[str, float]]) -> Dict[str, int]:
             continue
         out[silo.key] = max(1, min(full, round(weight * full)))
     return out
+
+
+# --- coverage: what a node's expansion ACTUALLY asked ------------------------
+# `Person.processed` is a boolean, but an expansion is not one thing: it is a
+# per-silo query allocation (above), and which silos ran depends entirely on
+# the weights the CALLER supplied. A contact expanded by initial enrichment
+# under founder-shaped weights was never asked the publications question; a
+# later /connect toward an academic target needs exactly that question. Under
+# a boolean gate the answer is "already processed", forever -- the node's
+# neighbors get replayed from the DB and the new question is never asked.
+#
+# So a node records the budget it was expanded under, and reuse becomes a
+# comparison rather than a flag: covered silos replay, uncovered ones are
+# searched. That is what makes enrichment re-initializable per connect
+# instead of frozen at whatever the first run happened to want.
+
+
+def merge_coverage(covered: Optional[Dict[str, int]],
+                   budget: Dict[str, int]) -> Dict[str, int]:
+    """Fold a just-executed budget into a node's recorded coverage.
+
+    Max per silo, never sum: running the news silo's 4 queries twice still
+    only ever asked 4 distinct questions (`render_queries` is deterministic,
+    so run N's queries are a prefix-identical set), and summing would let a
+    repeat inflate coverage into claiming questions that were never asked.
+    """
+    out = dict(covered or {})
+    for key, count in budget.items():
+        if count > out.get(key, 0):
+            out[key] = int(count)
+    return out
+
+
+def uncovered_budget(wanted: Dict[str, int],
+                     covered: Optional[Dict[str, int]]) -> Dict[str, int]:
+    """The part of `wanted` a node's recorded coverage does not already answer.
+
+    A silo appears at its FULL wanted allowance, not the difference: queries
+    are rendered as a prefix (`render_queries(...)[:allowance]`), so asking for
+    4 when 2 were covered must re-render all 4 to reach queries 3 and 4. The
+    2 repeats cost nothing -- the provider cache serves them (see
+    config.CACHE_TTL_SEARCH), which is what makes widening a node's coverage
+    cheap enough to do per connect.
+    """
+    covered = covered or {}
+    return {key: count for key, count in wanted.items()
+            if count > covered.get(key, 0)}

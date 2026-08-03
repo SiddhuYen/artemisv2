@@ -64,12 +64,21 @@ function backendNodeToPerson(n) {
     photo:d.photo||'', description:d.description||'', size:d.size||1,
     x:(n.position&&n.position.x)||0, y:(n.position&&n.position.y)||0 };
 }
+// `where` and the evidence fields are the hover context (see connTipHTML):
+// the label alone says "coworker" but not coworker WHERE, on what evidence,
+// off which page. Persisted with the edge so it survives a reload.
 function connToBackendEdge(c) {
-  return { data: { id:c.id, source:c.from, target:c.to, type:c.label||'', manual:true } };
+  return { data: { id:c.id, source:c.from, target:c.to, type:c.label||'', manual:true,
+    where:c.where||'', evidence:c.evidence||'', method:c.method||'',
+    source_url:c.sourceUrl||'', source_title:c.sourceTitle||'',
+    confidence:c.confidence } };
 }
 function backendEdgeToConn(e) {
   const d = e.data || {};
-  return { id:d.id, from:d.source, to:d.target, label:d.type||'' };
+  return { id:d.id, from:d.source, to:d.target, label:d.type||'',
+    where:d.where||'', evidence:d.evidence||'', method:d.method||'',
+    sourceUrl:d.source_url||'', sourceTitle:d.source_title||'',
+    confidence:d.confidence };
 }
 function boardSummaryToLocal(b) {
   const prev = b.preview_elements || {};
@@ -737,6 +746,9 @@ function ensureConnFilter(svg) {
 }
 function renderConns(st) {
   const svg=document.getElementById('svg');
+  // the hovered hit-path is about to be replaced; a card left open would
+  // point at a line that no longer exists
+  hideConnTip();
   [...svg.children].forEach(el=>{if(el.id!=='tempLine'&&el.tagName!=='defs')el.remove();});
   ensureConnFilter(svg);
   (st||pageState()).conns.forEach(c=>{
@@ -752,7 +764,11 @@ function renderConns(st) {
     const vis=svgEl('path');vis.setAttribute('d',d);vis.setAttribute('stroke','rgba(210,55,55,0.82)');vis.setAttribute('stroke-width','2');vis.setAttribute('fill','none');vis.setAttribute('pointer-events','none');vis.setAttribute('stroke-linecap','round');
     svg.insertBefore(vis,svg.firstChild);
     const hit=svgEl('path');hit.setAttribute('d',d);hit.setAttribute('stroke','transparent');hit.setAttribute('stroke-width','22');hit.setAttribute('fill','none');hit.style.cursor='pointer';hit.style.pointerEvents='stroke';
-    hit.addEventListener('click',e=>connClick(e,c.id));svg.insertBefore(hit,svg.firstChild);
+    hit.addEventListener('click',e=>connClick(e,c.id));
+    hit.addEventListener('mouseenter',e=>showConnTip(e,c,f,t));
+    hit.addEventListener('mousemove',moveConnTip);
+    hit.addEventListener('mouseleave',hideConnTip);
+    svg.insertBefore(hit,svg.firstChild);
     if(c.label){
       const bg=svgEl('rect');
       const tw=c.label.length*6+10;
@@ -762,6 +778,52 @@ function renderConns(st) {
   });
 }
 function svgEl(tag){return document.createElementNS('http://www.w3.org/2000/svg',tag);}
+
+// ── connection hover card ──────────────────────────────
+// The on-canvas label has room for one word ("coworker"), which leaves the
+// obvious follow-up -- coworker WHERE, and how do we know -- unanswered. The
+// rest of what the edge already carries (shared org, evidence sentence,
+// confidence, source page) is shown here on hover instead of crowding the
+// canvas.
+function _srcHost(url){try{return new URL(url).hostname.replace(/^www\./,'');}catch(e){return '';}}
+function connTipHTML(c,f,t){
+  const rows=[];
+  const type=humanizeRelType(c.label).toUpperCase();
+  const pct=(c.confidence!=null&&c.confidence!=='')?Math.round(c.confidence*100):null;
+  const tier=pct==null?'':pct>=60?'strong':pct>=30?'candidate':'weak';
+  rows.push(`<div class="ctip-head"><span class="ctip-type">${esc(type)}</span>${
+    pct!=null?`<span class="ctip-conf t-${tier}">${pct}%</span>`:''}</div>`);
+  rows.push(`<div class="ctip-pair">${esc(f.name)} <span class="ctip-arrow">↔</span> ${esc(t.name)}</div>`);
+  if(c.where) rows.push(`<div class="ctip-where">📍 ${esc(c.where)}</div>`);
+  if(c.evidence) rows.push(`<div class="ctip-ev">“${esc(c.evidence.length>200?c.evidence.slice(0,200)+'…':c.evidence)}”</div>`);
+  if(c.method) rows.push(`<div class="ctip-method">${esc(c.method.length>90?c.method.slice(0,90)+'…':c.method)}</div>`);
+  const src=c.sourceTitle||_srcHost(c.sourceUrl||'');
+  if(src) rows.push(`<div class="ctip-src">via ${esc(src.length>60?src.slice(0,60)+'…':src)}</div>`);
+  if(!c.where&&!c.evidence&&!c.method&&!src) rows.push(`<div class="ctip-empty">No context recorded — click the line to add where.</div>`);
+  return rows.join('');
+}
+function _connTipEl(){
+  let el=document.getElementById('connTip');
+  if(!el){el=document.createElement('div');el.id='connTip';el.className='conn-tip';document.body.appendChild(el);}
+  return el;
+}
+function showConnTip(e,c,f,t){
+  if(mode!=='normal'||isPanning) return;
+  const el=_connTipEl();
+  el.innerHTML=connTipHTML(c,f,t);
+  el.classList.add('open');
+  moveConnTip(e);
+}
+function moveConnTip(e){
+  const el=document.getElementById('connTip');
+  if(!el||!el.classList.contains('open'))return;
+  const pad=14,w=el.offsetWidth,h=el.offsetHeight;
+  let x=e.clientX+pad,y=e.clientY+pad;
+  if(x+w>window.innerWidth-8) x=e.clientX-w-pad;
+  if(y+h>window.innerHeight-8) y=e.clientY-h-pad;
+  el.style.left=Math.max(8,x)+'px';el.style.top=Math.max(8,y)+'px';
+}
+function hideConnTip(){const el=document.getElementById('connTip');if(el)el.classList.remove('open');}
 
 // ══════════════════════════════════════════════════════
 // NODE INTERACTION
@@ -828,11 +890,13 @@ function resizeDown(e,id){
 function connClick(e,id){
   e.stopPropagation();
   if(mode==='delete'){const pg=currentPage();pg.conns=pg.conns.filter(c=>c.id!==id);save();renderConns();return;}
+  hideConnTip();
   activeConn=id;const c=pageState().conns.find(x=>x.id===id);
   document.getElementById('connLabelIn').value=c?.label||'';
+  document.getElementById('connWhereIn').value=c?.where||'';
   const pop=document.getElementById('connPopup');pop.style.left=(e.clientX-110)+'px';pop.style.top=(e.clientY-80)+'px';pop.classList.add('open');setTimeout(()=>document.getElementById('connLabelIn').focus(),30);
 }
-function saveConn(){const pg=currentPage();const c=pg.conns.find(x=>x.id===activeConn);if(c){c.label=document.getElementById('connLabelIn').value.trim();save();renderConns();}document.getElementById('connPopup').classList.remove('open');}
+function saveConn(){const pg=currentPage();const c=pg.conns.find(x=>x.id===activeConn);if(c){c.label=document.getElementById('connLabelIn').value.trim();c.where=document.getElementById('connWhereIn').value.trim();save();renderConns();}document.getElementById('connPopup').classList.remove('open');}
 function delConn(){const pg=currentPage();pg.conns=pg.conns.filter(c=>c.id!==activeConn);save();renderConns();document.getElementById('connPopup').classList.remove('open');}
 document.addEventListener('click',e=>{if(!e.target.closest('#connPopup'))document.getElementById('connPopup').classList.remove('open');});
 
@@ -2492,8 +2556,15 @@ async function execBoardRoute() {
   _bvrLastExplored = null;
   try {
     const started = await (await fetch('/connect', { method:'POST', headers:API_HEADERS,
+      // owner_name says who is ASKING, which is not the same as person_a. The
+      // backend bridges your imported contacts to person_a as first-degree
+      // ties only when the two match -- tag a stranger as the origin and those
+      // contacts are simply not their connections. Sent on the same condition
+      // as the import paths above: 'OPERATOR' is the placeholder, not a name.
       body: JSON.stringify({ person_a: start.name, person_b: target.name, depth,
-                             context_a: contextA, context_b: contextB }) })).json();
+                             context_a: contextA, context_b: contextB,
+                             ...(operatorName() !== 'OPERATOR'
+                                 ? { owner_name: operatorName() } : {}) }) })).json();
     if (started.detail) throw new Error(started.detail);
     if (runSeq !== _bvrRunSeq) return;
     _bvrActiveJobId = started.job_id;
@@ -2542,7 +2613,8 @@ async function execBoardRoute() {
     lbl.textContent = `// ${routes.length} ROUTE${routes.length!==1?'S':''} FOUND`;
     resultEl.innerHTML = routes.map((route, i) => {
       const steps = (route.path||[]).map((n,idx,arr) => ({
-        name: n.label, role: n.relationship_from_previous||'', company: '',
+        name: n.label, role: n.relationship_from_previous||'',
+        company: (n.via_orgs||[]).join(' · '),
         kind: idx===0 ? 'you' : (idx===arr.length-1 ? 'target' : 'node'),
         homonymFlag: n.homonym_flag || null,
         evidence: n.evidence || '', confidence: n.confidence, sourceUrl: n.source_url || '',
@@ -2573,6 +2645,17 @@ async function execBoardRoute() {
   }
 }
 
+// The hover context for one route hop. `via_orgs` is the backend's answer to
+// "where" -- the org(s) both ends of the hop are affiliated with (see
+// connect._shared_orgs); `method` is the fallback when there is no shared org,
+// since it still says how the tie was inferred.
+function hopContext(hop) {
+  const where = (hop.via_orgs||[]).join(' · ');
+  return { where, evidence: hop.evidence||'', method: hop.method||'',
+    sourceUrl: hop.source_url||'', sourceTitle: hop.source_title||'',
+    confidence: hop.confidence };
+}
+
 function mergeConnectResultIntoBoard(data) {
   const pg = currentPage(); if (!pg) return;
   const routes = (data.paths && data.paths.length) ? data.paths : (data.path ? [{ path: data.path }] : []);
@@ -2601,7 +2684,8 @@ function mergeConnectResultIntoBoard(data) {
       const b = byName.get(path[idx].label.toLowerCase());
       if (!a || !b) continue;
       const already = pg.conns.find(c => (c.from===a.id&&c.to===b.id)||(c.from===b.id&&c.to===a.id));
-      if (!already) pg.conns.push({ id: uid(), from: a.id, to: b.id, label: path[idx].relationship_from_previous||'' });
+      if (!already) pg.conns.push({ id: uid(), from: a.id, to: b.id,
+        label: path[idx].relationship_from_previous||'', ...hopContext(path[idx]) });
     }
   });
   save(); render();

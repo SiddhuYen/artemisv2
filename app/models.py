@@ -34,6 +34,28 @@ RELATIONSHIP_TYPES = (
     "unknown",
 )
 
+# Person<->person types where (a, b) asserts exactly what (b, a) asserts, so
+# the two orientations are ONE connection and must never become two rows.
+#
+# This is a dedup vocabulary, not a graph-traversal one -- connect.py already
+# walks every edge in both directions (see _adjacency). It exists because the
+# stored orientation is an accident of WHICH endpoint was expanded first: a
+# walk that expands A extracts "A coworker B" from a page, and a later walk
+# that expands B extracts "B coworker A" from the SAME page. Both are the same
+# fact. While `processed` froze a node after one expansion that second walk
+# almost never happened; now that coverage-based reuse re-searches a node
+# whenever a new question is asked of it (see graph/expansion.py), it is the
+# normal case, and without symmetric dedup every re-enrichment would mirror
+# the existing graph into a duplicate half.
+#
+# Directional types are deliberately absent: "A interview B" (A interviewed B)
+# and "A investor B" say something the reverse does not, so collapsing their
+# orientations would destroy the fact rather than dedupe it.
+SYMMETRIC_RELATIONSHIP_TYPES = frozenset({
+    "coworker", "cofounder", "coauthor", "family_social",
+    "podcast_guest", "linkedin_1st",
+})
+
 # Organization<->organization facts (e.g. two firms co-invested in the same
 # funding round). Deliberately NEVER used to bridge two PEOPLE by chaining
 # person->org->org->person -- see Organization.meta["co_investments"] and

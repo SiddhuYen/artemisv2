@@ -34,6 +34,7 @@ from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
+from ..network.silo_weights import merge_coverage, uncovered_budget
 from ..network.silo_weights import query_budget as silo_query_budget
 from ..silos import COLLEAGUE_SILO, PROFESSIONAL_SILOS, SILO_BY_KEY, SILOS, STRUCTURED_SILO
 from ..utils.htmltext import html_to_text
@@ -50,6 +51,61 @@ ORCH = SearchOrchestrator()
 
 # phase-0 sources whose names are clean structured labels (no Claude filtering)
 _CLEAN_STRUCTURED = {"wikidata", "wikidata-colleagues", "propublica-board"}
+
+# Person.meta key holding {"context": str, "silos": {silo_key: n_queries}} --
+# the record of what a node's expansion actually asked, written next to
+# `processed` and read by the reuse gate. In metadata rather than its own
+# column so it needs no migration on a live graph; absent on every node
+# expanded before this existed, which _residual_weights reads as "covered",
+# leaving warm graphs behaving exactly as they did.
+_COVERAGE_KEY = "silo_coverage"
+
+
+def _residual_weights(existing: Person, context: str,
+                      wanted: Optional[Dict[str, float]],
+                      professional_only: bool) -> Optional[Dict[str, float]]:
+    """Which silos this call wants that `existing` has never been asked.
+
+    Returns None when the node's recorded coverage already answers everything
+    wanted (reuse its neighbors and search nothing), otherwise a weights dict
+    naming only the uncovered silos -- ready to hand straight back to
+    _process_person as `silo_weights`.
+
+    Two deliberate conservative readings, both of which preserve today's
+    behavior on an existing graph:
+
+      - A node with NO coverage record (expanded before this existed, or by an
+        older deploy) counts as fully covered. The alternative -- treating the
+        whole warm shared graph as unexpanded -- would re-search every node any
+        teammate ever touched, on the first walk after deploy.
+      - Coverage is only consulted within one disambiguation context; a
+        different context means a different search, so nothing is covered.
+    """
+    if not config.EXPAND_COVERAGE_REUSE:
+        return None
+    record = (existing.meta or {}).get(_COVERAGE_KEY)
+    if not isinstance(record, dict):
+        return None
+    if (record.get("context") or "") != (context or ""):
+        wanted_budget = silo_query_budget(wanted)
+        covered: Dict[str, int] = {}
+    else:
+        wanted_budget = silo_query_budget(wanted)
+        covered = record.get("silos") or {}
+    # professional_only drops these silos from the call entirely, so wanting
+    # them is not a reason to re-search -- they would not be issued anyway.
+    if professional_only:
+        allowed = {s.key for s in PROFESSIONAL_SILOS}
+        wanted_budget = {k: v for k, v in wanted_budget.items() if k in allowed}
+    missing = uncovered_budget(wanted_budget, covered)
+    if not missing:
+        return None
+    # query_budget maps weight -> count as round(weight * MAX_QUERIES_PER_SILO)
+    # and floors at ENRICH_SILO_MIN_WEIGHT; inverting keeps the residual call
+    # asking for the same per-silo counts the caller originally wanted.
+    full = max(1, config.MAX_QUERIES_PER_SILO)
+    return {key: max(count / full, config.ENRICH_SILO_MIN_WEIGHT)
+            for key, count in missing.items()}
 
 
 def _mark_trusted(edges, trusted: bool) -> None:
@@ -612,11 +668,21 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     budget = silo_query_budget(silo_weights)
     silo_set = PROFESSIONAL_SILOS if professional_only else SILOS
     pairs = []
+    # What this call genuinely asks, silo -> query count. Distinct from
+    # `budget`: professional_only drops the family/friends silos AFTER the
+    # allowance is computed, so recording `budget` as coverage would claim a
+    # node had been asked questions that were never issued -- and a later walk
+    # that DOES want those silos would then skip them as already covered.
+    executed: Dict[str, int] = {}
     for silo in silo_set:
         allowance = budget.get(silo.key, 0)
         if allowance <= 0:
             continue
-        for query in silo.render_queries(subject_name)[:allowance]:
+        rendered = silo.render_queries(subject_name)[:allowance]
+        if not rendered:
+            continue
+        executed[silo.key] = len(rendered)
+        for query in rendered:
             pairs.append((silo, f"{query} {context}".strip() if context else query))
     unique_queries, query_to_silos = ORCH.dedup(pairs)
 
@@ -1116,8 +1182,12 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 db, subject, edge, hop, source_by_url.get(edge.source_url), counterpart
             )
 
-    # mark expanded: a later/deeper run will REUSE these neighbors instead of
-    # re-searching this node (see _reuse_existing_neighbors).
+    # mark expanded, and record WHAT was asked: a later/deeper run reuses this
+    # node's persisted neighbors instead of re-searching it, but only for the
+    # silos this budget actually covered (see _coverage and the reuse gate in
+    # _process_one_attempt). `processed` stays a boolean for every existing
+    # reader; the coverage map rides along in metadata, so this needs no schema
+    # change against a live graph.
     #
     # commit_with_retry, not a bare db.commit(): every write earlier in this
     # node's processing (save_source, add_edge_from_extraction) already went
@@ -1126,9 +1196,26 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # of this transaction (this commit can't newly contend) or nothing at all
     # was written for this node (this commit is the transaction's first write
     # attempt, and a lock retry here is safe because there's nothing else
-    # pending to lose). Either way, re-applying just `processed = 1` on retry
-    # is correct and cheap.
-    builder.commit_with_retry(db, lambda: setattr(subject, "processed", 1))
+    # pending to lose). Either way, re-applying these two fields on retry is
+    # correct and cheap.
+    def _mark_expanded() -> None:
+        subject.processed = 1
+        meta = dict(subject.meta or {})
+        prior = meta.get(_COVERAGE_KEY) or {}
+        # Coverage is only comparable within one disambiguation context: every
+        # query above had `context` appended, so "Acme"-qualified questions
+        # never answered the unqualified ones (nor another context's). On a
+        # context switch the old counts describe a different search entirely
+        # and are replaced rather than merged.
+        same_context = (prior.get("context") or "") == (context or "")
+        meta[_COVERAGE_KEY] = {
+            "context": context or "",
+            "silos": (merge_coverage(prior.get("silos"), executed)
+                      if same_context else dict(executed)),
+        }
+        subject.meta = meta
+
+    builder.commit_with_retry(db, _mark_expanded)
 
 
 def _ranked_expandable(disc: Dict[str, _Candidate], visited: Set[str],
@@ -1352,22 +1439,44 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
             # neighbors to rank the next frontier instead of re-searching —
             # so we keep the shallow work and just continue deeper
             # (incremental deepening).
+            #
+            # Reuse is now conditional on COVERAGE, not on the `processed`
+            # flag alone: a node expanded under one walk's silo weights was
+            # only asked that walk's questions, and replaying its neighbors
+            # for a walk asking different ones is how a node got frozen at
+            # whatever the first run happened to want. When this call wants
+            # silos the node has never been asked, do both — replay the
+            # covered neighbors (they are still real, and still rank the next
+            # frontier) AND search only the uncovered silos on top.
+            node_context = seed_context if hop == 0 else ""
+            node_weights = silo_weights if hop == 0 else None
             existing = builder.get_or_create_person(worker_db, name, allow_create=False)
-            if existing is not None and existing.processed:
+            residual: Optional[Dict[str, float]] = None
+            reuse = existing is not None and existing.processed
+            if reuse:
+                residual = _residual_weights(existing, node_context, node_weights,
+                                             professional_only)
                 _reuse_existing_neighbors(worker_db, existing, local_disc, progress)
-            else:
+                if residual is not None and progress:
+                    progress(f"  ↻ {name} was expanded before, but not for "
+                             f"{'/'.join(sorted(residual))} — widening")
+            if not reuse or residual is not None:
                 # only the seed at hop 0 may be an org; discovered nodes are people.
                 # the disambiguation context applies only to the seed (hop 0).
                 kwargs = {
                     "progress": progress,
                     "is_person": (seed_is_person or hop > 0),
-                    "context": (seed_context if hop == 0 else ""),
+                    "context": node_context,
                     # Weights describe THIS contact, derived from their own
                     # export row — they say nothing about the strangers found
                     # at hop 1+, so they apply to the seed only. Guessing that
                     # a founder's neighbours are also founders is exactly the
                     # unfounded prior this feature exists to remove.
-                    "silo_weights": (silo_weights if hop == 0 else None),
+                    #
+                    # `residual` narrows them to just the silos this node has
+                    # never been asked, so widening an already-expanded node
+                    # pays for the new questions only, not the whole ~35 again.
+                    "silo_weights": residual if residual is not None else node_weights,
                     "enhanced_professional_search": enhanced_professional_search,
                     "professional_only": professional_only,
                     "target_person_name": target_person_name,

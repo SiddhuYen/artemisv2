@@ -1306,6 +1306,23 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
 .cpb-del:hover { border-color:#e53e3e; color:#e53e3e; }
 #tempLine { stroke:rgba(220,50,50,0.55); stroke-width:1.5; stroke-dasharray:6 3; fill:none; pointer-events:none; }
 
+/* ── CONNECTION HOVER CARD ── */
+.conn-tip { position: fixed; z-index: 320; max-width: 300px; background: rgba(14,7,7,0.97); border: 1px solid #3e2020; border-radius: 8px; padding: 10px 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.7); font-family: 'JetBrains Mono', monospace; opacity: 0; pointer-events: none; transition: opacity 0.12s; }
+.conn-tip.open { opacity: 1; }
+.ctip-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.ctip-type { font-size:0.66rem; letter-spacing:1.4px; color:#e0807f; }
+.ctip-conf { font-size:0.6rem; letter-spacing:0.8px; color:#8a4040; }
+.ctip-conf.t-strong { color:#5fbf7f; }
+.ctip-conf.t-candidate { color:#d9a441; }
+.ctip-conf.t-weak { color:#a05050; }
+.ctip-pair { font-size:0.68rem; color:#c9a0a0; margin-top:5px; line-height:1.45; }
+.ctip-arrow { color:#6a3030; }
+.ctip-where { font-size:0.68rem; color:#e8c9a0; margin-top:7px; letter-spacing:0.4px; }
+.ctip-ev { font-size:0.66rem; color:#9a7676; margin-top:7px; line-height:1.5; font-style:italic; }
+.ctip-method { font-size:0.62rem; color:#7a5252; margin-top:6px; line-height:1.45; }
+.ctip-src { font-size:0.6rem; color:#6a3838; margin-top:7px; letter-spacing:0.4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ctip-empty { font-size:0.62rem; color:#7a5252; margin-top:7px; line-height:1.45; }
+
 /* ── IMPORT MODAL ── */
 .import-modal { width: 780px; }
 .imp-hdr {
@@ -2236,12 +2253,15 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
   <div class="conn-popup-lbl">// connection label</div>
   <input type="text" id="connLabelIn" placeholder="e.g. works with, knows…"
     onkeydown="if(event.key==='Enter')saveConn()">
+  <div class="conn-popup-lbl" style="margin-top:10px">// where</div>
+  <input type="text" id="connWhereIn" placeholder="e.g. Salesforce, Stanford…"
+    onkeydown="if(event.key==='Enter')saveConn()">
   <div class="conn-popup-btns">
     <button class="cpb cpb-ok"  onclick="saveConn()">Save</button>
     <button class="cpb cpb-del" onclick="delConn()">Delete</button>
   </div>
 </div>
 
-<script src="app.js?v=20260802b"></script>
+<script src="app.js?v=20260803d"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@ Two things follow from persisting it: the operator's employer and school reach
 ranking (nothing was sending them, so the shared-affiliation boost was dead
 code in practice), and the operator joins their own org cluster in wave 0.
 """
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.models import EnrichmentTask, Organization, Person, RelationshipEdge
 from app.network.cliques import materialize_contact_cliques
@@ -94,8 +94,11 @@ def test_the_owner_joins_their_own_employer_cluster(db):
         RelationshipEdge.person_a_id == owner_person.id,
         RelationshipEdge.organization_id == org.id)).scalars().all()
     assert len(membership) == 1
+    # Either orientation: a coworker tie is stored once now, and which endpoint
+    # lands in person_a is just clique iteration order.
     coworkers = db.execute(select(RelationshipEdge).where(
-        RelationshipEdge.person_a_id == owner_person.id,
+        or_(RelationshipEdge.person_a_id == owner_person.id,
+            RelationshipEdge.person_b_id == owner_person.id),
         RelationshipEdge.relationship_type == "coworker")).scalars().all()
     assert len(coworkers) == 2      # both colleagues
 
@@ -107,7 +110,7 @@ def test_wave_zero_without_an_owner_is_unchanged(db):
         {"name": "Bb Colleague", "company": "Pantheon Prep"},
     ))
     counts = materialize_contact_cliques(db)
-    assert counts["coworker_edges"] == 2      # just the two contacts
+    assert counts["coworker_edges"] == 1      # the two contacts, one pair
     assert counts["membership_edges"] == 2
 
 
