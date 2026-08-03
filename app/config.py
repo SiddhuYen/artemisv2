@@ -412,6 +412,38 @@ CLAUDE_BASE_CONFIDENCE = 0.55
 # classifier below can run on their own; turn it on deliberately.
 CLAUDE_EXTRACT = _env_bool("ARTEMIS_CLAUDE_EXTRACT", "0")
 CLAUDE_EXTRACT_MODEL = os.environ.get("ARTEMIS_CLAUDE_EXTRACT_MODEL", CLAUDE_MODEL)
+
+# --- subject-window narrowing (extraction/subject_windows.py) ---------------
+# CLAUDE_EXTRACT sends a WHOLE page (up to MAX_PAGE_CHARS, ~5k tokens) to answer
+# a question about one person, and on a real search result most of that page is
+# about someone else. Narrowing to the sentences that name the subject -- or use
+# a pronoun resolving to them -- plus SUBJECT_WINDOW_SENTENCES of context either
+# side is the difference between paying per page and paying per passage.
+#
+# Set to 0 to send whole pages again (the pre-narrowing behaviour), which is the
+# thing to try first if extraction recall drops after enabling this.
+SUBJECT_WINDOW_ENABLED = _env_bool("ARTEMIS_SUBJECT_WINDOW", "1")
+# Sentences of context kept either side of an anchor sentence. Defaults to
+# ENTITY_PROXIMITY_WINDOW deliberately: that constant already encodes how far
+# from a subject mention this codebase is willing to call something evidence
+# about the subject (see its comment), and narrowing tighter than the gate that
+# judges the result afterwards would just discard text the extractors would
+# have been allowed to use.
+SUBJECT_WINDOW_SENTENCES = int(
+    os.environ.get("ARTEMIS_SUBJECT_WINDOW_SENTENCES", str(ENTITY_PROXIMITY_WINDOW)))
+# Below this, don't narrow at all. Short inputs to extract() are not scraped
+# pages -- they are the synthetic enrichment strings built in expansion phase 0
+# (Wikidata evidence text, roster colleague summaries, OpenAlex coauthor lists).
+# Those are already dense and already about the subject, and several never spell
+# the subject's name in a sentence at all, so narrowing them risks dropping the
+# whole input to save tokens that were never the problem.
+SUBJECT_WINDOW_MIN_CHARS = int(
+    os.environ.get("ARTEMIS_SUBJECT_WINDOW_MIN_CHARS", "1500"))
+# How many sentences back a pronoun's antecedent may be. Past a few sentences
+# the "last name mentioned" heuristic stops being evidence of anything -- an
+# unbounded walk would happily bind a "he" on line 400 to a name on line 1.
+SUBJECT_WINDOW_PRONOUN_LOOKBACK = int(
+    os.environ.get("ARTEMIS_SUBJECT_WINDOW_LOOKBACK", "4"))
 # spaCy NER extraction (Tier 4): grammar-aware, kills prose-fragment noise.
 # Preferred over the heuristic when installed; far cheaper than Claude extraction.
 SPACY_EXTRACT = _env_bool("ARTEMIS_SPACY_EXTRACT", "1")

@@ -158,3 +158,69 @@ def test_empty_text_never_reaches_the_api(monkeypatch):
     out = claude_extractor.claude_extract("Prantik", "", _NEWS_SILO)
     assert prompts == []
     assert out is not None and out.edges == []
+
+
+# --- the gate ---------------------------------------------------------------
+_UNRELATED_PAGE = ("Thomas Baker founded the studio in 2004. "
+                   "The studio moved to Berlin in 2010. ") * 40
+
+
+def test_a_page_with_no_subject_passage_is_never_sent(monkeypatch):
+    prompts = _record_calls(monkeypatch, _VERDICT)
+    out = claude_extractor.claude_extract(
+        "Sandra Whitfield", _UNRELATED_PAGE, _NEWS_SILO)
+    assert prompts == []
+    # Empty output, NOT None -- None would send extract() to spaCy, which
+    # would parse the same page again to reach the same nothing.
+    assert out is not None and out.edges == []
+
+
+def test_the_gate_verdict_is_cached_so_repeats_do_not_reparse(monkeypatch,
+                                                              verdict_cache):
+    """focus() runs a spaCy parse over the whole page. Without caching the
+    'nothing here' answer, every duplicate (query, result, silo) tuple would
+    re-parse 20k characters to re-derive it."""
+    _record_calls(monkeypatch, _VERDICT)
+    parses = []
+    real_focus = claude_extractor.subject_windows.focus
+
+    def _counting_focus(subject, text, window=None):
+        parses.append(subject)
+        return real_focus(subject, text, window)
+
+    monkeypatch.setattr(claude_extractor.subject_windows, "focus", _counting_focus)
+
+    for _ in range(4):
+        claude_extractor.claude_extract(
+            "Sandra Whitfield", _UNRELATED_PAGE, _NEWS_SILO)
+
+    assert len(parses) == 1
+    assert len(verdict_cache) == 1
+
+
+def test_narrowing_settings_are_part_of_the_cache_key(monkeypatch):
+    """A verdict is the answer for the NARROWED text, so widening the window --
+    or switching narrowing off -- must re-ask, not replay an answer formed from
+    a different slice of the page."""
+    prompts = _record_calls(monkeypatch, _VERDICT)
+    page = "Sandra Whitfield signed the agreement. " + ("Filler sentence. " * 200)
+
+    claude_extractor.claude_extract("Sandra Whitfield", page, _NEWS_SILO)
+    monkeypatch.setattr(config, "SUBJECT_WINDOW_SENTENCES", 6)
+    claude_extractor.claude_extract("Sandra Whitfield", page, _NEWS_SILO)
+    monkeypatch.setattr(config, "SUBJECT_WINDOW_ENABLED", False)
+    claude_extractor.claude_extract("Sandra Whitfield", page, _NEWS_SILO)
+
+    assert len(prompts) == 3
+
+
+def test_only_the_narrowed_passages_are_sent(monkeypatch):
+    prompts = _record_calls(monkeypatch, _VERDICT)
+    page = ("Sandra Whitfield signed the agreement. "
+            + " ".join(f"Unrelated sentence {i} about other people." for i in range(80)))
+
+    claude_extractor.claude_extract("Sandra Whitfield", page, _NEWS_SILO)
+
+    assert len(prompts) == 1
+    assert "Sandra Whitfield signed the agreement." in prompts[0]
+    assert len(prompts[0]) < len(page)
