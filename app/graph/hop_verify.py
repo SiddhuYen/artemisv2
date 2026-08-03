@@ -83,8 +83,17 @@ def verify(db: Session, edge: RelationshipEdge, name_a: str, name_b: str) -> boo
     claude_client.call_json's contract) resolves to True and leaves the edge
     exactly as it was: no LLM failure may make a real connection disappear
     from a path, and an unresolved call isn't cached as either verdict so
-    it's retried, not stuck "checked" when it wasn't."""
+    it's retried, not stuck "checked" when it wasn't.
+
+    An edge with no evidence_snippet at all (e.g. a structural assertion like
+    linkedin_1st always has one in practice, but nothing guarantees every
+    edge does) also resolves to True without calling Claude -- same
+    fail-open philosophy as coauthor_plausibility.check: there's nothing to
+    judge from, so asking the model to rule on an empty string isn't a real
+    verification, it's just noise with a verdict attached."""
     if not config.CLAUDE_VERIFY_HOPS or not claude_available():
+        return True
+    if not edge.evidence_snippet:
         return True
     if not _is_stale(edge):
         return edge.verified_status != "rejected"
