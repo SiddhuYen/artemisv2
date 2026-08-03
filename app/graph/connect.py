@@ -1318,6 +1318,11 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             if edge is not None:
                 edges_used.append(edge)
                 src = src_by_id.get(edge.source_id)
+                # The handle an operator needs to say "this hop is wrong"
+                # (POST /edges/reject). Without it a caller looking at a bogus
+                # hop can only describe it by endpoint names, which is ambiguous
+                # the moment two people have more than one edge between them.
+                node["edge_id"] = edge.id
                 node["relationship_from_previous"] = edge.relationship_type
                 node["confidence"] = edge.confidence_raw
                 if edge.evidence_snippet:
