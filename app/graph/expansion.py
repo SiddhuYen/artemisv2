@@ -326,16 +326,23 @@ def _reuse_existing_neighbors(db: Session, subject: Person,
                               disc: Dict[str, _Candidate], progress=None) -> None:
     """Populate `disc` from a node's ALREADY-persisted person edges (from any
     prior run, including other teammates') so the next frontier can be ranked and
-    expanded WITHOUT re-running the node's searches. Mirrors _record's tallies."""
+    expanded WITHOUT re-running the node's searches. Mirrors _record's tallies.
+
+    Edges aren't direction-normalized (person_a/person_b just reflect which
+    side was extracted first), so a subject stored as person_b on every one
+    of its edges must still be matched -- checking person_a_id alone silently
+    treated such a node as having zero neighbors."""
     rows = list(db.execute(
         select(RelationshipEdge).where(
-            RelationshipEdge.person_a_id == subject.id,
             RelationshipEdge.person_b_id.isnot(None),
+            (RelationshipEdge.person_a_id == subject.id)
+            | (RelationshipEdge.person_b_id == subject.id),
         )
     ).scalars())
     if not rows:
         return
-    b_ids = {e.person_b_id for e in rows}
+    other_id = lambda e: e.person_b_id if e.person_a_id == subject.id else e.person_a_id
+    b_ids = {other_id(e) for e in rows}
     people = {p.id: p for p in db.execute(
         select(Person).where(Person.id.in_(b_ids))).scalars()}
     src_ids = {e.source_id for e in rows if e.source_id}
@@ -343,7 +350,7 @@ def _reuse_existing_neighbors(db: Session, subject: Person,
         select(Source).where(Source.id.in_(src_ids))).scalars()} if src_ids else {}
 
     for e in rows:
-        b = people.get(e.person_b_id)
+        b = people.get(other_id(e))
         if b is None:
             continue
         cand = disc.get(b.norm_name)
@@ -1438,6 +1445,9 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                 per_depth.append(done)
                 break
         per_depth.append(len(to_process))
+
+        if progress:
+            progress(f"  ✓ hop {hop + 1}/{max_depth} complete — {len(to_process)} node(s) expanded")
 
         if hop == max_depth - 1:
             break

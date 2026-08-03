@@ -642,8 +642,8 @@ def graph_summary(db: Session = Depends(get_db)) -> dict:
 def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
                      context_a: str, context_b: str) -> None:
     from .graph.connect import connect_people
-    state = {"a": {"hop": 0, "done": 0, "total": 1},
-             "b": {"hop": 0, "done": 0, "total": 1}}
+    state = {"a": {"hop": 0, "done": 0, "total": 1, "max_depth": depth},
+             "b": {"hop": 0, "done": 0, "total": 1, "max_depth": depth}}
     state_lock = threading.Lock()
 
     def check_cancel() -> None:
@@ -653,15 +653,16 @@ def _run_connect_job(job_id: str, ticket, a: str, b: str, depth: int,
         check_cancel()
         side = evt.get("side", "a")
         with state_lock:
-            s = state.setdefault(side, {"hop": 0, "done": 0, "total": 1})
+            s = state.setdefault(side, {"hop": 0, "done": 0, "total": 1, "max_depth": depth})
             s["hop"] = evt["hop"]
             s["total"] = max(evt.get("total", 1), 1)
             s["done"] = evt.get("done", 0)
-            frac = sum(_hop_fraction(v["hop"], v["done"], v["total"], depth)
+            s["max_depth"] = evt.get("max_depth", depth)
+            frac = sum(_hop_fraction(v["hop"], v["done"], v["total"], v["max_depth"])
                        for v in state.values()) / len(state)
-            message = (f"[A] hop {state['a']['hop']+1}/{depth} · "
+            message = (f"[A] hop {state['a']['hop']+1}/{state['a']['max_depth']} · "
                        f"{state['a']['done']}/{state['a']['total']} nodes · "
-                       f"[B] hop {state['b']['hop']+1}/{depth} · "
+                       f"[B] hop {state['b']['hop']+1}/{state['b']['max_depth']} · "
                        f"{state['b']['done']}/{state['b']['total']} nodes")
         _update_job(job_id, pct=int(min(97, frac * 100)),
                     message=message)
