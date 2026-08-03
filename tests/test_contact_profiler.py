@@ -181,3 +181,65 @@ def test_the_tiebreak_never_reorders_across_scores(db):
         db, target=BridgeTarget(name="X", companies=["Oracle"]))
         if c.skip_reason is None]
     assert ranked[0].display_name == "Zzz Topscorer"
+
+
+# ---------------------------------------------------------------------------
+# company decay -- WHICH contact at an employer survives undamped
+# ---------------------------------------------------------------------------
+def test_the_most_senior_contact_at_an_employer_is_the_undamped_one(db):
+    """The decay keeps one contact per employer near the top, so which one it
+    keeps is the whole question. Live failure: 14 contacts at one company all
+    scored identically, order fell to the tie-break hash, and the compounding
+    0.6^n buried that company's CEO at rank 1,429 behind its own VPs."""
+    for name, title in [("Vee Pee One", "Vice President"),
+                        ("Vee Pee Two", "Vice President"),
+                        ("Chief Exec", "Chief Executive Officer"),
+                        ("Vee Pee Three", "Vice President")]:
+        _contact(db, name, "Acme Consulting", [title],
+                 reach={"footprint": "individual", "domain": "company", "why": "w"})
+    db.commit()
+
+    ranked = [c for c in score_contacts(db, target=BridgeTarget(name="X"))
+              if c.skip_reason is None]
+    assert ranked[0].display_name == "Chief Exec", \
+        "the most senior contact at an employer must be the undamped one"
+
+
+def test_prior_discovery_does_not_outrank_seniority_within_an_employer(db):
+    """_HAS_PUBLIC_EDGES inside a single employer measures which colleagues
+    earlier runs happened to search, not who is the better way in -- and the
+    unexplored senior contact is the one whose expansion opens new territory."""
+    from app.models import Person, RelationshipEdge
+
+    _contact(db, "Chief Exec", "Acme Consulting", ["Chief Executive Officer"],
+             reach={"footprint": "individual", "domain": "company", "why": "w"})
+    vp = _contact(db, "Known Vp", "Acme Consulting", ["Vice President"],
+                  reach={"footprint": "individual", "domain": "company", "why": "w"})
+    # give the VP the public-edge bonus the CEO lacks
+    p = Person(canonical_name="Known Vp", norm_name=vp.norm_name)
+    other = Person(canonical_name="Someone Else", norm_name=person_norm_key("Someone Else"))
+    db.add_all([p, other])
+    db.flush()
+    db.add(RelationshipEdge(person_a_id=p.id, person_b_id=other.id,
+                            relationship_type="board_member", status="strong",
+                            confidence_raw=0.8))
+    db.commit()
+
+    ranked = [c for c in score_contacts(db, target=BridgeTarget(name="X"))
+              if c.skip_reason is None]
+    assert ranked[0].display_name == "Chief Exec"
+
+
+def test_the_target_s_own_employer_is_still_exempt_from_decay(db):
+    """The exemption predates this and must survive it: a second and third
+    colleague of the TARGET is the most valuable thing the ranking can buy."""
+    for name in ["Aa Oracle", "Bb Oracle", "Cc Oracle"]:
+        _contact(db, name, "Oracle", ["Vice President"],
+                 reach={"footprint": "individual", "domain": "company", "why": "w"})
+    db.commit()
+
+    ranked = [c for c in score_contacts(
+        db, target=BridgeTarget(name="Larry Ellison", companies=["Oracle"]))
+        if c.skip_reason is None]
+    scores = [c.score for c in ranked[:3]]
+    assert len(set(scores)) == 1, "no decay may apply inside the target's employer"

@@ -185,6 +185,10 @@ class ScoredContact:
     # re-deriving it from the employer string.
     footprint: Optional[str] = None
     domain: Optional[str] = None
+    # Kept even when a measured footprint supersedes it for scoring: the
+    # company decay still needs to know who is most senior AT ONE EMPLOYER
+    # (see _apply_company_decay).
+    seniority: float = 0.0
 
 
 # An intern is not senior whatever else the title says. Without this, "CSP
@@ -410,7 +414,8 @@ def score_contacts(db: Session, owner_name: str = "", owner_company: str = "",
             norm_name=norm, context=context, score=score,
             already_enriched=norm in processed, bridge_reasons=reasons,
             silo_weights=weights, footprint=footprint,
-            domain=(reach or {}).get("domain")))
+            domain=(reach or {}).get("domain"),
+            seniority=_title_score(profile.titles or [])))
 
     return _apply_company_decay(scored, target=target)
 
@@ -457,14 +462,43 @@ def _apply_company_decay(scored: List[ScoredContact],
     eligible.sort(key=lambda c: (-c.score, _tiebreak(c, target)))
 
     exempt = target.orgs() if target is not None else set()
-    seen_per_org: Dict[str, int] = {}
+
+    # Group first, then damp by position WITHIN the employer. The decay asks
+    # "who is the one contact worth keeping undamped here", and that has to be
+    # answered by something about the people -- not by wherever they happened
+    # to land in a global sort.
+    #
+    # Confirmed live and badly: 14 contacts at one Oracle-consulting shop all
+    # scored identically (same footprint tier), so their order was decided by
+    # _tiebreak's hash -- and the compounding 0.6^n then buried that company's
+    # CEO at rank 1,429, below a VP who drew a luckier hash. A tie is harmless
+    # when it only decides display order; it is not harmless when a multiplier
+    # treats position as meaning.
+    #
+    # Seniority decides, and this is the one place the title regex is actually
+    # sound: it compares people AT THE SAME EMPLOYER, so the prestige confound
+    # that makes it wrong as a global signal (see contact_profiler) is held
+    # constant here.
+    #
+    # Seniority leads SCORE, which is the opposite of the global ordering and
+    # deliberately so. Score carries _HAS_PUBLIC_EDGES, and inside a single
+    # employer that signal measures which colleagues earlier runs happened to
+    # discover -- an accident of this graph's history, not of who is the better
+    # way in. Letting it lead put a company's CEO five places behind its own
+    # VPs purely because they had been searched before and he had not, which
+    # also inverts the coverage argument: the unexplored senior contact is the
+    # one whose expansion opens new territory.
+    by_org: Dict[str, List[ScoredContact]] = {}
     for contact in eligible:
         key = org_norm_key(contact.context)
         if key in exempt:
             continue
-        n = seen_per_org.get(key, 0)
-        contact.score = round(contact.score * (_COMPANY_DECAY ** n), 4)
-        seen_per_org[key] = n + 1
+        by_org.setdefault(key, []).append(contact)
+
+    for members in by_org.values():
+        members.sort(key=lambda c: (-c.seniority, -c.score, _tiebreak(c, target)))
+        for n, contact in enumerate(members):
+            contact.score = round(contact.score * (_COMPANY_DECAY ** n), 4)
 
     eligible.sort(key=lambda c: (-c.score, _tiebreak(c, target)))
     skipped.sort(key=lambda c: c.norm_name)
