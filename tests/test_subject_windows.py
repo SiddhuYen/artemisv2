@@ -33,9 +33,25 @@ def test_common_first_names_are_recognised():
 
 
 def test_an_honorific_beats_the_lexicon():
-    sentence = "Ms. Robin Vance chaired the meeting."
-    at = sentence.index("Robin")
-    assert name_gender("Robin Vance", sentence, at) == FEMALE
+    """Goes through _mentions, not name_gender directly. The first version of
+    this test computed the offset by hand, which is not how the caller reaches
+    it -- _CANDIDATE swallows the honorific into the run ("Ms. Robin Vance" is
+    ONE match), so hand-passing an offset tested a path nothing uses and hid
+    the fact that the honorific defeated both gender routes at once."""
+    found = subject_windows._mentions("Ms. Robin Vance chaired the meeting.")
+    assert [(m.name, m.gender) for m in found] == [("Robin Vance", FEMALE)]
+
+
+def test_a_leading_honorific_is_stripped_off_the_name():
+    found = subject_windows._mentions("Mr. Robert Redfield chaired the panel.")
+    assert [(m.name, m.gender) for m in found] == [("Robert Redfield", MALE)]
+
+
+def test_unisex_given_names_are_left_unknown():
+    """A WRONG gender closes the walk and loses a sentence; an absent one fails
+    open and costs nothing. So the lexicon is tuned for precision, not size."""
+    for ambiguous in ("Robin Vance", "Jean Marchand", "Marion Cole"):
+        assert name_gender(ambiguous) is None
 
 
 def test_diminutives_resolve_through_the_shared_name_key():
@@ -130,6 +146,58 @@ def test_an_unknown_gender_name_can_still_be_an_antecedent():
     )
     out = focus("Prantik Chakraborty", page)
     assert "He reported to the chief executive." in out.text
+
+
+def test_an_organisation_does_not_displace_the_subject():
+    """'Person joined Org. He led...' is the most common shape in this corpus,
+    and the next sentence is the relationship-bearing one. Picking a single
+    antecedent gave that sentence to 'Oracle' and dropped it."""
+    page = _page(
+        "Prantik Chakraborty joined Oracle.",
+        "He led the sales organisation.",
+    )
+    out = focus("Prantik Chakraborty", page)
+    assert "He led the sales organisation." in out.text
+
+
+def test_an_acronym_does_not_displace_the_subject():
+    page = _page("Fauci worked at NIAID.", "He was awarded the medal.")
+    out = focus("Anthony Fauci", page)
+    assert "He was awarded the medal." in out.text
+
+
+def test_the_object_of_a_by_phrase_does_not_displace_the_subject():
+    """The codebase's own motivating example. Recency picked Trump; both are
+    plausible antecedents, and the subject being among them is the answer."""
+    page = _page(
+        "Redfield was appointed by Donald Trump.",
+        "He served until 2021.",
+    )
+    out = focus("Robert Redfield", page)
+    assert "He served until 2021." in out.text
+
+
+def test_a_capitalised_non_name_does_not_displace_the_subject():
+    """_NOT_A_NAME is a blocklist, so unlisted sentence-initial adverbs leak
+    through as candidates. They must not be able to swallow the walk."""
+    page = _page(
+        "Despite the setback, Sandra Whitfield resigned.",
+        "She later joined Acme.",
+    )
+    out = focus("Sandra Whitfield", page)
+    assert "She later joined Acme." in out.text
+
+
+def test_a_forward_reference_resolves():
+    """Cataphora: the pronoun precedes its antecedent in the same sentence, so
+    a backwards-only walk marched straight past the answer."""
+    page = _page(
+        "The company grew steadily.",
+        "In her role at Acme, Sandra Whitfield led sales.",
+        "She reported to the board.",
+    )
+    out = focus("Sandra Whitfield", page)
+    assert "In her role at Acme" in out.text
 
 
 def test_a_pronoun_beyond_the_lookback_is_not_resolved(monkeypatch):
