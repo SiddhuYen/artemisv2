@@ -56,7 +56,11 @@ class SearchOrchestrator:
         self.serper = SerperProvider()
         self.brave = BraveProvider()
         self.wikipedia = WikipediaProvider()
-        self.wikidata = WikidataProvider()
+        # search= is used only for the org-size headcount check inside
+        # colleagues() (see wikidata._org_headcount); every other Wikidata
+        # method needs no search at all. Same locate-only injection pattern
+        # as firms/directory below.
+        self.wikidata = WikidataProvider(search=lambda q: self.search(q, is_person=False))
         self.openalex = OpenAlexProvider()
         self.opencorporates = OpenCorporatesProvider()
         self.edgar = EdgarProvider()

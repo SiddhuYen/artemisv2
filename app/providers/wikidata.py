@@ -10,11 +10,12 @@ so the EXISTING extraction/graph pipeline consumes them unchanged.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .. import config
+from ..extraction.claude_client import call_json
 from . import cache
-from .base import request_with_retry
+from .base import SearchResult, request_with_retry
 from .ratelimit import IntervalLimiter
 
 _ENTITYDATA = "https://www.wikidata.org/wiki/Special:EntityData/{qid}.json"
@@ -33,6 +34,38 @@ _COLLEAGUE_PROPS = {
 _MAX_COLLEAGUE_ORGS = 5
 _MAX_COLLEAGUES_PER_ORG = 15
 _MAX_COLLEAGUES_TOTAL = 30
+
+# Org-size gate for _COLLEAGUE_PROPS matches: Wikidata's own P1128 (employees)
+# property is too sparse to use directly (absent even for Harvard University
+# and for a small biotech with zero P108 matches -- checked live, not assumed).
+# A web search + small-model read of the results covers both ends instead.
+_HEADCOUNT_PROMPT = """Based ONLY on the search results below, what is {org}'s \
+current approximate employee headcount?
+
+Rules:
+- Only use a number the results actually state (e.g. a company profile, an
+  "About" page, a news report). Do not use outside knowledge.
+- If the results don't clearly state a headcount, set known=false and
+  employees=0.
+
+Search results for "{org}" ({domain}):
+{snippets}
+"""
+_HEADCOUNT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "known": {
+            "type": "boolean",
+            "description": "true only if the results state an actual headcount",
+        },
+        "employees": {
+            "type": "integer",
+            "description": "approximate current employee count; 0 if not known",
+        },
+    },
+    "required": ["known", "employees"],
+    "additionalProperties": False,
+}
 
 # Wikidata property -> (our relationship_type, human phrase used in evidence)
 _PROPERTY_MAP: Dict[str, Tuple[str, str]] = {
@@ -56,6 +89,12 @@ _MAX_TARGETS = 40
 
 class WikidataProvider:
     name = "wikidata"
+
+    def __init__(self, search: Optional[Callable[[str], List[SearchResult]]] = None) -> None:
+        # Used ONLY by colleagues() to size-check an org before trusting bare
+        # shared-employer co-membership as a "coworker" edge (see
+        # _org_headcount) -- every other method here needs no search at all.
+        self._search = search
 
     def is_human(self, qid: str) -> bool:
         """True if the QID is instance-of human (P31=Q5). Guards against treating
@@ -131,10 +170,15 @@ class WikidataProvider:
 
     def colleagues(self, qid: str) -> List[dict]:
         """People who share an org (employer/member-of/party) or school with the
-        subject — reverse SPARQL lookups. Returns [{name, relationship_type, org}]."""
+        subject — reverse SPARQL lookups. Returns [{name, relationship_type, org}].
+
+        Bare co-membership is only trusted as "coworker" evidence when the org
+        is small enough that it's plausible; see _org_too_large."""
         if not qid:
             return []
-        key = cache.make_key(self.name, "colleagues", qid)
+        # v2: v1 cached results predate the org-size gate below and would
+        # serve the old, ungated colleague lists straight out of cache.
+        key = cache.make_key(self.name, "colleagues_v2", qid)
         cached = cache.get(key)
         if cached is not None:
             return cached.get("colleagues", [])
@@ -155,7 +199,11 @@ class WikidataProvider:
             # concurrently instead of one at a time.
             with ThreadPoolExecutor(max_workers=len(org_targets)) as ex:
                 per_org = list(ex.map(self._colleagues_for_target, org_targets))
-            for (_prop, rel, _org_qid), (org_label, names) in zip(org_targets, per_org):
+            for (_prop, rel, org_qid), (org_label, names) in zip(org_targets, per_org):
+                # Skip the (paid) headcount check entirely when there's
+                # nothing to gate for this org.
+                if names and self._org_too_large(org_qid, org_label):
+                    continue
                 for name in names:
                     k = name.lower()
                     if name and k not in seen:
@@ -168,6 +216,60 @@ class WikidataProvider:
                     break
         cache.set(key, "colleagues", {"colleagues": results}, config.CACHE_TTL_WIKI)
         return results
+
+    def _org_too_large(self, org_qid: str, org_label: str) -> bool:
+        """True only when this org's headcount is CONFIDENTLY known to exceed
+        WIKIDATA_COLLEAGUE_ORG_MAX_SIZE. Unknown always resolves to False
+        (keep the edge) rather than True: the orgs least likely to have any
+        documented headcount are small/obscure companies, not the large
+        institutions this exists to filter -- checked live, neither Harvard
+        University nor a small biotech startup had a headcount on Wikidata at
+        all, so defaulting "unknown" to "large" would penalize exactly the
+        legitimate small-company connections this is meant to protect."""
+        employees = self._org_headcount(org_qid, org_label)
+        if employees is None:
+            return False
+        return employees > config.WIKIDATA_COLLEAGUE_ORG_MAX_SIZE
+
+    def _org_headcount(self, org_qid: str, org_label: str) -> Optional[int]:
+        """Approx current employee headcount for an org, or None if unknown.
+
+        Wikidata's own P1128 (employees) property is too sparse to use here
+        (confirmed absent for Harvard University itself, among others), so
+        this goes through a web search + a small model reading the results
+        instead. Callers MUST treat None as "assume small" -- see
+        _org_too_large -- never as zero or as "large"."""
+        if not self._search or not org_label:
+            return None
+        cache_id = org_qid or org_label.lower()
+        key = cache.make_key("headcount", "employees", cache_id)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached.get("employees")
+
+        domain = self.official_website(org_qid) if org_qid else ""
+        # Anchored to the org's own domain (when known) so "Acme Corp" doesn't
+        # pull in an unrelated same-named company's headcount.
+        query = f"{org_label} {domain} number of employees".strip()
+        results = self._search(query) or []
+        employees = None
+        snippets = "\n".join(
+            f"- {r.title}: {r.snippet}" for r in results[:5] if r.snippet)
+        if snippets:
+            payload = call_json(
+                _HEADCOUNT_PROMPT.format(
+                    org=org_label, domain=domain or "unknown", snippets=snippets),
+                schema=_HEADCOUNT_SCHEMA,
+                model=config.HEADCOUNT_MODEL,
+                max_tokens=256,
+            )
+            if payload and payload.get("known"):
+                try:
+                    employees = int(payload["employees"])
+                except (TypeError, ValueError):
+                    employees = None
+        cache.set(key, "employees", {"employees": employees}, config.CACHE_TTL_HEADCOUNT)
+        return employees
 
     def _colleagues_for_target(self, target: Tuple[str, str, str]) -> Tuple[str, List[str]]:
         prop, _rel, org_qid = target

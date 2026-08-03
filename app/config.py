@@ -230,6 +230,9 @@ CACHE_DB = os.environ.get("ARTEMIS_CACHE_DB", "./artemis_cache.db")
 CACHE_TTL_SEARCH = int(os.environ.get("ARTEMIS_CACHE_TTL_SEARCH", str(30 * 86400)))
 CACHE_TTL_PAGE = int(os.environ.get("ARTEMIS_CACHE_TTL_PAGE", str(30 * 86400)))
 CACHE_TTL_WIKI = int(os.environ.get("ARTEMIS_CACHE_TTL_WIKI", str(30 * 86400)))
+# Headcount moves slowly (quarterly at most) and each lookup costs a real
+# search + model call, so this outlives the other caches.
+CACHE_TTL_HEADCOUNT = int(os.environ.get("ARTEMIS_CACHE_TTL_HEADCOUNT", str(90 * 86400)))
 
 # --- search behaviour ------------------------------------------------------
 # RESULTS_PER_QUERY caps how many results a provider even RETURNS per query
@@ -459,6 +462,19 @@ CLAUDE_CLASSIFY_RELATIONS = _env_bool("ARTEMIS_CLAUDE_CLASSIFY", "1")
 CLAUDE_CLASSIFY_MODEL = os.environ.get("ARTEMIS_CLAUDE_CLASSIFY_MODEL", CLAUDE_BATCH_MODEL)
 CLAUDE_CLASSIFY_BATCH = int(os.environ.get("ARTEMIS_CLAUDE_CLASSIFY_BATCH", "25"))
 CLAUDE_CLASSIFY_MIN_CONF = float(os.environ.get("ARTEMIS_CLAUDE_CLASSIFY_MIN_CONF", "0.5"))
+
+# Wikidata "colleagues" reverse lookup (shared employer/board -> "coworker"):
+# an org above this current-headcount size is too large for bare co-membership
+# to mean two specific people actually know each other (e.g. "both worked at
+# Harvard" spans centuries and thousands of people). Below it, or when the
+# headcount can't be determined, the edge stands as before -- see
+# providers.wikidata._org_headcount for why "unknown" defaults to small rather
+# than large (small/obscure orgs are the ones LEAST likely to have a
+# documented headcount, so defaulting the other way would penalize exactly the
+# legitimate small-company connections this exists to protect).
+WIKIDATA_COLLEAGUE_ORG_MAX_SIZE = int(
+    os.environ.get("ARTEMIS_WIKIDATA_COLLEAGUE_ORG_MAX_SIZE", "300"))
+HEADCOUNT_MODEL = os.environ.get("ARTEMIS_HEADCOUNT_MODEL", CLAUDE_BATCH_MODEL)
 RELATION_CONF_CEILING = float(os.environ.get("ARTEMIS_RELATION_CONF_CEILING", "0.85"))
 
 # --- OpenAlex (academic coauthors) -----------------------------------------
