@@ -1373,6 +1373,36 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
     visited_by_hop: Dict[int, List[str]] = {}  # hop -> node names selected for it
+    offered: set = set()
+
+    def _offer_frontier(disc_now, visited_now, hop_now: int) -> None:
+        """Hand the caller this hop's strongest discoveries, once each.
+
+        Ranked with the same function the next hop would use, so what is
+        offered is what the walk itself considers worth expanding -- the
+        high-leverage nodes. Deduped across hops because the ranking is
+        cumulative: without `offered`, hop 2 would re-offer everything hop 1
+        already asked about, and the caller pays per name.
+        """
+        if not on_frontier:
+            return
+        try:
+            top_n = (config.ALPHA_TOP_CANDIDATES
+                     if enhanced_professional_search else None)
+            ranked = _ranked_expandable(disc_now, visited_now,
+                                        prefer_reachable=prefer_reachable,
+                                        top_n=top_n)
+        except Exception:  # noqa: BLE001 -- ranking must not end the walk
+            return
+        fresh = [n for n in ranked if n not in offered]
+        if not fresh:
+            return
+        offered.update(fresh)
+        try:
+            on_frontier(fresh, db)
+        except Exception:  # noqa: BLE001 -- neither must the caller's hook
+            return
+
     # Declared here, not inside the hop loop below: should_stop can trip on
     # hop 0 before the loop body ever runs (a real race in connect_people's
     # concurrent two-sided expansion -- the other endpoint's search can find
@@ -1624,6 +1654,17 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     if progress:
                         progress("  ✓ stop condition met; stopping expansion early")
                     break
+            # Ask the far endpoint's question about what THIS hop just turned
+            # up, before any of the exits below can end the walk.
+            #
+            # This used to sit further down, after the next hop's frontier was
+            # ranked, and was therefore unreachable in practice: `stop_after_node`
+            # breaks out the moment should_stop trips (which is every walk that
+            # begins with a route already believed to exist), `hop == max_depth
+            # - 1` breaks on the last hop before any ranking happens, and the
+            # node cap breaks too. A high-leverage node discovered on the final
+            # hop -- exactly the one worth asking about -- was never asked about.
+            _offer_frontier(disc, visited, hop)
             if stop_after_node:
                 per_depth.append(done)
                 break
@@ -1649,20 +1690,13 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         frontier = _ranked_expandable(disc, visited, progress=progress,
                                       prefer_reachable=prefer_reachable,
                                       top_n=alpha_top_n)
-        # Ask the far endpoint's question before paying to walk outward. Placed
-        # here, after ranking and before expansion, so a node that turns out to
-        # reach the target never has its own ~35 queries spent.
-        if on_frontier and frontier:
-            check_cancel()
-            # The WORKER's session, never the caller's: expand_graph runs one
-            # of these per /connect side, concurrently, and handing both the
-            # same Session raises "this session is provisioning a new
-            # connection; concurrent operations are not permitted".
-            on_frontier(frontier, db)
-            if should_stop and should_stop(db):
-                if progress:
-                    progress("  → a frontier node reaches the target; stopping expansion")
-                break
+        # The hook already ran on this hop's discoveries (see _offer_frontier,
+        # called right after the node loop). All that is left is to notice if it
+        # found the answer.
+        if on_frontier and should_stop and should_stop(db):
+            if progress:
+                progress("  → a frontier node reaches the target; stopping expansion")
+            break
         # Alpha step 7 (per-candidate depth): among the selected frontier,
         # any independently notable/famous candidate gets marked shallow --
         # see shallow_nodes' declaration above. Checked here (once per hop,

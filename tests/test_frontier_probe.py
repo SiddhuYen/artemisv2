@@ -200,3 +200,56 @@ def test_the_probe_uses_the_workers_session_not_the_callers(db, monkeypatch):
     sentinel = object()
     seen["Aa Origin"](["Paul Graham"], sentinel)
     assert used == [sentinel], "the probe must run on the session it was handed"
+
+
+# ── the hook has to be REACHABLE ───────────────────────────────────────────
+# It originally sat after the next hop's frontier was ranked, which every real
+# walk exits before: `stop_after_node` breaks the moment should_stop trips
+# (true of any walk that starts with a route already believed to exist),
+# `hop == max_depth - 1` breaks on the last hop before ranking, and the node cap
+# breaks too. The feature existed and never once ran.
+
+def _expand_capturing(db, monkeypatch, **kw):
+    """Run the real expand_graph with the network stubbed out, recording what
+    on_frontier is handed."""
+    from app.graph import expansion as E
+    offered = []
+    monkeypatch.setattr(E, "_ranked_expandable",
+                        lambda *a, **k: ["Mark Zuckerberg", "Paul Graham"])
+    monkeypatch.setattr(E, "_process_person", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(E, "_prune_invalid_nodes", lambda *a, **k: None)
+    monkeypatch.setattr(E, "_retype_unknown_edges", lambda *a, **k: None)
+    E.expand_graph(db, "Aa Origin", kw.pop("depth", 1),
+                   on_frontier=lambda names, _db: offered.append(list(names)),
+                   **kw)
+    return offered
+
+
+def test_the_hook_fires_on_a_single_hop_walk(db, monkeypatch):
+    """depth=1 breaks at `hop == max_depth - 1` before any ranking, so nothing
+    discovered on the only hop was ever offered."""
+    assert _expand_capturing(db, monkeypatch, depth=1) == \
+        [["Mark Zuckerberg", "Paul Graham"]]
+
+
+def test_the_hook_fires_even_when_the_walk_stops_early(db, monkeypatch):
+    """`stop_after_node` is the exit that won every observed run: the stop
+    condition trips partway through a hop, after nodes have been processed and
+    candidates discovered. Those discoveries are exactly what is worth asking
+    about, and they were being thrown away."""
+    calls = {"n": 0}
+
+    def stop_after_first_node(_db):
+        calls["n"] += 1
+        return calls["n"] > 1        # let the hop start, then trip
+
+    offered = _expand_capturing(db, monkeypatch, depth=2,
+                                should_stop=stop_after_first_node)
+    assert offered == [["Mark Zuckerberg", "Paul Graham"]]
+
+
+def test_a_name_is_offered_once_across_hops(db, monkeypatch):
+    """The ranking is cumulative, so without deduping, hop 2 re-offers
+    everything hop 1 already asked about and the caller pays again."""
+    offered = _expand_capturing(db, monkeypatch, depth=3)
+    assert offered == [["Mark Zuckerberg", "Paul Graham"]], offered
