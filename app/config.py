@@ -411,6 +411,23 @@ CONNECT_PROBE_MAX_PER_HOP = int(
 # well-documented person answers in one query; an obscure one usually does not,
 # and the searches are better spent on the walk. 0 probes toward anyone.
 CONNECT_PROBE_ONLY_FAMOUS = _env_bool("ARTEMIS_CONNECT_PROBE_ONLY_FAMOUS", "1")
+# Last stop before answering "no connection": show the model what was explored,
+# what was proposed, and why each candidate was rejected, and let it decide
+# whether the walk stopped too early. Its two moves are priced differently --
+# a probe is one search and may name anyone, an expansion is ~35 and may only
+# name nodes the walk already ranked -- so it steers spending it cannot invent.
+# See extraction/route_adjudicator.
+CONNECT_ADJUDICATE_NO_ROUTE = _env_bool("ARTEMIS_CONNECT_ADJUDICATE_NO_ROUTE", "1")
+CONNECT_ADJUDICATE_MAX_PROBES = int(
+    os.environ.get("ARTEMIS_CONNECT_ADJUDICATE_MAX_PROBES", "6"))
+# 0 disables expansion entirely, leaving probing as the only move -- the safe
+# setting for a cost-capped deployment, since each expansion is ~35 searches.
+CONNECT_ADJUDICATE_MAX_EXPAND = int(
+    os.environ.get("ARTEMIS_CONNECT_ADJUDICATE_MAX_EXPAND", "2"))
+# Judging a half-finished search needs real reasoning over messy context, so
+# this is not the batch model.
+ROUTE_ADJUDICATOR_MODEL = os.environ.get(
+    "ARTEMIS_ROUTE_ADJUDICATOR_MODEL", "claude-sonnet-5")
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))

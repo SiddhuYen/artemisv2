@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
 from ..extraction import (bridge_hypothesis, bridge_strategy, extract,
-                          relation_classifier, spacy_extractor)
+                          relation_classifier, route_adjudicator, spacy_extractor)
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge, ExtractionOutput
@@ -353,6 +353,32 @@ def _diverse_paths(adj, start: str, target: str, max_hops: int, k: int,
         for pid, _edge in hops[1:-1]:  # exclude this route's bridges next time
             excluded.add(pid)
     return paths
+
+
+def _rejection_notes(db: Session, person_by_id, limit: int = 8) -> List[str]:
+    """The verifier's OWN words for why it threw hops out, most recent first.
+
+    Fed to the adjudicator because "rejected" alone is not information -- the
+    reason is. "The title alone does not establish that Paul Graham and Drew
+    Houston actually know each other" tells a reader the walk was chasing a
+    video billing, which is what makes "you never checked X against Y" the
+    obvious next move.
+    """
+    rows = db.execute(
+        select(RelationshipEdge)
+        .where(RelationshipEdge.verified_status == "rejected")
+        .order_by(RelationshipEdge.verified_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    notes = []
+    for e in rows:
+        a = person_by_id.get(e.person_a_id)
+        b = person_by_id.get(e.person_b_id)
+        if a is None or b is None:
+            continue
+        notes.append(f"{a.canonical_name} -[{e.relationship_type}]- "
+                     f"{b.canonical_name}: {(e.verified_reason or '')[:180]}")
+    return notes
 
 
 def _verified_routes(db: Session, routes, person_by_id, cancel_checker=None):
@@ -1892,6 +1918,71 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         routes, n_after, verified, adj, person_by_id, src_by_id, degree = _routes_now()
         n_candidates = max(n_candidates, n_after)
 
+    # LAST STOP BEFORE "no connection". Everything above has run out, but by now
+    # this function is holding exactly the context needed to judge whether it
+    # stopped too early: who was explored on each side, what routes were
+    # proposed, and the verifier's own words for rejecting them. Nothing ever
+    # looked at that before answering. Charlie Warren -> Donald Trump is the
+    # case -- the walk quit while Sam Altman sat unexpanded in the graph with 34
+    # edges, and neither "both are Y Combinator" nor "Altman has met Trump
+    # repeatedly" was ever a query.
+    #
+    # The model's two moves are priced differently, and that asymmetry is what
+    # makes this safe: a probe is one search and may name anyone, because the
+    # search decides; an expansion is ~35 searches and may only name nodes this
+    # walk already ranked, by index into the shortlist handed to it. So it
+    # steers spending it cannot invent, and every edge still arrives through the
+    # ordinary search path. See extraction/route_adjudicator.
+    adjudication: Optional[dict] = None
+    if not routes and route_adjudicator.is_active():
+        explored = _build_explored(expand_stats, name_a, name_b) or {}
+        side_names = {
+            side: [n for hop in (explored.get(side, {}).get("by_hop", {}) or {}).values()
+                   for n in hop]
+            for side in ("a", "b")
+        }
+        # The shortlist is what an expansion may name, so it is drawn from what
+        # is actually in the graph and reachable, not from the model's memory.
+        shortlist = [person_by_id[pid].canonical_name
+                     for pid in sorted(adj, key=lambda p: -degree.get(p, 0))
+                     if pid in person_by_id][:30]
+        if progress:
+            progress("\n[adjudicate] no route survived — showing the search to "
+                     "the model and asking whether it stopped too early…")
+        adjudication = route_adjudicator.decide(
+            name_a, name_b, context_a, context_b,
+            explored_a=side_names["a"], explored_b=side_names["b"],
+            rejected=_rejection_notes(db, person_by_id),
+            shortlist=shortlist)
+
+    if adjudication and adjudication["action"] != "none":
+        if progress:
+            progress(f"[adjudicate] {adjudication['why']}")
+        for pair in adjudication["pairs"]:
+            if cancel_checker:
+                cancel_checker()
+            if progress:
+                progress(f"  ?[adjudicate] {pair['a']} — {pair['b']}")
+            try:
+                _direct_pair_search(db, pair["a"], pair["b"],
+                                    cancel_checker=cancel_checker)
+            except Exception:  # noqa: BLE001 -- a last-resort pass must not raise
+                continue
+        for who in adjudication["expand"]:
+            if cancel_checker:
+                cancel_checker()
+            if progress:
+                progress(f"  ⟳[adjudicate] expanding {who}")
+            try:
+                expand_graph(db, who, 1, progress=progress,
+                             prefer_reachable=False,
+                             cancel_checker=cancel_checker)
+            except Exception:  # noqa: BLE001
+                continue
+        db.expunge_all()
+        routes, n_after, verified, adj, person_by_id, src_by_id, degree = _routes_now()
+        n_candidates = max(n_candidates, n_after)
+
     if not routes:
         # A distinct reason when candidates existed but none survived
         # verification -- "try a higher depth" would be actively misleading
@@ -1905,12 +1996,22 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             f"no path within {max_hops} hops — their graphs don't overlap "
             f"at depth {depth}. Try a higher depth."
         )
-        return {
+        out = {
             "connected": False,
             "person_a": a.canonical_name, "person_b": b.canonical_name,
             "reason": reason,
             "explored": _build_explored(expand_stats, name_a, name_b),
         }
+        if adjudication:
+            # What the last pass concluded and what it spent, so the answer
+            # reports an exhausted search rather than a bare refusal.
+            out["adjudication"] = adjudication
+            if adjudication["action"] != "none":
+                out["reason"] = (
+                    f"{reason} Then followed up on: {adjudication['why']} "
+                    f"({len(adjudication['pairs'])} pair search(es), "
+                    f"{len(adjudication['expand'])} expansion(s)) — still nothing.")
+        return out
 
     org_aff = _org_affiliations(db)
     paths = []
