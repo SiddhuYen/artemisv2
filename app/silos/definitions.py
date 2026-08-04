@@ -364,3 +364,34 @@ COLLEAGUE_SILO = Silo(
     strength=0.7,
     intent_default=False,
 )
+
+
+# Pages fetched to CHECK a hypothesised connection (expansion phase 0e, see
+# extraction/connection_hypothesis.py). Extraction-only, like the two above:
+# the queries come from config.NODE_HYPOTHESIS_QUERIES, not from here.
+#
+# Broad signals, because a hypothesis may be about any kind of tie -- but a
+# multiplier of exactly 1.0, and that is the load-bearing number in this
+# definition. The evidence bar for a connection somebody predicted must be
+# identical to the bar for one nobody did; any bonus here would let the model's
+# own prior pay part of the cost of confirming itself, which is the precise
+# failure this whole stage is built to avoid. It also has to be no LOWER than
+# neutral, or a genuinely confirmed hypothesis would be worth less than the
+# same sentence found by an untargeted query.
+#
+# `intent_default` stays False for the same reason: landing on a page that
+# names both of them is not evidence of the relationship the model GUESSED, so
+# an absent keyword yields 'unknown' and the classifier reads it off the
+# sentence like any other edge.
+HYPOTHESIS_SILO = Silo(
+    key="hypothesis",
+    title="Hypothesised connection (search-confirmed)",
+    providers=[],
+    queries=[],
+    signals=dict(STRUCTURED_SILO.signals),
+    priority_relationship_types=["coworker", "cofounder", "board_member", "investor"],
+    confidence_multiplier=1.0,
+    default_relationship="unknown",
+    strength=0.7,
+    intent_default=False,
+)

@@ -766,6 +766,48 @@ STRATEGY_ANGLE_QUERIES = {
     "generic": [],
 }
 
+# --- hypothesis-first node search (expansion phase 0e) ----------------------
+# Look at the node before searching it: from the structured enrichment already
+# in hand, ask which named people/orgs it is likely to be publicly documented
+# with, then spend searches PROVING those specific connections instead of
+# trawling the generic silo templates for whatever they happen to return.
+# See extraction/connection_hypothesis.py for the containment rule -- the model
+# names entities, NODE_HYPOTHESIS_QUERIES below writes the queries.
+#
+# Unlike the Alpha stages (4c/4d/4e), this is not restricted to the non-famous
+# side of an asymmetric /connect walk. "Which of this node's connections are
+# worth proving" is a question worth asking of any node, in any build.
+NODE_HYPOTHESIS_ENABLED = _env_bool("ARTEMIS_NODE_HYPOTHESIS", "1")
+NODE_HYPOTHESIS_MODEL = os.environ.get("ARTEMIS_NODE_HYPOTHESIS_MODEL", CLAUDE_BATCH_MODEL)
+# Candidates per node. Each is one search, so this is the stage's marginal
+# cost in provider calls -- and with NODE_HYPOTHESIS_TRADE_BUDGET on, the
+# number of generic silo queries given up to pay for them.
+NODE_HYPOTHESIS_MAX = int(os.environ.get("ARTEMIS_NODE_HYPOTHESIS_MAX", "6"))
+# How many grounded fact lines about the subject are shown to the model. The
+# cap is what keeps this a judgment about the evidence rather than a prompt
+# that grows without bound on a well-documented node.
+NODE_HYPOTHESIS_FACTS = int(os.environ.get("ARTEMIS_NODE_HYPOTHESIS_FACTS", "12"))
+# Pages fetched per confirmed-or-not hypothesis. Deliberately far below
+# SCRAPE_TOP_N: this query names both parties explicitly, so if the top few
+# results don't state a tie, the tail is not going to either.
+NODE_HYPOTHESIS_SCRAPE_TOP_N = int(
+    os.environ.get("ARTEMIS_NODE_HYPOTHESIS_SCRAPE_TOP_N", "3"))
+# Pay for the hypothesis searches out of the node's generic silo allowance
+# instead of on top of it, so a node's total query count stays roughly flat and
+# this stage SHIFTS spending rather than adding it. Coverage is recorded from
+# the trimmed budget (see expansion phase 1's `executed`), so a silo whose
+# queries were given up is honestly recorded as unasked and a later walk that
+# wants it will still run it.
+NODE_HYPOTHESIS_TRADE_BUDGET = _env_bool("ARTEMIS_NODE_HYPOTHESIS_TRADE_BUDGET", "1")
+# The entire query surface of this stage -- fully deterministic and
+# inspectable, exactly like STRATEGY_ANGLE_QUERIES. Both parties are quoted, so
+# the search itself carries the burden of finding them on one page; a wrong
+# hypothesis returns nothing rather than something loosely related.
+NODE_HYPOTHESIS_QUERIES = {
+    "person": ['"{subject}" "{name}"'],
+    "org": ['"{subject}" "{name}"'],
+}
+
 # --- OpenCorporates (company officer networks) -----------------------------
 # Free-tier token from https://opencorporates.com/api_accounts/new ; absent => skipped.
 OPENCORPORATES_API_TOKEN = os.environ.get("OPENCORPORATES_API_TOKEN", "").strip()

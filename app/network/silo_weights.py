@@ -135,6 +135,44 @@ def query_budget(weights: Optional[Dict[str, float]]) -> Dict[str, int]:
     return out
 
 
+def trim_budget(budget: Dict[str, int], n: int) -> Dict[str, int]:
+    """Give up `n` generic queries, taking from the largest allowances first.
+
+    Expansion's hypothesis phase (see config.NODE_HYPOTHESIS_TRADE_BUDGET) pays
+    for its targeted searches out of the node's generic allowance rather than on
+    top of it. This is how that payment is taken.
+
+    Largest-first, round-robin, and never below one query per silo: the point of
+    the allocation is BREADTH -- nine differently-shaped questions -- and zeroing
+    a silo outright to protect another silo's fourth query trades a whole angle
+    of enquiry for a marginal repeat of one already asked. When every silo is
+    down to its last query the trim stops early and the caller simply pays the
+    remainder on top; refusing to answer at all would be worse than a node that
+    costs a few queries more than the trade intended.
+
+    Returned with the same shape it came in, so the caller's coverage record
+    (expansion phase 1's `executed`) reflects what was really asked.
+    """
+    out = dict(budget)
+    if n <= 0 or not out:
+        return out
+    remaining = int(n)
+    while remaining > 0:
+        # Ties broken by key so the same budget always trims the same way --
+        # an inspectable plan, not one that depends on dict ordering.
+        trimmable = sorted(((count, key) for key, count in out.items() if count > 1),
+                           key=lambda pair: (-pair[0], pair[1]))
+        if not trimmable:
+            break
+        for _count, key in trimmable:
+            if remaining <= 0:
+                break
+            if out[key] > 1:
+                out[key] -= 1
+                remaining -= 1
+    return out
+
+
 # --- coverage: what a node's expansion ACTUALLY asked ------------------------
 # `Person.processed` is a boolean, but an expansion is not one thing: it is a
 # per-silo query allocation (above), and which silos ran depends entirely on

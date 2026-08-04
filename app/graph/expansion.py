@@ -29,15 +29,18 @@ from sqlalchemy.orm.exc import ObjectDeletedError
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
-from ..extraction import coauthor_plausibility, node_profiler, page_triage, search_strategy
+from ..extraction import (coauthor_plausibility, connection_hypothesis, node_profiler,
+                          page_triage, relation_classifier, search_strategy)
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
 from ..models import Organization, Person, RelationshipEdge, Source
 from ..providers import SearchOrchestrator, SearchResult
-from ..network.silo_weights import merge_coverage, uncovered_budget
+from ..network.silo_weights import merge_coverage, trim_budget, uncovered_budget
 from ..network.silo_weights import query_budget as silo_query_budget
-from ..silos import COLLEAGUE_SILO, PROFESSIONAL_SILOS, SILO_BY_KEY, SILOS, STRUCTURED_SILO
+from ..silos import (COLLEAGUE_SILO, HYPOTHESIS_SILO, PROFESSIONAL_SILOS, SILO_BY_KEY,
+                     SILOS, STRUCTURED_SILO)
+from ..utils.htmltext import html_to_text
 from ..utils.htmltext import html_to_text
 from ..utils.names import (
     is_noise_name,
@@ -234,6 +237,97 @@ def _best_known_org(candidate_edges: List[ExtractedEdge]) -> Optional[str]:
     """
     best = _best_org_affiliation_edge(candidate_edges)
     return best.organization if best else None
+
+
+def _hypothesis_match(edge: ExtractedEdge, hypo: dict) -> bool:
+    """Is this extracted edge about the entity the hypothesis named?
+
+    Everything else found on a hypothesis page is discarded. The page was
+    reached by a query naming two specific parties, so its other names are
+    there by association -- and keeping them would let one guess about Y seed
+    the graph with everyone who happens to share Y's page, which is the exact
+    laundering route this stage's containment rule exists to close. They are
+    not lost: whichever query genuinely surfaces them still finds them, with
+    evidence of their own.
+    """
+    if hypo["kind"] == "person":
+        return edge.other_kind == "person" and person_norm_key(edge.person_b) == hypo["norm"]
+    return edge.other_kind != "person" and org_norm_key(edge.organization) == hypo["norm"]
+
+
+def _hypothesis_facts(db: Session, subject: Person, context: str,
+                      enrichment: Optional[dict],
+                      candidate_edges: List[ExtractedEdge]) -> List[str]:
+    """Short grounded lines about the subject, for connection_hypothesis.
+
+    Nothing here is fetched. It is this call's own structured enrichment
+    (phases 0-0d, which cost no web search) plus, only if that left room, what
+    earlier runs already persisted about this node -- a node someone else
+    expanded last week has no fresh enrichment but often has the richest
+    record in the graph, and that is precisely the node worth reasoning about
+    rather than re-trawling.
+
+    The order is deliberate: freshest and most structured first, because
+    `propose` truncates the list.
+    """
+    limit = max(0, config.NODE_HYPOTHESIS_FACTS)
+    facts: List[str] = []
+    if context:
+        facts.append(f"context given by the operator: {context}")
+    if enrichment:
+        summary = (enrichment.get("summary") or "").strip()
+        if summary:
+            facts.append(f"Wikipedia: {summary[:300]}")
+        for line in (enrichment.get("wikidata_text") or "").splitlines():
+            line = line.strip()
+            if line:
+                facts.append(f"Wikidata: {line[:200]}")
+
+    seen = {f.lower() for f in facts}
+
+    def _add(line: str) -> None:
+        if line.lower() not in seen:
+            seen.add(line.lower())
+            facts.append(line)
+
+    for edge in sorted(candidate_edges, key=lambda e: -e.confidence_adjusted):
+        if len(facts) >= limit:
+            break
+        counterpart = edge.person_b if edge.other_kind == "person" else edge.organization
+        if not counterpart:
+            continue
+        kind = "person" if edge.other_kind == "person" else "organization"
+        _add(f"found this run: {edge.relationship_type} — {counterpart} ({kind})")
+
+    # Only now, and only if there is room: three bounded indexed reads against
+    # a node that may already have hundreds of edges. Both orientations,
+    # because whether the subject is stored as person_a or person_b is an
+    # accident of which side was expanded first (see models.py's note on
+    # SYMMETRIC_RELATIONSHIP_TYPES).
+    if len(facts) < limit:
+        room = limit - len(facts)
+        queries = (
+            select(RelationshipEdge.relationship_type, Organization.name)
+            .join(Organization, RelationshipEdge.organization_id == Organization.id)
+            .where(RelationshipEdge.person_a_id == subject.id)
+            .order_by(RelationshipEdge.confidence_raw.desc()).limit(room),
+            select(RelationshipEdge.relationship_type, Person.canonical_name)
+            .join(Person, RelationshipEdge.person_b_id == Person.id)
+            .where(RelationshipEdge.person_a_id == subject.id)
+            .order_by(RelationshipEdge.confidence_raw.desc()).limit(room),
+            select(RelationshipEdge.relationship_type, Person.canonical_name)
+            .join(Person, RelationshipEdge.person_a_id == Person.id)
+            .where(RelationshipEdge.person_b_id == subject.id)
+            .order_by(RelationshipEdge.confidence_raw.desc()).limit(room),
+        )
+        for kind, query in zip(("organization", "person", "person"), queries):
+            for rel_type, name in db.execute(query).all():
+                if len(facts) >= limit:
+                    break
+                if name:
+                    _add(f"already in the graph: {rel_type} — {name} ({kind})")
+
+    return facts[:limit]
 
 
 @dataclass
@@ -654,6 +748,138 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
                 )
                 candidate_edges.append(edge)
 
+    # --- phase 0e: hypothesise where this node connects, then prove it ------
+    # The first thing done to a node used to be ~35 generic silo queries that
+    # know nothing about it: the same '"X" board of directors' fired at a
+    # senator, a postdoc and a regional sales manager. This asks a different
+    # question first, off the structured enrichment above (which costs no web
+    # search): given what we now know about THIS person, who are they likely to
+    # be publicly documented alongside, and which of those is worth proving?
+    # Then it searches for exactly those pairs.
+    #
+    # It sits here, before phase 1, because that ordering is the whole point --
+    # the hypotheses are formed from free structured facts and then PAID FOR
+    # out of the generic allowance (see the trim below), so the node's total
+    # query count stays flat and the spend moves from trawling to proving.
+    #
+    # The safety story is entirely in what the model is allowed to do, and it
+    # is allowed to do exactly one thing: name entities. Queries come from
+    # config.NODE_HYPOTHESIS_QUERIES, edges come from a fetched page read by
+    # the ordinary extractor, the relationship it PREDICTED is never written
+    # anywhere near the edge (relation_classifier reads the real one off the
+    # sentence, same as everywhere else), and HYPOTHESIS_SILO's multiplier is
+    # 1.0 so a predicted connection is believed no more readily than an
+    # unpredicted one. A confidently wrong guess costs one search.
+    check_cancel()
+    hypotheses: List[dict] = []
+    hypothesis_queries = 0
+    if is_person and connection_hypothesis.is_active():
+        # Nothing to prove about a counterpart this node already has strong
+        # evidence for -- the same discipline phase 4c applies when it declines
+        # to re-query a pair that already reached 'strong'.
+        settled = {
+            person_norm_key(e.person_b) if e.other_kind == "person"
+            else org_norm_key(e.organization)
+            for e in candidate_edges if tier(e.confidence_adjusted) == "strong"
+        }
+        settled.discard("")
+        hypotheses = connection_hypothesis.propose(
+            subject_name, context=context,
+            facts=_hypothesis_facts(db, subject, context, enrichment, candidate_edges),
+            target_name=target_person_name, target_context=target_context,
+            exclude=settled)
+        if progress:
+            if hypotheses:
+                progress("  ? hypotheses for {}: {}".format(
+                    subject_name,
+                    "; ".join(f"{h['name']} ({h['why']})" for h in hypotheses)))
+            else:
+                # The silent branch otherwise: a stage that ran and proposed
+                # nothing must not look like a stage that never ran.
+                progress(f"  ? no connection hypothesis for {subject_name} — "
+                         "generic silo search only")
+
+    for hypo in hypotheses:
+        check_cancel()
+        found: List[ExtractedEdge] = []
+        # Per hypothesis, NOT shared across them: two hypotheses can legitimately
+        # be confirmed by one page, and each needs its own extraction pass
+        # because the counterpart filter below is what makes the pass safe. The
+        # refetch is free -- the provider cache already holds the page.
+        seen_urls: Set[str] = set()
+        for template in config.NODE_HYPOTHESIS_QUERIES.get(hypo["kind"], []):
+            check_cancel()
+            query = template.format(subject=subject_name, name=hypo["name"])
+            hypothesis_queries += 1
+            try:
+                results = ORCH.search(query, is_person=True)
+            except Exception:
+                continue
+            for res in results[:max(0, config.NODE_HYPOTHESIS_SCRAPE_TOP_N)]:
+                check_cancel()
+                if res.url in seen_urls:
+                    continue
+                seen_urls.add(res.url)
+                page = ORCH.fetch(res.url)
+                text = html_to_text(page.content) if page.content else ""
+                text = text or f"{res.title}. {res.snippet}"
+                source = builder.save_source(db, res, query, text)
+                source_by_url[res.url] = source
+                # Not `deep`, deliberately, and the same choice phases 4c and
+                # 4e make for their targeted pages: a whole-page model read is
+                # what page_triage exists to ration, and six of them per node
+                # would put this stage's cost back where reading everything
+                # already put it once. The cheap extractor finds the sentence;
+                # the classifier below gives it the decisive read.
+                out = extract(subject_name, text, HYPOTHESIS_SILO, res.snippet, res.url)
+                found.extend(e for e in out.edges if _hypothesis_match(e, hypo))
+
+        # The same decisive read phase 4c gives its targeted hits, for the same
+        # reason: a clean, deliberately-sought sentence can still land short of
+        # 'strong' on the deterministic arithmetic alone. Note what is being
+        # classified -- the evidence, not the hypothesis. The model's predicted
+        # relationship is not passed in and does not participate.
+        if found and hypo["kind"] == "person" and relation_classifier.is_active():
+            check_cancel()
+            verdicts = relation_classifier.classify(
+                [{"a": subject_name, "b": hypo["name"], "evidence": e.evidence_snippet}
+                 for e in found])
+            for edge, verdict in zip(found, verdicts):
+                rtype = verdict.get("type", "unknown")
+                conf = verdict.get("confidence", 0.0)
+                if rtype != "unknown" and conf >= config.CLAUDE_CLASSIFY_MIN_CONF:
+                    edge.relationship_type = rtype
+                    edge.confidence_adjusted = max(
+                        edge.confidence_adjusted,
+                        round(min(conf, config.RELATION_CONF_CEILING), 3))
+                    edge.signals.explicit_keyword_match = True
+
+        hypo["edges"] = len(found)
+        hypo["outcome"] = "confirmed" if found else "unsupported"
+        candidate_edges.extend(found)
+
+    if hypotheses:
+        # Recorded on the node, like phase 4e's strategy: what was guessed, what
+        # the searches made of it, and which target it was reasoning toward.
+        # A stage that steers real spending should leave an inspectable trail.
+        meta = dict(subject.meta or {})
+        meta["connection_hypotheses"] = {
+            "v": 1,
+            "target": target_person_name or "",
+            "items": [{k: h[k] for k in
+                       ("name", "kind", "relationship", "why", "outcome", "edges")}
+                      for h in hypotheses],
+        }
+        subject.meta = meta
+        if progress:
+            confirmed = [h["name"] for h in hypotheses if h["outcome"] == "confirmed"]
+            if confirmed:
+                progress(f"  ✓ {len(confirmed)}/{len(hypotheses)} hypotheses borne out "
+                         f"by search: {', '.join(confirmed)}")
+            else:
+                progress(f"  ✗ none of the {len(hypotheses)} hypotheses were borne out "
+                         "by search — nothing recorded for them")
+
     # --- phase 1: build (silo, query) pairs, then DEDUP across silos -------
     # `professional_only` drops the personal-tie silos (family/friends) --
     # used for the shallow/famous side of an asymmetric /connect walk, where
@@ -667,6 +893,15 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # cannot pay off for this particular subject are dropped and the rest are
     # scaled — see network/silo_weights.query_budget.
     budget = silo_query_budget(silo_weights)
+    # Pay for phase 0e out of this allowance rather than on top of it: the
+    # hypothesis searches are meant to REPLACE generic trawling, not to be an
+    # extra bill for having thought about the node first. `executed` below is
+    # computed from the trimmed budget, so a silo whose query was given up is
+    # recorded as unasked and a later walk that wants it still runs it -- the
+    # trade shows up as honestly reduced coverage, never as coverage claimed
+    # for a question nobody asked.
+    if hypothesis_queries and config.NODE_HYPOTHESIS_TRADE_BUDGET:
+        budget = trim_budget(budget, hypothesis_queries)
     silo_set = PROFESSIONAL_SILOS if professional_only else SILOS
     pairs = []
     # What this call genuinely asks, silo -> query count. Distinct from
@@ -872,8 +1107,6 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
     # elsewhere gives a targeted hit the decisive read it was worth going
     # and looking for in the first place, instead of leaving it exactly as
     # capped as the generic mention it was meant to replace.
-    from ..extraction import relation_classifier
-
     check_cancel()
     if enhanced_professional_search and is_person:
         org_name = _best_known_org(candidate_edges)

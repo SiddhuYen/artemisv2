@@ -1,5 +1,6 @@
 from .definitions import (
     COLLEAGUE_SILO,
+    HYPOTHESIS_SILO,
     PERSONAL_SILO_KEYS,
     PROFESSIONAL_SILOS,
     SILO_BY_KEY,
@@ -9,6 +10,6 @@ from .definitions import (
 )
 
 __all__ = [
-    "SILOS", "STRUCTURED_SILO", "COLLEAGUE_SILO", "SILO_BY_KEY", "Silo",
-    "PERSONAL_SILO_KEYS", "PROFESSIONAL_SILOS",
+    "SILOS", "STRUCTURED_SILO", "COLLEAGUE_SILO", "HYPOTHESIS_SILO",
+    "SILO_BY_KEY", "Silo", "PERSONAL_SILO_KEYS", "PROFESSIONAL_SILOS",
 ]

@@ -510,6 +510,7 @@ def _extraction_status() -> dict:
     """
     from .extraction import spacy_available
     from .extraction.claude_client import credential_state
+    from .extraction.connection_hypothesis import is_active as hypothesis_active
     from .extraction.entity_filter import is_filtering_active
     from .extraction.relation_classifier import is_active as classifier_active
 
@@ -538,6 +539,11 @@ def _extraction_status() -> dict:
             "extraction": bool(config.CLAUDE_EXTRACT and usable),
             "entity_filter": is_filtering_active(),
             "relation_classifier": classifier_active(),
+            # Reported because it changes what a build SPENDS, not just how it
+            # reads what it fetched: with this on, part of every node's query
+            # allowance goes to proving named connections instead of the
+            # generic silo templates (see graph/expansion.py phase 0e).
+            "connection_hypothesis": hypothesis_active(),
         },
     }
 
