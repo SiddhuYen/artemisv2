@@ -104,6 +104,27 @@ function boardSummaryToLocal(b) {
 
 let db = { boards: [], contacts: [] };
 
+// How many uploaded contacts belong to THIS operator, which is the only count
+// the network gate may be decided on. db.contacts holds every contact in the
+// deployment, and on a shared graph that is somebody else's network: a brand
+// new operator saw 2,153 contacts, the gate concluded "has a network" and hid
+// itself, and the app opened with no way to route to the person using it.
+// Ownership is what /connect already routes by (local_profiles.owner_norm, see
+// graph.connect._contact_edge_gate), so the gate has to agree with it.
+let _myContactCount = 0;
+
+async function loadMyContactCount() {
+  if (!hasOperatorName()) { _myContactCount = 0; return; }   // nobody to own them yet
+  try {
+    const mine = await (await fetch(
+      '/network/profiles?owner_name=' + encodeURIComponent(operatorName()))).json();
+    _myContactCount = Array.isArray(mine) ? mine.length : 0;
+  } catch (e) {
+    console.error('Failed to count own contacts', e);
+    _myContactCount = 0;    // a failed count must not unlock the app
+  }
+}
+
 async function loadBoardsFromBackend() {
   try {
     const rows = await (await fetch('/boards', { headers: API_HEADERS })).json();
@@ -120,6 +141,7 @@ async function loadContactsFromBackend() {
       conns: links[p.id]||[],
     }));
   } catch (e) { console.error('Failed to load contacts', e); }
+  await loadMyContactCount();
   // Single hook for the network gate: whichever path just loaded contacts
   // (boot, LinkedIn import, vCard import) closes it if there are now any.
   if (typeof syncNetworkGate === 'function') syncNetworkGate();
@@ -3317,9 +3339,10 @@ function showNetworkGate() {
 }
 
 function dismissNetworkGate() {
-  // Guarded rather than trusting callers: with no contacts there is nothing to
-  // dismiss TO, and a stray call would hand over an app that cannot answer.
-  if (!db.contacts.length) return;
+  // Guarded rather than trusting callers: without an upload of the operator's
+  // OWN there is nothing to dismiss TO, and a stray call would hand over an
+  // app that cannot answer. See _myContactCount for why it is not db.contacts.
+  if (!_myContactCount) return;
   document.getElementById('hvGate')?.classList.remove('open');
   document.body.classList.remove('gated');
 }
@@ -3329,7 +3352,7 @@ function dismissNetworkGate() {
 // without each one having to remember to.
 function syncNetworkGate() {
   if (!_gateReady) return;
-  if (db.contacts.length) dismissNetworkGate();
+  if (_myContactCount) dismissNetworkGate();
   else showNetworkGate();
 }
 

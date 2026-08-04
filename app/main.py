@@ -1170,8 +1170,25 @@ async def import_contacts(req: dict, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/network/profiles")
-def network_profiles(db: Session = Depends(get_db)) -> list:
-    return [_profile_dict(p) for p in db.execute(select(LocalProfile)).scalars()]
+def network_profiles(owner_name: str = "", db: Session = Depends(get_db)) -> list:
+    """Every uploaded contact, or -- with `owner_name` -- only that operator's.
+
+    The filter exists because "does this deployment hold any contacts?" and
+    "has THIS operator uploaded theirs?" are different questions, and the
+    network gate needs the second one. Unfiltered, a shared graph that already
+    held somebody else's 2,153 contacts answered "yes, there is a network" to a
+    brand-new operator who had uploaded nothing -- so the gate hid itself and
+    the app opened with no way to route to the person actually using it.
+
+    Rows with owner_norm NULL (imported before ownership was recorded) belong
+    to nobody and match no operator, which is the same treatment graph.connect
+    gives them: reachable by everyone, proof of ownership for no one.
+    """
+    from .utils.names import person_norm_key
+    query = select(LocalProfile)
+    if owner_name.strip():
+        query = query.where(LocalProfile.owner_norm == person_norm_key(owner_name))
+    return [_profile_dict(p) for p in db.execute(query).scalars()]
 
 
 @app.post("/network/profiles")
