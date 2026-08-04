@@ -1310,7 +1310,7 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  enhanced_professional_search: bool = False,
                  professional_only: bool = False, target_person_name: str = "",
                  target_context: str = "",
-                 on_frontier: Optional[Callable[[List[str]], None]] = None) -> dict:
+                 on_frontier: Optional[Callable[[List[str], object], None]] = None) -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -1343,7 +1343,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     every hop" behavior this was designed for.
 
     `on_frontier`, when provided, is handed each hop's ranked frontier BEFORE
-    it is expanded. connect_people uses it to ask the question this walk cannot:
+    it is expanded, together with THIS call's own Session (never the caller's --
+    two of these run concurrently and a shared Session is not thread-safe). connect_people uses it to ask the question this walk cannot:
     does this specific node reach the far endpoint? Expanding a node costs ~35
     queries; asking that costs one, and for a famous endpoint -- capped at
     SHALLOW_FAMOUS_DEPTH precisely because their neighborhood is too large to
@@ -1653,7 +1654,11 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         # reach the target never has its own ~35 queries spent.
         if on_frontier and frontier:
             check_cancel()
-            on_frontier(frontier)
+            # The WORKER's session, never the caller's: expand_graph runs one
+            # of these per /connect side, concurrently, and handing both the
+            # same Session raises "this session is provisioning a new
+            # connection; concurrent operations are not permitted".
+            on_frontier(frontier, db)
             if should_stop and should_stop(db):
                 if progress:
                     progress("  → a frontier node reaches the target; stopping expansion")

@@ -970,25 +970,46 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
         if not far_notable:
             return None
 
-        def probe(frontier: List[str]) -> None:
+        def probe(frontier: List[str], worker_db) -> None:
             names = [n for n in frontier[:max(0, config.CONNECT_PROBE_MAX_PER_HOP)]
                      if person_norm_key(n) != person_norm_key(far_name)]
             if not names:
                 return
             real = filter_entities(names, "person") if is_filtering_active() else set(names)
+            names = [n for n in names if n in real]
+
+            # ONE model call to triage the whole frontier, instead of one search
+            # per node. Reaching a well-connected person does not mean they
+            # reach the target, and searching each of them to find that out is
+            # how a walk spends five queries to learn nothing. Asked as the same
+            # matching question the adjudicator uses -- these people on the left,
+            # the target alone on the right -- so the model can only select from
+            # what the walk actually found, and returns the subset worth paying
+            # for. It cannot add a name, so the worst case is that it declines
+            # everything and the hop costs one call instead of five searches.
+            if names and route_adjudicator.is_active():
+                verdict = route_adjudicator.decide(
+                    name_a=label, name_b=far_name, context_b=far_context,
+                    left=names, right=[far_name])
+                if verdict is not None:
+                    worth = {p["a"] for p in verdict["pairs"]}
+                    if progress and len(worth) < len(names):
+                        skipped = [n for n in names if n not in worth]
+                        progress(f"  ⊘[{label}] not worth searching: {', '.join(skipped)}"
+                                 + (f" — {verdict['why']}" if verdict["why"] else ""))
+                    names = [n for n in names if n in worth]
+
             for who in names:
-                if who not in real:
-                    continue
                 if cancel_checker:
                     cancel_checker()
                 # Stop the moment the pair is connected -- by an earlier probe
                 # in this same loop, or by the other side's concurrent walk.
-                if should_stop is not None and should_stop(db):
+                if should_stop is not None and should_stop(worker_db):
                     return
                 if progress:
                     progress(f"  ?[{label}] does {who} reach {far_name}?")
                 try:
-                    _direct_pair_search(db, who, far_name, "", far_context,
+                    _direct_pair_search(worker_db, who, far_name, "", far_context,
                                         cancel_checker=cancel_checker)
                 except Exception:  # noqa: BLE001 -- a probe must not fail the walk
                     continue

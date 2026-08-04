@@ -29,6 +29,8 @@ def _probe_on(monkeypatch):
     monkeypatch.setattr(C.config, "CONNECT_PROBE_MAX_PER_HOP", 5)
     monkeypatch.setattr(C, "is_filtering_active", lambda: False)
     monkeypatch.setattr(C, "_notable_endpoints", lambda a, b: (True, True))
+    # triage is exercised in its own tests below; off by default here
+    monkeypatch.setattr(C.route_adjudicator, "is_active", lambda: False)
 
 
 def _make(monkeypatch, far="Donald Trump", **over):
@@ -57,7 +59,7 @@ def test_each_side_probes_toward_the_other_endpoint(db, monkeypatch):
     C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
                                 set(), None, "", "")
 
-    seen["Aa Origin"](["Paul Graham", "Drew Houston"])
+    seen["Aa Origin"](["Paul Graham", "Drew Houston"], db)
     assert probed == [("Paul Graham", "Donald Trump"),
                       ("Drew Houston", "Donald Trump")]
 
@@ -69,7 +71,7 @@ def test_the_target_is_never_probed_against_itself(db, monkeypatch):
     C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
                                 set(), None, "", "")
 
-    seen["Aa Origin"](["Donald Trump", "Paul Graham"])
+    seen["Aa Origin"](["Donald Trump", "Paul Graham"], db)
     assert probed == [("Paul Graham", "Donald Trump")]
 
 
@@ -80,7 +82,7 @@ def test_probes_are_capped_per_hop(db, monkeypatch):
     C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
                                 set(), None, "", "")
 
-    seen["Aa Origin"]([f"Person {i}" for i in range(9)])
+    seen["Aa Origin"]([f"Person {i}" for i in range(9)], db)
     assert len(probed) == 2
 
 
@@ -94,7 +96,7 @@ def test_junk_frontier_nodes_are_not_probed(db, monkeypatch):
     C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
                                 set(), None, "", "")
 
-    seen["Aa Origin"](["General Manager", "Andreessen Horowitz", "Paul Graham"])
+    seen["Aa Origin"](["General Manager", "Andreessen Horowitz", "Paul Graham"], db)
     assert probed == [("Paul Graham", "Donald Trump")]
 
 
@@ -127,4 +129,74 @@ def test_a_failing_probe_does_not_fail_the_walk(db, monkeypatch):
     C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
                                 set(), None, "", "")
 
-    seen["Aa Origin"](["Paul Graham"])   # must not raise
+    seen["Aa Origin"](["Paul Graham"], db)   # must not raise
+
+
+# ── one model call instead of N searches ──────────────────────────────────
+# Reaching a well-connected person does not mean they reach the target, and
+# searching each of them to find that out is how a hop spends five queries to
+# learn nothing. The frontier is triaged first, as the same matching question
+# the adjudicator uses: these people on the left, the target alone on the right.
+
+def _triage(monkeypatch, keep):
+    monkeypatch.setattr(C.route_adjudicator, "is_active", lambda: True)
+    monkeypatch.setattr(C.route_adjudicator, "decide", lambda **k: {
+        "action": "probe", "expand": [], "why": "only these are documented",
+        "pairs": [{"a": n, "b": k["right"][0]} for n in k["left"] if n in keep]})
+
+
+def test_only_the_nodes_the_model_keeps_are_searched(db, monkeypatch):
+    _triage(monkeypatch, keep={"Mark Zuckerberg"})
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["Paul Graham", "Mark Zuckerberg", "Drew Houston"], db)
+
+    assert probed == [("Mark Zuckerberg", "Donald Trump")], \
+        "two useless searches must not be spent"
+
+
+def test_the_model_cannot_add_a_name_to_the_frontier(db, monkeypatch):
+    """It selects from what the walk found; a name it invents is not searched,
+    so the worst case is that a hop costs one call and no queries."""
+    monkeypatch.setattr(C.route_adjudicator, "is_active", lambda: True)
+    monkeypatch.setattr(C.route_adjudicator, "decide", lambda **k: {
+        "action": "probe", "expand": [], "why": "x",
+        "pairs": [{"a": "Someone Invented", "b": "Donald Trump"}]})
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["Paul Graham"], db)
+    assert probed == []
+
+
+def test_an_unavailable_triage_falls_back_to_probing_everything(db, monkeypatch):
+    """Fails open, not closed: the probe is the feature, triage is the saving."""
+    monkeypatch.setattr(C.route_adjudicator, "is_active", lambda: True)
+    monkeypatch.setattr(C.route_adjudicator, "decide", lambda **k: None)
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["Paul Graham", "Drew Houston"], db)
+    assert len(probed) == 2
+
+
+def test_the_probe_uses_the_workers_session_not_the_callers(db, monkeypatch):
+    """Regression: the prober closed over the OUTER session while running
+    inside both side workers, which raises "this session is provisioning a new
+    connection; concurrent operations are not permitted"."""
+    monkeypatch.setattr(C.route_adjudicator, "is_active", lambda: False)
+    seen, _probed = _make(monkeypatch)
+    used = []
+    # after _make, which installs its own recorder
+    monkeypatch.setattr(C, "_direct_pair_search",
+                        lambda _db, a, b, *r, **k: (used.append(_db), (False, False))[1])
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    sentinel = object()
+    seen["Aa Origin"](["Paul Graham"], sentinel)
+    assert used == [sentinel], "the probe must run on the session it was handed"
