@@ -1936,24 +1936,43 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
     adjudication: Optional[dict] = None
     if not routes and route_adjudicator.is_active():
         explored = _build_explored(expand_stats, name_a, name_b) or {}
-        side_names = {
-            side: [n for hop in (explored.get(side, {}).get("by_hop", {}) or {}).values()
-                   for n in hop]
-            for side in ("a", "b")
-        }
-        # The shortlist is what an expansion may name, so it is drawn from what
-        # is actually in the graph and reachable, not from the model's memory.
-        shortlist = [person_by_id[pid].canonical_name
-                     for pid in sorted(adj, key=lambda p: -degree.get(p, 0))
-                     if pid in person_by_id][:30]
-        if progress:
-            progress("\n[adjudicate] no route survived — showing the search to "
-                     "the model and asking whether it stopped too early…")
-        adjudication = route_adjudicator.decide(
-            name_a, name_b, context_a, context_b,
-            explored_a=side_names["a"], explored_b=side_names["b"],
-            rejected=_rejection_notes(db, person_by_id),
-            shortlist=shortlist)
+
+        def _side(side: str, endpoint_id: str) -> List[str]:
+            """That side's people: whatever expansion explored, plus the
+            endpoint's own neighbours (which is all there is when the walk was
+            short-circuited before expanding). Ranked by degree WITHIN this
+            side, never against the graph at large -- ranking globally handed
+            the model the 30 most-connected nodes in the database, which is
+            search history plus junk, and produced pairings of Charlie Warren
+            with Lip-Bu Tan and Arnold Schwarzenegger."""
+            names = {n for hop in (explored.get(side, {}).get("by_hop", {}) or {}).values()
+                     for n in hop}
+            ids = {pid for pid, p in person_by_id.items() if p.canonical_name in names}
+            ids |= {nbr for nbr, _e in adj.get(endpoint_id, [])}
+            ids -= {a.id, b.id}
+            ranked = [person_by_id[pid].canonical_name
+                      for pid in sorted(ids, key=lambda p: -degree.get(p, 0))
+                      if pid in person_by_id][:40]
+            if is_filtering_active() and ranked:
+                real = filter_entities(ranked, "person")
+                ranked = [n for n in ranked if n in real]
+            return ranked[:25]
+
+        left = _side("a", a.id)
+        # name_b leads the right-hand list deliberately: "does one of these
+        # people know the TARGET" is the question that closes the gap in one
+        # hop, and it is only askable if the target is on the list.
+        right = [b.canonical_name] + [n for n in _side("b", b.id)
+                                      if n != b.canonical_name]
+        if left and right:
+            if progress:
+                progress("\n[adjudicate] no route survived — asking whether any of "
+                         f"{len(left)} people around {a.canonical_name} could know "
+                         f"{b.canonical_name} or the {len(right) - 1} people near them…")
+            adjudication = route_adjudicator.decide(
+                name_a, name_b, context_a, context_b,
+                left=left, right=right,
+                rejected=_rejection_notes(db, person_by_id))
 
     if adjudication and adjudication["action"] != "none":
         if progress:
