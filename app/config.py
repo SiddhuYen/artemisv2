@@ -397,6 +397,20 @@ CONNECT_BRIDGE_HYPOTHESES = int(
 # here wastes two searches rather than one classification.
 BRIDGE_HYPOTHESIS_MODEL = os.environ.get(
     "ARTEMIS_BRIDGE_HYPOTHESIS_MODEL", "claude-sonnet-5")
+# Before expanding a ranked frontier node (~35 queries), ask whether that node
+# already reaches the far endpoint (1 query). For a famous endpoint this is the
+# only affordable way to find the link at all: SHALLOW_FAMOUS_DEPTH caps their
+# side at one hop precisely because the neighborhood cannot be enumerated, so
+# the two frontiers are not going to meet by walking.
+CONNECT_PROBE_FRONTIER = _env_bool("ARTEMIS_CONNECT_PROBE_FRONTIER", "1")
+# Probes per hop, per side. The spend cap: this many searches instead of this
+# many x35 queries, when it works.
+CONNECT_PROBE_MAX_PER_HOP = int(
+    os.environ.get("ARTEMIS_CONNECT_PROBE_MAX_PER_HOP", "5"))
+# Restrict probing to notable far endpoints. The argument for probing is that a
+# well-documented person answers in one query; an obscure one usually does not,
+# and the searches are better spent on the walk. 0 probes toward anyone.
+CONNECT_PROBE_ONLY_FAMOUS = _env_bool("ARTEMIS_CONNECT_PROBE_ONLY_FAMOUS", "1")
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))

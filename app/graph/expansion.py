@@ -1309,7 +1309,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  silo_weights: Optional[Dict[str, float]] = None,
                  enhanced_professional_search: bool = False,
                  professional_only: bool = False, target_person_name: str = "",
-                 target_context: str = "") -> dict:
+                 target_context: str = "",
+                 on_frontier: Optional[Callable[[List[str]], None]] = None) -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -1340,6 +1341,14 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     targeted-recheck treatment the seed did, which is what turns a single
     node's fix into the recursive "top candidates, searched properly, at
     every hop" behavior this was designed for.
+
+    `on_frontier`, when provided, is handed each hop's ranked frontier BEFORE
+    it is expanded. connect_people uses it to ask the question this walk cannot:
+    does this specific node reach the far endpoint? Expanding a node costs ~35
+    queries; asking that costs one, and for a famous endpoint -- capped at
+    SHALLOW_FAMOUS_DEPTH precisely because their neighborhood is too large to
+    walk -- it is the only affordable way to close the gap. A node that answers
+    yes makes its own expansion unnecessary, which `should_stop` then notices.
 
     `professional_only`, the mirror image, goes to the OTHER side -- the
     shallow, famous one. connect_people sets it when the other side already
@@ -1639,6 +1648,16 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         frontier = _ranked_expandable(disc, visited, progress=progress,
                                       prefer_reachable=prefer_reachable,
                                       top_n=alpha_top_n)
+        # Ask the far endpoint's question before paying to walk outward. Placed
+        # here, after ranking and before expansion, so a node that turns out to
+        # reach the target never has its own ~35 queries spent.
+        if on_frontier and frontier:
+            check_cancel()
+            on_frontier(frontier)
+            if should_stop and should_stop(db):
+                if progress:
+                    progress("  → a frontier node reaches the target; stopping expansion")
+                break
         # Alpha step 7 (per-candidate depth): among the selected frontier,
         # any independently notable/famous candidate gets marked shallow --
         # see shallow_nodes' declaration above. Checked here (once per hop,

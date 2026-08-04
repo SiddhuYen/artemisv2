@@ -1,0 +1,130 @@
+"""Ask each frontier node whether IT reaches the target, before walking it.
+
+Expansion walks outward from both endpoints and hopes the frontiers meet. For a
+famous endpoint they cannot: SHALLOW_FAMOUS_DEPTH caps that side at one hop
+precisely because the neighborhood is too large to enumerate. So the meeting has
+to be FOUND, not walked into -- and asking "is this node documented with the
+target" costs one search against ~35 to expand the node, on exactly the kind of
+person whose ties are written down.
+
+Motivating failure: Charlie Warren -> Donald Trump returned
+
+    Charlie Warren -> Paul Graham -> Drew Houston -> Mark Zuckerberg
+                   -> Andreessen Horowitz -> Donald Trump
+
+-- five hops, one of them a video title typed 'family_social', one a venture
+firm held as a person -- while never once asking whether Paul Graham, Drew
+Houston or Mark Zuckerberg is documented with Trump. The last of those is.
+"""
+import pytest
+
+from app import config
+from app.graph import connect as C
+
+
+@pytest.fixture(autouse=True)
+def _probe_on(monkeypatch):
+    monkeypatch.setattr(C.config, "CONNECT_PROBE_FRONTIER", True)
+    monkeypatch.setattr(C.config, "CONNECT_PROBE_ONLY_FAMOUS", True)
+    monkeypatch.setattr(C.config, "CONNECT_PROBE_MAX_PER_HOP", 5)
+    monkeypatch.setattr(C, "is_filtering_active", lambda: False)
+    monkeypatch.setattr(C, "_notable_endpoints", lambda a, b: (True, True))
+
+
+def _make(monkeypatch, far="Donald Trump", **over):
+    """_make_prober lives inside _expand_both_concurrently, so exercise it the
+    way production does -- through a real call with expansion faked out."""
+    seen = {}
+    probed = []
+
+    monkeypatch.setattr(C, "_direct_pair_search",
+                        lambda _db, a, b, *r, **k: (probed.append((a, b)), (False, False))[1])
+
+    def fake_expand(worker_db, name, side_depth, **kwargs):
+        seen[name] = kwargs.get("on_frontier")
+        return {}
+
+    monkeypatch.setattr(C, "expand_graph", fake_expand)
+    for k, v in over.items():
+        monkeypatch.setattr(C.config, k, v)
+    return seen, probed
+
+
+def test_each_side_probes_toward_the_other_endpoint(db, monkeypatch):
+    """A side walking out from A asks about B -- the endpoint it is trying to
+    reach, not the one it started from."""
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["Paul Graham", "Drew Houston"])
+    assert probed == [("Paul Graham", "Donald Trump"),
+                      ("Drew Houston", "Donald Trump")]
+
+
+def test_the_target_is_never_probed_against_itself(db, monkeypatch):
+    """The far endpoint can appear in its own frontier; asking whether Trump
+    reaches Trump costs a search and answers nothing."""
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["Donald Trump", "Paul Graham"])
+    assert probed == [("Paul Graham", "Donald Trump")]
+
+
+def test_probes_are_capped_per_hop(db, monkeypatch):
+    """The cap IS the spend: one search each, so an unbounded frontier would
+    reintroduce the cost this exists to avoid."""
+    seen, probed = _make(monkeypatch, CONNECT_PROBE_MAX_PER_HOP=2)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"]([f"Person {i}" for i in range(9)])
+    assert len(probed) == 2
+
+
+def test_junk_frontier_nodes_are_not_probed(db, monkeypatch):
+    """"General Manager" and "Andreessen Horowitz" are in this graph as people.
+    Probing them spends a search and risks writing another junk edge, so the
+    frontier goes through the entity filter first."""
+    monkeypatch.setattr(C, "is_filtering_active", lambda: True)
+    monkeypatch.setattr(C, "filter_entities", lambda names, kind: {"Paul Graham"})
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["General Manager", "Andreessen Horowitz", "Paul Graham"])
+    assert probed == [("Paul Graham", "Donald Trump")]
+
+
+def test_no_probing_toward_an_unknown_person(db, monkeypatch):
+    """The argument for probing is that a DOCUMENTED person answers in one
+    query. For an obscure endpoint the search is better spent on the walk."""
+    monkeypatch.setattr(C, "_notable_endpoints", lambda a, b: (False, False))
+    seen, probed = _make(monkeypatch)
+    C._expand_both_concurrently(db, "Aa Origin", "Bb Nobody", 2, 2,
+                                set(), None, "", "")
+
+    assert seen["Aa Origin"] is None, "no prober should be installed at all"
+    assert probed == []
+
+
+def test_probing_can_be_switched_off(db, monkeypatch):
+    seen, probed = _make(monkeypatch, CONNECT_PROBE_FRONTIER=False)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+    assert seen["Aa Origin"] is None
+
+
+def test_a_failing_probe_does_not_fail_the_walk(db, monkeypatch):
+    """Opportunistic: the expansion it interrupts is still the real answer."""
+    def _boom(*a, **k):
+        raise RuntimeError("provider down")
+
+    seen, _probed = _make(monkeypatch)
+    monkeypatch.setattr(C, "_direct_pair_search", _boom)
+    C._expand_both_concurrently(db, "Aa Origin", "Donald Trump", 2, 2,
+                                set(), None, "", "")
+
+    seen["Aa Origin"](["Paul Graham"])   # must not raise

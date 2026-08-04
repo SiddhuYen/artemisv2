@@ -893,6 +893,64 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
     professional_only_a = depth_a < depth_b
     professional_only_b = depth_b < depth_a
 
+    def _make_prober(far_name: str, far_context: str, label: str):
+        """Ask each ranked frontier node whether IT reaches the far endpoint.
+
+        Expansion walks outward and hopes the two frontiers meet. For a famous
+        endpoint they cannot: SHALLOW_FAMOUS_DEPTH caps that side at one hop
+        precisely because their neighborhood is too large to enumerate, so the
+        meeting has to be found rather than walked into. Asking directly costs
+        ONE search per node against ~35 to expand one, and a famous person's
+        ties are the ones most likely to be written down and findable in a
+        single query.
+
+        Observed motivation: Charlie Warren -> Donald Trump returned a five-hop
+        chain (through a video title typed 'family_social', and a venture firm
+        held as a person) while never once asking whether Paul Graham, Drew
+        Houston or Mark Zuckerberg is documented with Trump. The last of those
+        is, on a widely-reported panel.
+
+        Two gates, both about not wasting the search:
+          - the frontier is passed through the entity filter first, so probes
+            are not spent on "General Manager" or "Andreessen Horowitz";
+          - only when the far endpoint is notable, since the whole argument is
+            that a documented person answers in one query.
+
+        Persists nothing on its own: every edge still comes out of
+        _direct_pair_search reading a fetched page.
+        """
+        if not config.CONNECT_PROBE_FRONTIER or not far_name.strip():
+            return None
+        far_notable = (_notable_endpoints(far_name, far_name)[0]
+                       if config.CONNECT_PROBE_ONLY_FAMOUS else True)
+        if not far_notable:
+            return None
+
+        def probe(frontier: List[str]) -> None:
+            names = [n for n in frontier[:max(0, config.CONNECT_PROBE_MAX_PER_HOP)]
+                     if person_norm_key(n) != person_norm_key(far_name)]
+            if not names:
+                return
+            real = filter_entities(names, "person") if is_filtering_active() else set(names)
+            for who in names:
+                if who not in real:
+                    continue
+                if cancel_checker:
+                    cancel_checker()
+                # Stop the moment the pair is connected -- by an earlier probe
+                # in this same loop, or by the other side's concurrent walk.
+                if should_stop is not None and should_stop(db):
+                    return
+                if progress:
+                    progress(f"  ?[{label}] does {who} reach {far_name}?")
+                try:
+                    _direct_pair_search(db, who, far_name, "", far_context,
+                                        cancel_checker=cancel_checker)
+                except Exception:  # noqa: BLE001 -- a probe must not fail the walk
+                    continue
+
+        return probe
+
     def _run(name: str, context: str, label: str, side_depth: int,
              enhanced: bool, professional_only: bool,
              target_name: str, target_context: str) -> dict:
@@ -920,6 +978,9 @@ def _expand_both_concurrently(db: Session, name_a: str, name_b: str,
                 # picking an angle in the abstract.
                 "target_person_name": target_name,
                 "target_context": target_context,
+                # Each side probes toward the OTHER endpoint -- the one it is
+                # trying to reach, not the one it is walking out from.
+                "on_frontier": _make_prober(target_name, target_context, label),
             }
             if cancel_checker:
                 kwargs["cancel_checker"] = cancel_checker
