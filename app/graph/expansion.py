@@ -29,7 +29,7 @@ from sqlalchemy.orm.exc import ObjectDeletedError
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
-from ..extraction import coauthor_plausibility, node_profiler, search_strategy
+from ..extraction import coauthor_plausibility, node_profiler, page_triage, search_strategy
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
@@ -725,7 +725,43 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             page_text[url] = html_to_text(page.content) if page.content else ""
 
     # --- phase 4: extraction per (result × originating silo) --------------
+    # Decide ONCE, for this node, which of its pages earn a whole-page model
+    # call. Without this every fetched page got one: 1,043 of them on a single
+    # measured /connect, $10.41 of a $10.49 route, against $0.22 of searches.
+    # Everything else drops to spaCy, which is what this pipeline used before
+    # Claude extraction existed.
+    #
+    # Ordered by search rank so the fallback below is meaningful, and deduped by
+    # URL because the same result arrives once per silo that asked for it -- the
+    # triage is per PAGE, not per (page × silo).
     check_cancel()
+    ranked_pages = []
+    seen_urls = set()
+    for _q, results in searched:
+        for rank, res in enumerate(results):
+            if res.url not in seen_urls:
+                seen_urls.add(res.url)
+                ranked_pages.append((rank, res))
+    ranked_pages.sort(key=lambda pair: pair[0])
+
+    deep_urls = {res.url for _r, res in ranked_pages}
+    if config.CLAUDE_EXTRACT and page_triage.is_active() and ranked_pages:
+        keep = page_triage.select(
+            subject_name, target_person_name,
+            [{"title": res.title, "snippet": res.snippet} for _r, res in ranked_pages])
+        if keep is not None:
+            # A real verdict, including the empty one: this node's pages name
+            # nobody and none of them is worth a full read.
+            deep_urls = {ranked_pages[i][1].url for i in keep}
+        else:
+            # No verdict. Bounded rather than open: an unreachable model must
+            # not quietly restore the old bill, so take the highest-ranked few.
+            deep_urls = {res.url for _r, res in
+                         ranked_pages[:max(0, config.EXTRACT_DEEP_MAX_PAGES)]}
+        if progress and len(deep_urls) < len(ranked_pages):
+            progress(f"  ⊙ reading {len(deep_urls)}/{len(ranked_pages)} pages in full "
+                     "(rest to the cheap extractor)")
+
     for query, results in searched:
         check_cancel()
         silos = query_to_silos.get(query, set())
@@ -742,9 +778,11 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             source_by_url[res.url] = source
             text = full_text or f"{res.title}. {res.snippet}"
 
+            deep = res.url in deep_urls
             for silo in silos:
                 check_cancel()
-                out = extract(subject_name, text, silo, res.snippet, res.url)
+                out = extract(subject_name, text, silo, res.snippet, res.url,
+                              deep=deep)
                 candidate_edges.extend(out.edges)
 
     # --- phase 4b: OpenAlex coauthors, plausibility- and identity-gated ----

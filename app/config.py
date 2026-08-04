@@ -428,6 +428,18 @@ CONNECT_ADJUDICATE_MAX_EXPAND = int(
 # this is not the batch model.
 ROUTE_ADJUDICATOR_MODEL = os.environ.get(
     "ARTEMIS_ROUTE_ADJUDICATOR_MODEL", "claude-sonnet-5")
+# One call per NODE deciding which of its fetched pages deserve a full read,
+# instead of one whole-page call per page unconditionally. Measured on a single
+# /connect (Charlie Warren -> Donald Trump, depth 2): 1,043 Sonnet calls, 1.72M
+# input tokens, $10.41 of a $10.49 route -- against $0.22 of searches. Reading
+# the pages was the route. See extraction/page_triage.
+EXTRACT_PAGE_TRIAGE = _env_bool("ARTEMIS_EXTRACT_PAGE_TRIAGE", "1")
+# Ceiling on deep reads per node, and ALSO the bound used when triage returns no
+# verdict -- an unreachable model must not silently restore the old bill.
+EXTRACT_DEEP_MAX_PAGES = int(
+    os.environ.get("ARTEMIS_EXTRACT_DEEP_MAX_PAGES", "6"))
+PAGE_TRIAGE_MODEL = os.environ.get(
+    "ARTEMIS_PAGE_TRIAGE_MODEL", "claude-sonnet-5")
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))
