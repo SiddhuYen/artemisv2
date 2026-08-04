@@ -312,7 +312,24 @@ def _best_path(adj, start: str, target: str, max_hops: int, excluded=None,
     if start == target:
         return [(start, None)]
     counter_seed = 0
-    best_cost = {start: 0.0}
+    # Keyed by (node, hops), NOT by node. Cost-only pruning is the standard
+    # Dijkstra rule and it is WRONG under a hop limit: reaching a node cheaply
+    # at hop 5 -- where it can no longer be extended -- would permanently block
+    # reaching that same node at hop 2, from which the target is still in
+    # range. The state is the pair, so the pair is what gets memoized.
+    #
+    # This was not theoretical. Charlie Warren -> Donald Trump reported "no path
+    # within 5 hops" while a five-hop route sat in the graph and a plain BFS
+    # over this very adjacency found it:
+    #   Charlie Warren -> Paul Graham -> Sam Altman -> Mark Zuckerberg
+    #                  -> Marc Andreessen -> Donald Trump
+    # It also put _route_exists (a BFS) permanently at odds with this function,
+    # which is the disagreement #53's second gate and the org-shaped guard were
+    # both added to prevent -- neither could, because the fault was here.
+    #
+    # Bounded by max_hops (<= 2*depth+1), so the state space is a small multiple
+    # of the node count, not a blow-up.
+    best_cost = {(start, 0): 0.0}
     heap = [(0.0, 0, counter_seed, start, [(start, None)])]
     while heap:
         cost, hops, _t, node, path = heapq.heappop(heap)
@@ -326,8 +343,9 @@ def _best_path(adj, start: str, target: str, max_hops: int, excluded=None,
             penalty = 0.0 if nbr == target else (
                 config.HOP_SURCHARGE + _node_penalty(person_by_id, degree, nbr))
             nc = cost + _edge_cost(edge) + penalty
-            if nbr not in best_cost or nc < best_cost[nbr]:
-                best_cost[nbr] = nc
+            key = (nbr, hops + 1)
+            if key not in best_cost or nc < best_cost[key]:
+                best_cost[key] = nc
                 counter_seed += 1
                 heapq.heappush(heap, (nc, hops + 1, counter_seed, nbr, path + [(nbr, edge)]))
     return None

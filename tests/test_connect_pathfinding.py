@@ -456,3 +456,72 @@ def test_connect_people_passes_asymmetric_depths_to_expansion(db, monkeypatch):
 
     # depth=3 triggers ORIGIN_EXTRA_HOP_AT_DEPTH: the origin side gets 4, not 3.
     assert captured["depths"] == (C.SHALLOW_FAMOUS_DEPTH, 4)
+
+
+# ── hop-limited search must memoize (node, hops), not node ────────────────
+# _best_path pruned with `best_cost[node]`, the standard Dijkstra rule, which is
+# wrong under a hop limit: reaching a node cheaply at the last permitted hop --
+# where it can no longer be extended -- permanently blocked reaching that same
+# node earlier, from which the target was still in range.
+#
+# Live consequence: Charlie Warren -> Donald Trump reported "no path within 5
+# hops" while a five-hop route sat in the graph, which a plain BFS over the very
+# same adjacency found. It also put _route_exists (a BFS) permanently at odds
+# with the scoring pass.
+
+def _chain(adj, names, cost_edge):
+    """Wire names into a chain in a bare adjacency dict."""
+    for x, y in zip(names, names[1:]):
+        adj.setdefault(x, []).append((y, cost_edge))
+        adj.setdefault(y, []).append((x, cost_edge))
+
+
+def test_a_reachable_target_is_not_hidden_by_a_cheap_long_detour(db):
+    """The regression, reduced.
+
+    'mid' is reachable two ways: cheaply via a long detour that arrives with no
+    hops left, and expensively via a short hop from which the target is still
+    reachable. Pruning by node alone records the cheap arrival first and then
+    refuses the short one, losing the only usable route.
+    """
+    from app.graph.connect import _best_path
+    from app.models import RelationshipEdge
+
+    cheap = RelationshipEdge(relationship_type="coworker", status="strong",
+                             confidence_raw=0.95, signals={})
+    costly = RelationshipEdge(relationship_type="coworker", status="weak",
+                              confidence_raw=0.05, signals={})
+
+    adj = {}
+    # long, cheap way in: start -> d1 -> d2 -> d3 -> mid   (4 hops)
+    _chain(adj, ["start", "d1", "d2", "d3", "mid"], cheap)
+    # short, expensive way in: start -> mid                (1 hop)
+    adj.setdefault("start", []).append(("mid", costly))
+    adj.setdefault("mid", []).append(("start", costly))
+    # and the last leg
+    adj.setdefault("mid", []).append(("target", cheap))
+    adj.setdefault("target", []).append(("mid", cheap))
+
+    path = _best_path(adj, "start", "target", max_hops=4)
+
+    assert path is not None, "a reachable target must not be hidden"
+    assert [n for n, _e in path] == ["start", "mid", "target"]
+
+
+def test_the_cheap_route_still_wins_when_hops_allow_it(db):
+    """The fix must not turn the pathfinder into plain BFS -- with room to
+    spare, the cheaper route is still the one chosen."""
+    from app.graph.connect import _best_path
+    from app.models import RelationshipEdge
+
+    cheap = RelationshipEdge(relationship_type="coworker", status="strong",
+                             confidence_raw=0.95, signals={})
+    costly = RelationshipEdge(relationship_type="coworker", status="weak",
+                              confidence_raw=0.05, signals={})
+
+    adj = {}
+    _chain(adj, ["start", "good", "target"], cheap)
+    _chain(adj, ["start", "bad", "target"], costly)
+
+    path = _best_path(adj, "start", "target", max_hops=5)
+    assert [n for n, _e in path] == ["start", "good", "target"]
