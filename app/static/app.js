@@ -661,6 +661,8 @@ function fitToContent(){
 document.getElementById('wrapper').addEventListener('wheel',e=>{e.preventDefault();Math.abs(e.deltaX)>Math.abs(e.deltaY)*1.5&&!e.ctrlKey?(panX-=e.deltaX,panY-=e.deltaY,applyTransform()):doZoom(e.deltaY<0?1.09:0.91,e.clientX,e.clientY);},{passive:false});
 
 document.addEventListener('keydown',e=>{
+  // Behind the network gate the board is not usable yet; see isGated().
+  if(isGated()&&!document.getElementById('liScrim')?.classList.contains('open')) return;
   if(e.code==='Space'&&!isTyping()){e.preventDefault();if(!spaceDown){spaceDown=true;document.getElementById('wrapper').classList.add('space-pan');}}
   if(isTyping()) return;
   switch(e.key){
@@ -2718,6 +2720,12 @@ function showLinkedInImport() {
   document.getElementById('liPreview').style.display = 'none';
   document.getElementById('liImportBtn').disabled = true;
   resetVcfTab();
+  // Opened FROM the gate, the vCard tab would be a way around the requirement:
+  // importing a few contacts satisfies "has a network" and unlocks the app
+  // without the CSV that was asked for. The tab is hidden while gated and
+  // restored the moment the app is unlocked, so in-app vCard import is
+  // untouched.
+  document.getElementById('liTabVcf').style.display = isGated() ? 'none' : '';
   switchNetImportTab('csv');
   document.getElementById('liScrim').classList.add('open');
 }
@@ -2726,6 +2734,9 @@ function closeLinkedInImport() {
   _liFile = null;
 }
 function switchNetImportTab(tab) {
+  // The invariant, not just the hidden button: while gated the only tab that
+  // exists is the CSV one, whoever asks.
+  if (isGated()) tab = 'csv';
   _netImportTab = tab;
   document.getElementById('liCsvSec').style.display = tab === 'csv' ? '' : 'none';
   document.getElementById('liVcfSec').style.display = tab === 'vcf' ? '' : 'none';
@@ -3177,6 +3188,13 @@ function addContactToBoard(contactId) {
 // ══════════════════════════════════════════════════════
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    // Escape may still close the IMPORTER (that returns to the gate, which is
+    // a legitimate place to be), but nothing further: every remaining branch
+    // reaches into an app the operator has not unlocked yet. See isGated().
+    if (isGated()) {
+      if (document.getElementById('liScrim')?.classList.contains('open')) closeLinkedInImport();
+      return;
+    }
     if (document.getElementById('ctLinkScrim')?.classList.contains('open'))   { closeLinkContactModal(); return; }
     if (document.getElementById('ctAddScrim')?.classList.contains('open'))    { closeAddContactModal(); return; }
     if (document.getElementById('ctRail')?.classList.contains('open'))        { closeContactRail(); return; }
@@ -3215,16 +3233,45 @@ async function checkProviderStatus() {
 // Artemis routes THROUGH the operator's own contacts. With none loaded it can
 // still map a target's public network, but every route it returns terminates
 // at a stranger — so an empty network is a correctness problem, not a missing
-// nice-to-have, and the operator should be told before their first search
-// rather than after it disappoints them.
+// nice-to-have.
 //
-// The boxes here deliberately do NOT reimplement parsing. They hand the file
-// straight to the existing import pipeline (processLinkedInFile / readVcfFiles)
-// and open the import modal on the matching tab, so the operator lands in the
-// same preview → de-dupe → confirm flow as the in-app importer, and there is
-// exactly one CSV parser and one vCard parser in the codebase.
+// The gate is therefore a REQUIREMENT, not a warning: a LinkedIn
+// Connections.csv import is what unlocks the app, and there is no bypass. It
+// used to carry a "CONTINUE WITHOUT ▸" button, which meant the one state the
+// gate exists to prevent was also the state a single click produced — and the
+// operator who took it got exactly the disappointing routes the panel had just
+// warned them about.
+//
+// Only the LinkedIn CSV satisfies it. Phone contacts (.vcf) and manual adds
+// still exist, but from INSIDE the app: they are a supplement to a network,
+// not a substitute for one, and a handful of vCards would unlock the app while
+// leaving it just as unable to find a route.
+//
+// The box here deliberately does NOT reimplement parsing. It hands the file
+// straight to the existing import pipeline (processLinkedInFile) and opens the
+// import modal, so the operator lands in the same preview → de-dupe → confirm
+// flow as the in-app importer, and there is exactly one CSV parser in the
+// codebase.
 // ══════════════════════════════════════════════════════
 const BOOT_SPLASH_MS = 2100;   // #hvBoot: 1.6s hold + 0.5s fade (see index.html)
+
+// Contacts load before the splash finishes, and opening the gate underneath a
+// running boot animation looks like a glitch. Nothing may show the gate until
+// boot has handed over.
+let _gateReady = false;
+
+// True while the app is locked behind EITHER gate. The overlays stop MOUSE
+// input by covering the viewport, but the document-level keyboard shortcuts
+// ('a' = add contact, 'c'/'d' = modes, Escape = close) are bound to the
+// document and fire straight through them -- 'a' alone was enough to open the
+// add-contact modal and hand-enter a contact, which satisfied the network gate
+// and unlocked the app with no import at all. The identity gate is included
+// for the same reason: it is blocking, so nothing behind it should be driveable
+// either.
+function isGated() {
+  return document.getElementById('hvGate')?.classList.contains('open') === true
+      || document.getElementById('hvIdent')?.classList.contains('open') === true;
+}
 
 // Blocking identity gate. Runs BEFORE the network gate because the upload that
 // gate asks for is attributed using this answer -- ingest stamps
@@ -3258,33 +3305,46 @@ function submitIdentity() {
   if (err) err.textContent = '';
   setOperatorName(name);
   document.getElementById('hvIdent')?.classList.remove('open');
-  // Only now is the network question worth asking.
-  maybeShowNetworkGate();
+  // Only now is the network question worth asking -- and it is not a question
+  // any more, so hand over to the gate rather than to a one-shot check.
+  armNetworkGate();
 }
 
-function maybeShowNetworkGate() {
-  if (db.contacts.length) return;          // already has a network — nothing to warn about
+function showNetworkGate() {
   document.getElementById('hvGate')?.classList.add('open');
+  // Lets the importer outrank the gate it is opened from (see index.html).
+  document.body.classList.add('gated');
 }
 
 function dismissNetworkGate() {
+  // Guarded rather than trusting callers: with no contacts there is nothing to
+  // dismiss TO, and a stray call would hand over an app that cannot answer.
+  if (!db.contacts.length) return;
   document.getElementById('hvGate')?.classList.remove('open');
+  document.body.classList.remove('gated');
 }
 
-// Hide-only, and called from loadContactsFromBackend so every path that can
-// populate contacts (either importer, a manual add) closes the gate without
-// each one having to remember to.
+// Called from loadContactsFromBackend, so every path that can change the
+// contact count — either importer, a manual add, a deletion — settles the gate
+// without each one having to remember to.
 function syncNetworkGate() {
+  if (!_gateReady) return;
   if (db.contacts.length) dismissNetworkGate();
+  else showNetworkGate();
 }
 
-function _gateHandoff(tab) {
-  // Close the gate and open the real importer: the operator still gets the
-  // preview and confirm step, and a cancel there leaves them in the app rather
-  // than trapped back behind the gate.
-  dismissNetworkGate();
+// Called once, when the splash is done. From here on syncNetworkGate owns it.
+function armNetworkGate() {
+  _gateReady = true;
+  syncNetworkGate();
+}
+
+function _gateHandoff() {
+  // The gate stays OPEN behind the importer. Cancelling the import then
+  // returns to the gate rather than into an app with no network — which is
+  // what "required" has to mean for the bypass removal to be worth anything.
   showLinkedInImport();
-  switchNetImportTab(tab);
+  switchNetImportTab('csv');
 }
 
 function gateDropCsv(e) {
@@ -3292,7 +3352,7 @@ function gateDropCsv(e) {
   document.getElementById('hgBoxCsv').classList.remove('dragover');
   const file = e.dataTransfer.files[0];
   if (!file) return;
-  _gateHandoff('csv');
+  _gateHandoff();
   processLinkedInFile(file);
 }
 
@@ -3300,25 +3360,8 @@ function gateCsvChange(e) {
   const file = e.target.files[0];
   e.target.value = '';                     // re-picking the same file must re-fire
   if (!file) return;
-  _gateHandoff('csv');
+  _gateHandoff();
   processLinkedInFile(file);
-}
-
-function gateDropVcf(e) {
-  e.preventDefault();
-  document.getElementById('hgBoxVcf').classList.remove('dragover');
-  const files = Array.from(e.dataTransfer.files || []);
-  if (!files.length) return;
-  _gateHandoff('vcf');
-  readVcfFiles(files);
-}
-
-function gateVcfChange(e) {
-  const files = Array.from(e.target.files || []);
-  e.target.value = '';
-  if (!files.length) return;
-  _gateHandoff('vcf');
-  readVcfFiles(files);
 }
 
 // One-time bridge for contacts imported before owner_name was wired into the
@@ -3355,6 +3398,6 @@ async function backfillOwnerGraphEdgesOnce() {
   setTimeout(() => {
     // Identity first -- submitIdentity() chains to the network gate, so the two
     // are never stacked on top of each other.
-    if (!maybeShowIdentityGate()) maybeShowNetworkGate();
+    if (!maybeShowIdentityGate()) armNetworkGate();
   }, Math.max(0, BOOT_SPLASH_MS - (Date.now() - started)));
 })();

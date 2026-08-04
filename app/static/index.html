@@ -382,6 +382,10 @@ body {
 .hg-warn b { color:var(--accent-bright); }
 .hg-grid { display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px; }
 @media (max-width:640px) { .hg-grid { grid-template-columns:1fr; } }
+/* One drop target, so it gets the full panel width rather than sitting in a
+   half-empty two-column row. */
+.hg-grid-solo { grid-template-columns:1fr; }
+.hg-grid-solo .hg-box { padding:34px 16px; }
 .hg-box { border:1px dashed var(--accent-line);padding:22px 16px;text-align:center;
   background:oklch(0.12 0.012 22/0.5);cursor:pointer;transition:all .18s; }
 .hg-box:hover,.hg-box.dragover { border-color:var(--accent);background:var(--accent-wash);
@@ -393,10 +397,9 @@ body {
 .hg-box.done { border-style:solid;border-color:var(--accent); }
 .hg-foot { display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap; }
 .hg-foot .hg-note { font-size:10px;letter-spacing:0.12em;color:var(--ink-faint);flex:1;min-width:200px; }
-#hvGate .hg-btn { display:inline-flex;align-items:center;justify-content:center;height:38px;
-  padding:0 18px;border:1px solid var(--accent-line);background:transparent;color:var(--ink-dim);
-  font-family:inherit;font-size:11px;letter-spacing:0.16em;cursor:pointer;transition:all .16s; }
-#hvGate .hg-btn:hover { border-color:var(--accent);color:var(--accent-bright);background:var(--accent-wash); }
+/* No .hg-btn rule here on purpose: the gate has no buttons. The only one it
+   ever had was "CONTINUE WITHOUT ▸", and leaving its styling behind invites
+   the bypass back. */
 
 /* ── DETAIL RAIL ── */
 #hvRailScrim { position: fixed; inset: 0; z-index: 140; background: oklch(0.06 0.02 22 / 0.55); backdrop-filter: blur(1.5px); display: none; }
@@ -930,6 +933,11 @@ body {
 
 /* ── LINKEDIN IMPORT MODAL ── */
 #liScrim { position:fixed;inset:0;z-index:150;display:none;place-items:center;background:oklch(0.06 0.02 22/0.7);backdrop-filter:blur(2px);padding:20px; }
+/* The gate (z-index 210) stays OPEN behind the importer now, so that cancelling
+   the import returns to the gate instead of dropping into an app with no
+   network. That only works if the importer outranks it while gated. Scoped to
+   body.gated so normal in-app importing keeps its usual stacking. */
+body.gated #liScrim { z-index:220; }
 #liScrim.open { display:grid; }
 #liModal {
   width:520px;max-width:100%;position:relative;
@@ -1998,19 +2006,20 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
   <div id="hvGatePanel">
     <span class="art-br tl"></span><span class="art-br tr"></span>
     <span class="art-br bl"></span><span class="art-br br2"></span>
-    <div class="hg-lbl">// NO NETWORK LOADED</div>
-    <h3>UPLOAD YOUR NETWORK FIRST</h3>
+    <div class="hg-lbl">// NETWORK REQUIRED</div>
+    <h3>UPLOAD YOUR LINKEDIN NETWORK</h3>
 
     <div class="hg-warn">
       Artemis finds routes <b>through people you already know</b>. Without your
       connections loaded it can still map a target's public network — but it has
       no idea where <i>you</i> sit in it, so every route it returns ends at a
-      stranger with no warm intro. <b>Results will be severely worse.</b>
+      stranger with no warm intro.
       <br><br>
-      Upload either file below (or both — they merge and de-duplicate).
+      Import your <b>LinkedIn Connections.csv</b> to continue. Phone contacts and
+      manual entries can be added from inside the app afterwards.
     </div>
 
-    <div class="hg-grid">
+    <div class="hg-grid hg-grid-solo">
       <div class="hg-box" id="hgBoxCsv"
         ondragover="event.preventDefault();this.classList.add('dragover')"
         ondragleave="this.classList.remove('dragover')"
@@ -2022,25 +2031,12 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
         <div class="hg-name">LINKEDIN CONNECTIONS</div>
         <div class="hg-hint">Drop <b>Connections.csv</b> here<br>or click to browse</div>
       </div>
-
-      <div class="hg-box" id="hgBoxVcf"
-        ondragover="event.preventDefault();this.classList.add('dragover')"
-        ondragleave="this.classList.remove('dragover')"
-        ondrop="gateDropVcf(event)"
-        onclick="document.getElementById('hgVcfIn').click()">
-        <input type="file" id="hgVcfIn" accept=".vcf,text/vcard,text/x-vcard" multiple
-               style="display:none" onchange="gateVcfChange(event)">
-        <div class="hg-icon">👤</div>
-        <div class="hg-name">PHONE CONTACTS</div>
-        <div class="hg-hint">Drop a <b>.vcf</b> export here<br>or click to browse</div>
-      </div>
     </div>
 
     <div class="hg-foot">
       <div class="hg-note">
-        Don't have a file yet? Both boxes open step-by-step export instructions.
+        Don't have the file yet? The box above opens step-by-step export instructions.
       </div>
-      <button class="hg-btn" onclick="dismissNetworkGate()">CONTINUE WITHOUT ▸</button>
     </div>
   </div>
 </div>
