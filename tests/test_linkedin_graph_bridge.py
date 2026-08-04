@@ -186,6 +186,33 @@ def test_a_profile_nobody_owns_is_private_to_nobody(db):
     assert not C._route_exists(db, "Aa Owner", "Orphan Contact", 3, "Aa Owner")
 
 
+def test_a_mutual_contact_is_still_reachable_by_each_of_its_owners(db):
+    """local_profiles.norm_name is not unique -- a contact can legitimately
+    carry more than one row (e.g. a CSV-owned row plus a later, ownerless
+    "+ Add Contact" duplicate for the same person; see app.main.add_profile,
+    which never dedupes by norm_name). The gate used to keep only ONE owner
+    per contact in a plain dict, keyed by whichever row the join happened to
+    return last -- so Aa's own real linkedin_1st edge to a shared contact
+    silently stopped being traversable the moment a second, differently-owned
+    row for that same contact existed, however that second row got there.
+    """
+    from app.models import LocalProfile
+
+    ingest_rows(db, _rows({"name": "Mutual Contact", "company": "Acme"}),
+               owner_name="Aa Owner")
+    backfill_graph_edges(db, "Aa Owner")
+    # A second local_profiles row for the SAME contact, owned by nobody --
+    # exactly what app.main.add_profile writes, since it never checks for an
+    # existing norm_name before inserting.
+    db.add(LocalProfile(canonical_name="Mutual Contact",
+                        norm_name=person_norm_key("Mutual Contact")))
+    db.commit()
+
+    assert C._route_exists(db, "Aa Owner", "Mutual Contact", 3, "Aa Owner"), \
+        "Aa's own uploaded edge must stay traversable regardless of what " \
+        "other local_profiles rows exist for the same contact"
+
+
 def test_the_gate_only_applies_to_uploaded_connections(db):
     """A discovered coworker tie is sourced from a page anyone could read; it is
     not a claim about anyone's address book and must stay walkable."""

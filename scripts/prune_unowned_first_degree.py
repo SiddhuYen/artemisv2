@@ -35,14 +35,26 @@ from app.utils.names import person_norm_key
 # assertion that is false here, not the person's existence in the graph.
 BRIDGE_TYPE = "linkedin_1st"
 
+# NOT EXISTS, not a LEFT JOIN to local_profiles filtered by owner_norm <>
+# :owner: a contact shared across two operators' exports carries one
+# local_profiles row PER uploader (that's the whole premise of the bug this
+# script cleans up), so a LEFT JOIN fans out to one result row per owner. A
+# row where the join happens to land on the OTHER owner then satisfies
+# "owner_norm IS DISTINCT FROM :owner" and marks the edge doomed even when
+# :owner also has their own legitimate row for the same contact -- silently
+# queuing a real first-degree tie for deletion. NOT EXISTS asks the right
+# question directly: does :owner have ANY row for this contact, regardless of
+# who else does.
 _SCOPE = """
       FROM relationship_edges e
       JOIN people pa ON pa.id = e.person_a_id
       JOIN people pb ON pb.id = e.person_b_id
-      LEFT JOIN local_profiles lp ON lp.norm_name = pb.norm_name
      WHERE pa.norm_name = :owner
        AND e.relationship_type = :rtype
-       AND (lp.id IS NULL OR lp.owner_norm IS DISTINCT FROM :owner)
+       AND NOT EXISTS (
+             SELECT 1 FROM local_profiles lp
+              WHERE lp.norm_name = pb.norm_name AND lp.owner_norm = :owner
+           )
 """
 
 
@@ -67,8 +79,14 @@ def main() -> int:
         print(f"{args.owner}: {total} {BRIDGE_TYPE} edges, {doomed} assert contacts they do not own")
         print(f"  keeping {total - doomed}")
 
+        # The displayed "owner=" is diagnostic only (any OTHER owner on record
+        # for this contact, if there is one) -- it plays no part in the doom
+        # decision above, which is NOT EXISTS against :owner alone.
         rows = db.execute(text(
-            f"SELECT pb.canonical_name, lp.owner_norm {_SCOPE} LIMIT 10"), params).fetchall()
+            "SELECT pb.canonical_name, "
+            "(SELECT owner_norm FROM local_profiles "
+            "  WHERE norm_name = pb.norm_name AND owner_norm IS NOT NULL LIMIT 1) "
+            f"{_SCOPE} LIMIT 10"), params).fetchall()
         print("\n  sample of what would go:")
         for r in rows:
             print(f"    {r[0][:40]:<40} owner={r[1] or '(none)'}")

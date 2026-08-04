@@ -148,15 +148,25 @@ def _contact_edge_gate(db: Session, operator_name: str):
     (operator_name empty, e.g. a famous-to-famous connect) gets no contact edges
     at all, which is right: those edges assert a private relationship, and a
     caller who has not said who they are cannot be its owner.
+
+    A contact SHARED across several operators' exports gets one local_profiles
+    row per uploader (see LocalProfile.owner_norm's docstring: "contacts from
+    several people share one table"), so a person can carry more than one
+    owner. Every owner for a pid is kept in a set rather than the single value
+    a plain dict would retain -- a mutual contact is exactly the common case
+    for a professional-network graph, not the exception, and collapsing to
+    "whichever row the join happened to return last" silently dropped the
+    asking operator's own, real linkedin_1st edge whenever someone else also
+    uploaded the same contact.
     """
     owner_key = person_norm_key(operator_name or "")
-    profile_owner: Dict[str, Optional[str]] = {}
+    profile_owners: Dict[str, set] = defaultdict(set)
     self_ids: set = set()
     for pid, norm, owner in db.execute(
         select(Person.id, Person.norm_name, LocalProfile.owner_norm)
         .join(LocalProfile, LocalProfile.norm_name == Person.norm_name)
     ).all():
-        profile_owner[pid] = owner
+        profile_owners[pid].add(owner)
         if owner_key and norm == owner_key:
             self_ids.add(pid)
 
@@ -174,7 +184,10 @@ def _contact_edge_gate(db: Session, operator_name: str):
             # his 1,020 real contacts dropped to 10 reachable neighbours.
             if pid in self_ids:
                 continue
-            if pid in profile_owner and profile_owner[pid] != owner_key:
+            owners = profile_owners.get(pid)
+            # Traversable if the ASKING operator is any one of pid's owners --
+            # not only if they are the LAST one this dict happened to see.
+            if owners is not None and owner_key not in owners:
                 return False
         return True
 
