@@ -379,6 +379,67 @@ CONNECT_HARVEST_PAIR_PAGES = _env_bool("ARTEMIS_CONNECT_HARVEST_PAIR_PAGES", "1"
 # relevance is already falling off.
 CONNECT_HARVEST_MAX_PAGES = int(
     os.environ.get("ARTEMIS_CONNECT_HARVEST_MAX_PAGES", "6"))
+# Between the cheap pair search and the full expansion: ask the model who might
+# stand BETWEEN the two, then check each name with the same pair search. One
+# model call plus a few searches, against expansion's ~35 queries per node
+# across two neighborhoods.
+#
+# The model's answer is never an edge -- it is a search query. Every edge still
+# comes from a fetched page (see extraction/bridge_hypothesis), so a confidently
+# wrong guess costs a search, not a fabricated connection.
+CONNECT_ASK_CLAUDE_BRIDGE = _env_bool("ARTEMIS_CONNECT_ASK_CLAUDE_BRIDGE", "1")
+# Names to ask for, and therefore the ceiling on this stage's spend: each one
+# costs up to two pair searches (A->candidate, candidate->B).
+CONNECT_BRIDGE_HYPOTHESES = int(
+    os.environ.get("ARTEMIS_CONNECT_BRIDGE_HYPOTHESES", "3"))
+# Deliberately NOT the batch model. This stage is pure world knowledge -- who
+# is documented alongside whom -- which Haiku recalls poorly, and a bad name
+# here wastes two searches rather than one classification.
+BRIDGE_HYPOTHESIS_MODEL = os.environ.get(
+    "ARTEMIS_BRIDGE_HYPOTHESIS_MODEL", "claude-sonnet-5")
+# Before expanding a ranked frontier node (~35 queries), ask whether that node
+# already reaches the far endpoint (1 query). For a famous endpoint this is the
+# only affordable way to find the link at all: SHALLOW_FAMOUS_DEPTH caps their
+# side at one hop precisely because the neighborhood cannot be enumerated, so
+# the two frontiers are not going to meet by walking.
+CONNECT_PROBE_FRONTIER = _env_bool("ARTEMIS_CONNECT_PROBE_FRONTIER", "1")
+# Probes per hop, per side. The spend cap: this many searches instead of this
+# many x35 queries, when it works.
+CONNECT_PROBE_MAX_PER_HOP = int(
+    os.environ.get("ARTEMIS_CONNECT_PROBE_MAX_PER_HOP", "5"))
+# Restrict probing to notable far endpoints. The argument for probing is that a
+# well-documented person answers in one query; an obscure one usually does not,
+# and the searches are better spent on the walk. 0 probes toward anyone.
+CONNECT_PROBE_ONLY_FAMOUS = _env_bool("ARTEMIS_CONNECT_PROBE_ONLY_FAMOUS", "1")
+# Last stop before answering "no connection": show the model what was explored,
+# what was proposed, and why each candidate was rejected, and let it decide
+# whether the walk stopped too early. Its two moves are priced differently --
+# a probe is one search and may name anyone, an expansion is ~35 and may only
+# name nodes the walk already ranked -- so it steers spending it cannot invent.
+# See extraction/route_adjudicator.
+CONNECT_ADJUDICATE_NO_ROUTE = _env_bool("ARTEMIS_CONNECT_ADJUDICATE_NO_ROUTE", "1")
+CONNECT_ADJUDICATE_MAX_PROBES = int(
+    os.environ.get("ARTEMIS_CONNECT_ADJUDICATE_MAX_PROBES", "6"))
+# 0 disables expansion entirely, leaving probing as the only move -- the safe
+# setting for a cost-capped deployment, since each expansion is ~35 searches.
+CONNECT_ADJUDICATE_MAX_EXPAND = int(
+    os.environ.get("ARTEMIS_CONNECT_ADJUDICATE_MAX_EXPAND", "2"))
+# Judging a half-finished search needs real reasoning over messy context, so
+# this is not the batch model.
+ROUTE_ADJUDICATOR_MODEL = os.environ.get(
+    "ARTEMIS_ROUTE_ADJUDICATOR_MODEL", "claude-sonnet-5")
+# One call per NODE deciding which of its fetched pages deserve a full read,
+# instead of one whole-page call per page unconditionally. Measured on a single
+# /connect (Charlie Warren -> Donald Trump, depth 2): 1,043 Sonnet calls, 1.72M
+# input tokens, $10.41 of a $10.49 route -- against $0.22 of searches. Reading
+# the pages was the route. See extraction/page_triage.
+EXTRACT_PAGE_TRIAGE = _env_bool("ARTEMIS_EXTRACT_PAGE_TRIAGE", "1")
+# Ceiling on deep reads per node, and ALSO the bound used when triage returns no
+# verdict -- an unreachable model must not silently restore the old bill.
+EXTRACT_DEEP_MAX_PAGES = int(
+    os.environ.get("ARTEMIS_EXTRACT_DEEP_MAX_PAGES", "6"))
+PAGE_TRIAGE_MODEL = os.environ.get(
+    "ARTEMIS_PAGE_TRIAGE_MODEL", "claude-sonnet-5")
 # per-node edge caps (raised: Tier-1/2 structured sources produce 100s of clean
 # contacts per person; the old caps were sampling almost all of them away)
 MAX_EDGES_PER_NODE = int(os.environ.get("ARTEMIS_MAX_EDGES_PER_NODE", "200"))

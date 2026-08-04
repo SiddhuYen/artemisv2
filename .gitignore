@@ -17,6 +17,7 @@ __pycache__/
 !scripts/seed_data/finance100_seed_connections.csv
 !scripts/seed_data/vc100_seed_connections.csv
 !scripts/seed_data/athletes_seed_connections.csv
+!scripts/seed_data/biotech100_seed_connections.csv
 # Adam Karsten's personal network and Grace's real LinkedIn export are real
 # private individuals' PII, not public-figure data — stay local-only, never
 # committed, even though *connections*.csv above doesn't catch the former

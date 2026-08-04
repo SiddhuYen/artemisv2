@@ -427,12 +427,12 @@ def test_origin_enrichment_can_answer_the_connect_for_free(db):
     ), owner_name="Oo Operator")
     db.query(RelationshipEdge).delete()   # isolate step 1's own bridging
     db.commit()
-    assert not _route_exists(db, "Oo Operator", "Zz Target", 5)
+    assert not _route_exists(db, "Oo Operator", "Zz Target", 5, "Oo Operator")
 
     _ensure_origin_enriched(db, "Oo Operator", owner_name="Oo Operator")
     db.commit()
 
-    assert _route_exists(db, "Oo Operator", "Zz Target", 5)
+    assert _route_exists(db, "Oo Operator", "Zz Target", 5, "Oo Operator")
 
 
 def test_origin_enrichment_uses_the_operators_saved_profile(db):
@@ -572,7 +572,7 @@ def test_a_weak_direct_mention_does_not_cancel_the_expansion(db, monkeypatch):
                         lambda *a, **k: (True, False))        # found, NOT confident
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Oo Operator", "Zz Stranger", depth=2)
     assert calls == ["expand"]
@@ -607,15 +607,28 @@ def test_a_confident_direct_mention_still_short_circuits(db, monkeypatch):
     monkeypatch.setattr(C, "_direct_pair_search", direct_hit)  # found AND confident
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Oo Operator", "Zz Stranger", depth=2)
     assert calls == []
 
 
-def test_step_1_precedes_the_paid_steps_when_it_cannot_answer(db, monkeypatch):
-    """Order matters: enriching the origin AFTER the direct-pair search would
-    pay for a search the free step might have made unnecessary."""
+def test_the_cheap_search_precedes_origin_enrichment(db, monkeypatch):
+    """Order matters, and it used to be the other way round.
+
+    The old rationale was that origin enrichment is free, so running it first
+    might save a search. It is free of SEARCHES and not of time:
+    materialize_contact_cliques resolves one Person per contact in a Python
+    loop, ~20 minutes on a 2,153-contact export over an 84ms link, and it ran
+    even for an origin unrelated to those contacts. Putting that in front of a
+    single search meant a pair the search answers in seconds waited on work
+    irrelevant to it -- observed on Sanjay Ghemawat -> Larry Page, where nine
+    results for one pair query named the intermediary on every one.
+
+    The trade is deliberate and lopsided: a route through the operator's own
+    contacts now pays one or two searches it did not strictly need, and every
+    route the searches can answer skips the 20 minutes entirely.
+    """
     from app.graph import connect as C
 
     calls = []
@@ -626,10 +639,13 @@ def test_step_1_precedes_the_paid_steps_when_it_cannot_answer(db, monkeypatch):
                         lambda *a, **k: calls.append("direct") or (False, False))
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Oo Operator", "Zz Stranger", depth=2)
-    assert calls == ["origin", "direct", "expand"]
+    # bridge_hypothesis is inactive without a credential (see conftest), so it
+    # contributes no call here; its own placement is pinned in
+    # tests/test_bridge_hypothesis.py.
+    assert calls == ["direct", "origin", "expand"]
 
 
 # --- 4. re-running converges ------------------------------------------------

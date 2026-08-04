@@ -29,7 +29,7 @@ from sqlalchemy.orm.exc import ObjectDeletedError
 from .. import config
 from . import disambiguate
 from ..extraction import extract, tier
-from ..extraction import coauthor_plausibility, node_profiler, search_strategy
+from ..extraction import coauthor_plausibility, node_profiler, page_triage, search_strategy
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge
@@ -725,7 +725,43 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             page_text[url] = html_to_text(page.content) if page.content else ""
 
     # --- phase 4: extraction per (result × originating silo) --------------
+    # Decide ONCE, for this node, which of its pages earn a whole-page model
+    # call. Without this every fetched page got one: 1,043 of them on a single
+    # measured /connect, $10.41 of a $10.49 route, against $0.22 of searches.
+    # Everything else drops to spaCy, which is what this pipeline used before
+    # Claude extraction existed.
+    #
+    # Ordered by search rank so the fallback below is meaningful, and deduped by
+    # URL because the same result arrives once per silo that asked for it -- the
+    # triage is per PAGE, not per (page × silo).
     check_cancel()
+    ranked_pages = []
+    seen_urls = set()
+    for _q, results in searched:
+        for rank, res in enumerate(results):
+            if res.url not in seen_urls:
+                seen_urls.add(res.url)
+                ranked_pages.append((rank, res))
+    ranked_pages.sort(key=lambda pair: pair[0])
+
+    deep_urls = {res.url for _r, res in ranked_pages}
+    if config.CLAUDE_EXTRACT and page_triage.is_active() and ranked_pages:
+        keep = page_triage.select(
+            subject_name, target_person_name,
+            [{"title": res.title, "snippet": res.snippet} for _r, res in ranked_pages])
+        if keep is not None:
+            # A real verdict, including the empty one: this node's pages name
+            # nobody and none of them is worth a full read.
+            deep_urls = {ranked_pages[i][1].url for i in keep}
+        else:
+            # No verdict. Bounded rather than open: an unreachable model must
+            # not quietly restore the old bill, so take the highest-ranked few.
+            deep_urls = {res.url for _r, res in
+                         ranked_pages[:max(0, config.EXTRACT_DEEP_MAX_PAGES)]}
+        if progress and len(deep_urls) < len(ranked_pages):
+            progress(f"  ⊙ reading {len(deep_urls)}/{len(ranked_pages)} pages in full "
+                     "(rest to the cheap extractor)")
+
     for query, results in searched:
         check_cancel()
         silos = query_to_silos.get(query, set())
@@ -742,9 +778,11 @@ def _process_person(db: Session, subject_name: str, hop: int, disc: Dict[str, _C
             source_by_url[res.url] = source
             text = full_text or f"{res.title}. {res.snippet}"
 
+            deep = res.url in deep_urls
             for silo in silos:
                 check_cancel()
-                out = extract(subject_name, text, silo, res.snippet, res.url)
+                out = extract(subject_name, text, silo, res.snippet, res.url,
+                              deep=deep)
                 candidate_edges.extend(out.edges)
 
     # --- phase 4b: OpenAlex coauthors, plausibility- and identity-gated ----
@@ -1309,7 +1347,8 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                  silo_weights: Optional[Dict[str, float]] = None,
                  enhanced_professional_search: bool = False,
                  professional_only: bool = False, target_person_name: str = "",
-                 target_context: str = "") -> dict:
+                 target_context: str = "",
+                 on_frontier: Optional[Callable[[List[str], object], None]] = None) -> dict:
     """`protected_norms` are exempt from the final noise-shape prune in addition
     to this call's own seed. connect_people needs this: it runs expand_graph
     TWICE (once per endpoint) into the same shared graph, and without it the
@@ -1341,6 +1380,15 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     node's fix into the recursive "top candidates, searched properly, at
     every hop" behavior this was designed for.
 
+    `on_frontier`, when provided, is handed each hop's ranked frontier BEFORE
+    it is expanded, together with THIS call's own Session (never the caller's --
+    two of these run concurrently and a shared Session is not thread-safe). connect_people uses it to ask the question this walk cannot:
+    does this specific node reach the far endpoint? Expanding a node costs ~35
+    queries; asking that costs one, and for a famous endpoint -- capped at
+    SHALLOW_FAMOUS_DEPTH precisely because their neighborhood is too large to
+    walk -- it is the only affordable way to close the gap. A node that answers
+    yes makes its own expansion unnecessary, which `should_stop` then notices.
+
     `professional_only`, the mirror image, goes to the OTHER side -- the
     shallow, famous one. connect_people sets it when the other side already
     concluded a professional bridge is the likeliest path (that's what
@@ -1363,6 +1411,36 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
     frontier: List[str] = [target_name]
     per_depth: List[int] = []  # nodes processed per hop
     visited_by_hop: Dict[int, List[str]] = {}  # hop -> node names selected for it
+    offered: set = set()
+
+    def _offer_frontier(disc_now, visited_now, hop_now: int) -> None:
+        """Hand the caller this hop's strongest discoveries, once each.
+
+        Ranked with the same function the next hop would use, so what is
+        offered is what the walk itself considers worth expanding -- the
+        high-leverage nodes. Deduped across hops because the ranking is
+        cumulative: without `offered`, hop 2 would re-offer everything hop 1
+        already asked about, and the caller pays per name.
+        """
+        if not on_frontier:
+            return
+        try:
+            top_n = (config.ALPHA_TOP_CANDIDATES
+                     if enhanced_professional_search else None)
+            ranked = _ranked_expandable(disc_now, visited_now,
+                                        prefer_reachable=prefer_reachable,
+                                        top_n=top_n)
+        except Exception:  # noqa: BLE001 -- ranking must not end the walk
+            return
+        fresh = [n for n in ranked if n not in offered]
+        if not fresh:
+            return
+        offered.update(fresh)
+        try:
+            on_frontier(fresh, db)
+        except Exception:  # noqa: BLE001 -- neither must the caller's hook
+            return
+
     # Declared here, not inside the hop loop below: should_stop can trip on
     # hop 0 before the loop body ever runs (a real race in connect_people's
     # concurrent two-sided expansion -- the other endpoint's search can find
@@ -1614,6 +1692,17 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
                     if progress:
                         progress("  ✓ stop condition met; stopping expansion early")
                     break
+            # Ask the far endpoint's question about what THIS hop just turned
+            # up, before any of the exits below can end the walk.
+            #
+            # This used to sit further down, after the next hop's frontier was
+            # ranked, and was therefore unreachable in practice: `stop_after_node`
+            # breaks out the moment should_stop trips (which is every walk that
+            # begins with a route already believed to exist), `hop == max_depth
+            # - 1` breaks on the last hop before any ranking happens, and the
+            # node cap breaks too. A high-leverage node discovered on the final
+            # hop -- exactly the one worth asking about -- was never asked about.
+            _offer_frontier(disc, visited, hop)
             if stop_after_node:
                 per_depth.append(done)
                 break
@@ -1639,6 +1728,13 @@ def expand_graph(db: Session, target_name: str, max_depth: int, progress=None,
         frontier = _ranked_expandable(disc, visited, progress=progress,
                                       prefer_reachable=prefer_reachable,
                                       top_n=alpha_top_n)
+        # The hook already ran on this hop's discoveries (see _offer_frontier,
+        # called right after the node loop). All that is left is to notice if it
+        # found the answer.
+        if on_frontier and should_stop and should_stop(db):
+            if progress:
+                progress("  → a frontier node reaches the target; stopping expansion")
+            break
         # Alpha step 7 (per-candidate depth): among the selected frontier,
         # any independently notable/famous candidate gets marked shallow --
         # see shallow_nodes' declaration above. Checked here (once per hop,

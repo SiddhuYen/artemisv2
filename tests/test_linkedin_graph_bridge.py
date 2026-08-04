@@ -14,6 +14,7 @@ zero such edges ever got created. Three things are covered here:
 """
 from sqlalchemy import select
 
+from app.graph import builder
 from app.graph import connect as C
 from app.models import Person, RelationshipEdge
 from app.network.ingest import backfill_graph_edges, ingest_rows
@@ -126,8 +127,74 @@ def test_connect_finds_a_bridged_edge_without_touching_search(db, monkeypatch):
     monkeypatch.setattr(C, "_direct_pair_search", _boom)
     monkeypatch.setattr(C, "_expand_both_concurrently", _boom)
 
-    result = C.connect_people(db, "Abhimanyu Sharma", "Fred Volinsky", depth=1)
+    result = C.connect_people(db, "Abhimanyu Sharma", "Fred Volinsky", depth=1,
+                              owner_name="Abhimanyu Sharma")
 
     assert result["connected"] is True
     assert result["hops"] == 1
     assert result["path"][-1]["relationship_from_previous"] == "linkedin_1st"
+
+
+# ── uploaded connections are private to whoever uploaded them ──────────────
+# relationship_edges has no owner column: ingest.backfill_graph_edges turns a
+# local_profile into a linkedin_1st edge and the conversion DROPS the owner, so
+# once written, an edge to somebody else's contact was byte-for-byte identical
+# to an edge to your own. On a database holding two people's LinkedIn exports
+# that put 1,132 strangers into one operator's first degree -- and because
+# linkedin_1st is the strongest claim in the graph, those outranked real ties
+# AND suppressed the search that would have replaced them.
+#
+# Ownership is recovered at read time from local_profiles, which is already
+# correct, rather than backfilled onto the edges.
+
+def _two_operators(db):
+    ingest_rows(db, _rows({"name": "Mine Contact", "company": "Acme"}),
+                owner_name="Aa Owner")
+    ingest_rows(db, _rows({"name": "Theirs Contact", "company": "Acme"}),
+                owner_name="Bb Other")
+    backfill_graph_edges(db, "Aa Owner")
+    backfill_graph_edges(db, "Bb Other")
+    db.commit()
+
+
+def test_an_operator_reaches_their_own_uploaded_contact(db):
+    _two_operators(db)
+    assert C._route_exists(db, "Aa Owner", "Mine Contact", 3, "Aa Owner")
+
+
+def test_an_operator_cannot_reach_somebody_elses_uploaded_contact(db):
+    """The requirement. Bb's export is not Aa's network, however it got into
+    the same database."""
+    _two_operators(db)
+    assert not C._route_exists(db, "Aa Owner", "Theirs Contact", 3, "Aa Owner")
+
+
+def test_an_unidentified_caller_gets_no_uploaded_contacts_at_all(db):
+    """Fails closed. person_a is whoever was typed into the box and proves
+    nothing about who is asking, so an absent owner_name cannot be read as
+    'the origin must be the owner'."""
+    _two_operators(db)
+    assert not C._route_exists(db, "Aa Owner", "Mine Contact", 3)
+
+
+def test_a_profile_nobody_owns_is_private_to_nobody(db):
+    """Imported before ownership existed, so there is no one it can be
+    attributed to -- exactly the 1,132 edges that started this."""
+    ingest_rows(db, _rows({"name": "Orphan Contact", "company": "Acme"}))
+    backfill_graph_edges(db, "Aa Owner", claim_unowned=False)
+    db.commit()
+    assert not C._route_exists(db, "Aa Owner", "Orphan Contact", 3, "Aa Owner")
+
+
+def test_the_gate_only_applies_to_uploaded_connections(db):
+    """A discovered coworker tie is sourced from a page anyone could read; it is
+    not a claim about anyone's address book and must stay walkable."""
+    _two_operators(db)
+    a = builder.get_or_create_person(db, "Aa Owner")
+    far = builder.get_or_create_person(db, "Public Person")
+    db.add(RelationshipEdge(person_a_id=a.id, person_b_id=far.id,
+                            relationship_type="coworker", status="strong",
+                            confidence_raw=0.8, method="test",
+                            evidence_snippet="ev", signals={}))
+    db.commit()
+    assert C._route_exists(db, "Aa Owner", "Public Person", 3)
