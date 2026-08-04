@@ -363,7 +363,12 @@ body {
    z-index sits above #hvBoot (200) so it can never appear behind the splash. */
 #hvGate { position:fixed;inset:0;z-index:210;display:none;place-items:center;
   background:oklch(0.06 0.02 22/0.82);backdrop-filter:blur(3px);padding:20px;
-  font-family:"Share Tech Mono","JetBrains Mono",monospace; }
+  font-family:"Share Tech Mono","JetBrains Mono",monospace;
+  /* The panel's max-width:100% resolves against this column, and an auto column
+     sizes to the panel's own 660px -- so on a phone the panel stayed 660 wide
+     and ran off the screen, taking the export steps with it. minmax(0,1fr)
+     caps the column at the viewport so the max-width can actually bite. */
+  grid-template-columns:minmax(0,1fr); }
 #hvGate.open { display:grid; }
 #hvGatePanel {
   width:660px;max-width:100%;position:relative;
@@ -2019,6 +2024,33 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
       manual entries can be added from inside the app afterwards.
     </div>
 
+    <!-- The export steps are repeated HERE, on the gate, and not left to the
+         importer alone. The importer is only reached by dropping a file
+         (_gateHandoff), so its copy of these steps was visible only to someone
+         who already had Connections.csv -- never to the operator who has not
+         exported it yet, which is the one operator the gate exists for. Kept
+         in sync with the importer's #liCsvSec steps. -->
+    <div class="hg-lbl" style="margin-bottom:6px">// HOW TO GET THE FILE</div>
+    <div class="li-steps">
+      <div class="li-step">
+        <div class="sn">1</div>
+        <!-- Colour inline, like the emphasis below it: .li-step a paints with
+             var(--accent-bright), which is declared on #homeView and so is not
+             in scope out here at body level -- the link would render as plain
+             body grey and not read as clickable. -->
+        <div>Go to <a href="https://www.linkedin.com/mypreferences/d/categories/data-privacy" target="_blank"
+               style="color:oklch(0.72 0.205 22)">linkedin.com → Settings → Data Privacy → Get a copy of your data</a></div>
+      </div>
+      <div class="li-step">
+        <div class="sn">2</div>
+        <div>Select <b style="color:oklch(0.72 0.205 22)">Connections</b> only, then click <b style="color:oklch(0.72 0.205 22)">Request archive</b>. LinkedIn emails you a link (usually within 10 minutes).</div>
+      </div>
+      <div class="li-step">
+        <div class="sn">3</div>
+        <div>Download the zip, open it, and drag <b style="color:oklch(0.72 0.205 22)">Connections.csv</b> into the box below.</div>
+      </div>
+    </div>
+
     <div class="hg-grid hg-grid-solo">
       <div class="hg-box" id="hgBoxCsv"
         ondragover="event.preventDefault();this.classList.add('dragover')"
@@ -2035,7 +2067,8 @@ input[type="file"] { color: #cc8888; font-size: 0.78rem; cursor: pointer; width:
 
     <div class="hg-foot">
       <div class="hg-note">
-        Don't have the file yet? The box above opens step-by-step export instructions.
+        The archive email can take a few minutes. Leave this open — only
+        <b>Connections.csv</b> is needed, the rest of the zip can be ignored.
       </div>
     </div>
   </div>
