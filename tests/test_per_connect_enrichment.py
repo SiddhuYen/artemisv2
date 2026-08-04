@@ -427,12 +427,12 @@ def test_origin_enrichment_can_answer_the_connect_for_free(db):
     ), owner_name="Oo Operator")
     db.query(RelationshipEdge).delete()   # isolate step 1's own bridging
     db.commit()
-    assert not _route_exists(db, "Oo Operator", "Zz Target", 5)
+    assert not _route_exists(db, "Oo Operator", "Zz Target", 5, "Oo Operator")
 
     _ensure_origin_enriched(db, "Oo Operator", owner_name="Oo Operator")
     db.commit()
 
-    assert _route_exists(db, "Oo Operator", "Zz Target", 5)
+    assert _route_exists(db, "Oo Operator", "Zz Target", 5, "Oo Operator")
 
 
 def test_origin_enrichment_uses_the_operators_saved_profile(db):
@@ -572,7 +572,7 @@ def test_a_weak_direct_mention_does_not_cancel_the_expansion(db, monkeypatch):
                         lambda *a, **k: (True, False))        # found, NOT confident
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Oo Operator", "Zz Stranger", depth=2)
     assert calls == ["expand"]
@@ -607,7 +607,7 @@ def test_a_confident_direct_mention_still_short_circuits(db, monkeypatch):
     monkeypatch.setattr(C, "_direct_pair_search", direct_hit)  # found AND confident
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Oo Operator", "Zz Stranger", depth=2)
     assert calls == []
@@ -639,7 +639,7 @@ def test_the_cheap_search_precedes_origin_enrichment(db, monkeypatch):
                         lambda *a, **k: calls.append("direct") or (False, False))
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: calls.append("expand") or {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Oo Operator", "Zz Stranger", depth=2)
     # bridge_hypothesis is inactive without a credential (see conftest), so it

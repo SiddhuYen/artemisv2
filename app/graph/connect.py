@@ -28,7 +28,7 @@ from ..extraction import (bridge_hypothesis, bridge_strategy, extract,
 from ..extraction.entity_filter import is_filtering_active
 from ..extraction.entity_filter import validate as filter_entities
 from ..extraction.schemas import EdgeSignals, ExtractedEdge, ExtractionOutput
-from ..models import Organization, Person, RelationshipEdge, Source
+from ..models import LocalProfile, Organization, Person, RelationshipEdge, Source
 from ..network.cliques import materialize_contact_cliques
 from ..network.ingest import backfill_graph_edges
 from ..network.owner import get_owner_by_name
@@ -116,6 +116,71 @@ def _path_worthy(e: RelationshipEdge) -> bool:
     return not _untraversable(e.status, e.relationship_type, e.signals)
 
 
+# The edge type that asserts "I personally know this person because I uploaded
+# them". Every other type is a claim about the world, sourced from a page anyone
+# could read; this one is a claim about ONE operator's address book.
+CONTACT_CLAIM_TYPE = "linkedin_1st"
+
+
+def _contact_edge_gate(db: Session, operator_name: str):
+    """(is_traversable(person_a_id, person_b_id, relationship_type)) for this operator.
+
+    Uploaded connections are private to whoever uploaded them, and until now the
+    graph could not express that. `local_profiles` carries owner_norm, but
+    ingest.backfill_graph_edges converts a profile into a RelationshipEdge and
+    the conversion DROPS the owner -- relationship_edges has no owner column --
+    so after the bridge ran, an edge to someone else's contact was byte-for-byte
+    identical to an edge to your own.
+
+    Observed: 2,152 linkedin_1st edges on "Abhimanyu Sharma", 1,132 of them
+    pointing at a second person's LinkedIn export that happened to share the
+    database. Those outrank real ties (linkedin_1st is the strongest claim in
+    the graph) AND suppress the search that would replace them, because
+    _route_exists short-circuits the paid walk on any traversable route.
+
+    Ownership is recovered at READ time by joining back to local_profiles on
+    norm_name, rather than by backfilling a column onto millions of edges: the
+    profile table is the record of who uploaded what, and it is already correct.
+
+    Fails closed in both directions. An endpoint whose profile has NO owner
+    (imported before ownership existed) is nobody's contact and is private to
+    nobody -- so it is traversable by no one. And an unidentified caller
+    (operator_name empty, e.g. a famous-to-famous connect) gets no contact edges
+    at all, which is right: those edges assert a private relationship, and a
+    caller who has not said who they are cannot be its owner.
+    """
+    owner_key = person_norm_key(operator_name or "")
+    profile_owner: Dict[str, Optional[str]] = {}
+    self_ids: set = set()
+    for pid, norm, owner in db.execute(
+        select(Person.id, Person.norm_name, LocalProfile.owner_norm)
+        .join(LocalProfile, LocalProfile.norm_name == Person.norm_name)
+    ).all():
+        profile_owner[pid] = owner
+        if owner_key and norm == owner_key:
+            self_ids.add(pid)
+
+    def traversable(a_id: str, b_id: str, rtype: Optional[str]) -> bool:
+        if rtype != CONTACT_CLAIM_TYPE:
+            return True
+        for pid in (a_id, b_id):
+            # The operator's OWN node is exempt, and this is not a formality:
+            # an operator is very often a contact in somebody else's export, so
+            # their person node maps to a profile owned by that other person
+            # (or, for a pre-ownership import, by nobody). Checking it would
+            # reject every edge they appear on -- including all of their own
+            # contacts. Verified live: "Abhimanyu Sharma" is a row in
+            # local_profiles with owner_norm NULL, and without this exemption
+            # his 1,020 real contacts dropped to 10 reachable neighbours.
+            if pid in self_ids:
+                continue
+            if pid in profile_owner and profile_owner[pid] != owner_key:
+                return False
+        return True
+
+    return traversable
+
+
 def _org_shaped_person_ids(db: Session) -> set:
     """Person rows that are really organizations, by name collision with `organizations`.
 
@@ -147,7 +212,11 @@ def _org_shaped_person_ids(db: Session) -> set:
     }
 
 
-def _adjacency(db: Session):
+def _adjacency(db: Session, operator_name: str = ""):
+    """`operator_name` gates uploaded-connection edges to their owner. Empty
+    means an unidentified caller, who owns none of them -- see
+    _contact_edge_gate."""
+    traversable = _contact_edge_gate(db, operator_name)
     person_by_id = {p.id: p for p in db.execute(select(Person)).scalars()}
     src_by_id = {s.id: s for s in db.execute(select(Source)).scalars()}
     best: Dict[Tuple[str, str], RelationshipEdge] = {}
@@ -161,6 +230,8 @@ def _adjacency(db: Session):
             continue  # dangling edge — its endpoint was pruned after this edge was written
         if not _path_worthy(e):
             continue  # 'rejected' — a reviewed, confirmed-false edge
+        if not traversable(a, b, e.relationship_type):
+            continue  # somebody else's uploaded connection
         key = tuple(sorted((a, b)))
         cur = best.get(key)
         if cur is None or (e.confidence_raw or 0) > (cur.confidence_raw or 0):
@@ -325,7 +396,8 @@ def _score(edges: List[RelationshipEdge]) -> float:
 _PROBE_ID_CHUNK = 500  # bound-parameter safety margin as the graph grows
 
 
-def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
+def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int,
+                  operator_name: str = "") -> bool:
     """Does ANY traversable route within max_hops already exist? Bounded,
     indexed, hop-by-hop walk out of A, stopping the moment B is reached.
 
@@ -374,6 +446,11 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
     # and then nothing is returned. An org-shaped node may still be an
     # endpoint, so this only stops the walk expanding THROUGH one.
     org_shaped = _org_shaped_person_ids(db) - {a_id, b_id}
+    # The same ownership rule the scoring pass applies. Without it here the
+    # cheap check would short-circuit the paid walk on an edge the pathfinder
+    # will then refuse to walk -- the exact disagreement #53's second gate and
+    # the org-shaped guard both exist to prevent.
+    traversable = _contact_edge_gate(db, operator_name)
 
     frontier = {a_id}
     visited = {a_id}
@@ -385,18 +462,22 @@ def _route_exists(db: Session, name_a: str, name_b: str, max_hops: int) -> bool:
         for i in range(0, len(ids), _PROBE_ID_CHUNK):
             chunk = ids[i:i + _PROBE_ID_CHUNK]
             rows = db.execute(
-                select(RelationshipEdge.person_b_id, RelationshipEdge.status,
-                      RelationshipEdge.relationship_type, RelationshipEdge.signals)
+                select(RelationshipEdge.person_b_id, RelationshipEdge.person_a_id,
+                       RelationshipEdge.status, RelationshipEdge.relationship_type,
+                       RelationshipEdge.signals)
                 .join(Person, Person.id == RelationshipEdge.person_b_id)
                 .where(RelationshipEdge.person_a_id.in_(chunk))
             ).all() + db.execute(
-                select(RelationshipEdge.person_a_id, RelationshipEdge.status,
-                      RelationshipEdge.relationship_type, RelationshipEdge.signals)
+                select(RelationshipEdge.person_a_id, RelationshipEdge.person_b_id,
+                       RelationshipEdge.status, RelationshipEdge.relationship_type,
+                       RelationshipEdge.signals)
                 .join(Person, Person.id == RelationshipEdge.person_a_id)
                 .where(RelationshipEdge.person_b_id.in_(chunk))
             ).all()
-            for far_id, status, rtype, signals in rows:
+            for far_id, near_id, status, rtype, signals in rows:
                 if _untraversable(status, rtype, signals):
+                    continue
+                if not traversable(far_id, near_id, rtype):
                     continue
                 if far_id == b_id:
                     return True
@@ -1440,7 +1521,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
     def should_stop(check_db: Session) -> bool:
         if route_found.is_set():
             return True
-        if _route_exists(check_db, name_a, name_b, max_hops):
+        if _route_exists(check_db, name_a, name_b, max_hops, owner_name):
             route_found.set()
             return True
         return False
@@ -1449,7 +1530,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         cancel_checker()
     if progress:
         progress("\n[known] checking what's already in the graph…")
-    if _route_exists(db, name_a, name_b, max_hops):
+    if _route_exists(db, name_a, name_b, max_hops, owner_name):
         # Zero-cost first check: no search, no fetch, no extraction — just
         # whatever's already persisted, which now includes linkedin_1st edges
         # bridged in from uploaded contacts (see network/ingest.py) and
@@ -1484,7 +1565,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         # the origin IS the target, or sits one coworker tie away from them.
         if cancel_checker:
             cancel_checker()
-        if _route_exists(db, name_a, name_b, max_hops):
+        if _route_exists(db, name_a, name_b, max_hops, owner_name):
             route_found.set()
             if progress:
                 progress("[origin] connected through the origin's own network — "
@@ -1519,7 +1600,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         # "no path". Checking with the pathfinder's own rule closes that by
         # construction. It is the cheap bounded neighbor walk -- no adjacency
         # rebuild -- and runs only on this branch.
-        if found and confident and _route_exists(db, name_a, name_b, max_hops):
+        if found and confident and _route_exists(db, name_a, name_b, max_hops, owner_name):
             route_found.set()
             if progress:
                 progress("[direct] found a confident direct mention — "
@@ -1597,7 +1678,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
             # The pathfinder's own rule decides whether that actually built a
             # route -- not the searches' own `found`, which says only that
             # something was written.
-            if _route_exists(db, name_a, name_b, max_hops):
+            if _route_exists(db, name_a, name_b, max_hops, owner_name):
                 route_found.set()
                 if progress:
                     progress(f"[bridge] {who} connects them — "
@@ -1696,7 +1777,7 @@ def connect_people(db: Session, name_a: str, name_b: str, depth: int = 2,
         untraversable. The second call therefore cannot re-propose a route the
         first one just disproved, which is what bounds the resume.
         """
-        adjacency, by_id, src, deg = _adjacency(db)
+        adjacency, by_id, src, deg = _adjacency(db, owner_name)
         if cancel_checker:
             cancel_checker()
         found = _diverse_paths(adjacency, a.id, b.id, max_hops,

@@ -96,7 +96,7 @@ def test_a_proposed_name_is_searched_never_written(db, monkeypatch):
                         lambda _db, a, b, *rest, **kw: (searched.append((a, b)), (False, False))[1])
     monkeypatch.setattr(C, "_ensure_origin_enriched", lambda *a, **k: {})
     monkeypatch.setattr(C, "_expand_both_concurrently", lambda *a, **k: {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Sanjay Ghemawat", "Larry Page", depth=2)
 
@@ -120,7 +120,7 @@ def test_both_halves_are_searched_before_giving_up_on_a_candidate(db, monkeypatc
                         lambda _db, a, b, *rest, **kw: (searched.append((a, b)), (False, False))[1])
     monkeypatch.setattr(C, "_ensure_origin_enriched", lambda *a, **k: {})
     monkeypatch.setattr(C, "_expand_both_concurrently", lambda *a, **k: {})
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Aa One", "Bb Two", depth=2)
 
@@ -139,7 +139,7 @@ def test_expansion_is_skipped_once_a_bridge_is_borne_out(db, monkeypatch):
     calls = []
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: (calls.append("expand"), {})[1])
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
     # route only appears after the bridge halves are searched
     seen = {"n": 0}
 
@@ -167,7 +167,7 @@ def test_the_stage_sits_between_the_pair_search_and_expansion(db, monkeypatch):
                         lambda *a, **k: (order.append("origin"), {})[1])
     monkeypatch.setattr(C, "_expand_both_concurrently",
                         lambda *a, **k: (order.append("expand"), {})[1])
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
 
     C.connect_people(db, "Aa One", "Bb Two", depth=2)
 

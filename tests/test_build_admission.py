@@ -32,7 +32,7 @@ def test_connect_no_longer_mutates_the_expansion_global(monkeypatch):
 
     monkeypatch.setattr(config, "EXPAND_PREFER_REACHABLE", True)
     monkeypatch.setattr(C, "_expand_both_concurrently", fake_expand_both)
-    monkeypatch.setattr(C, "_adjacency", lambda db: ({}, {}, {}, {}))
+    monkeypatch.setattr(C, "_adjacency", lambda db, *a: ({}, {}, {}, {}))
     monkeypatch.setattr(C, "_direct_pair_search", lambda *a, **k: (False, False))
     monkeypatch.setattr(C, "_route_exists", lambda *a, **k: False)
     monkeypatch.setattr(C.ORCH, "notable_set", lambda names: set())
